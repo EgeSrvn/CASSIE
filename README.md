@@ -1,4 +1,4 @@
-# CloudAssembler
+# CASSIE: Cloud-based Assembly Streamlined Service Integration Engine
 
 Automated genome assembly and annotation: Build a website that has many options for different assemblers and other tools depending on different data types: Illumina/Pacbio/ONT combinations, additional HiC, StrandSeq, BioNano combinations, RNAseq, etc. Use docker, k8s, nextflow/cwl. Automated runs will require creating EC instances as necessary and removing them when they are done. Uploading data to S3 would be nice, but the EC instances should be able to mount the S3. (GCP/Azure counterparts should replace EC/S3 terms). Check the T2T paper.
 
