@@ -1,16 +1,23 @@
-import threading
-import docker
 from bucket_manager import create_user_bucket, delete_bucket, init_s3_client
 from db_manager import get_connection
-
-# Docker client (unused directly here, kept for future expansion)
-client = docker.from_env()
+from docker_commands import (
+    client,
+    create_tenant_user, 
+    assign_tenant_to_vm,
+    divide_resources_for_tenant,
+    remove_tenant_container,
+    get_tenant_container,
+)
+import docker
+import threading
+import time
+import os
 
 # VM capacities and runtime loads
 VM_CAPACITY = {"vm1": 16, "vm2": 8, "vm3": 4}
 VM_LOAD = {"vm1": 0, "vm2": 0, "vm3": 0}
 
-# Runtime registry: tenant_name -> {vm, bucket, user_id}
+# Runtime registry: tenant_name -> {vm, bucket, container}
 TENANT_REGISTRY = {}
 
 # Lock to protect TENANT_REGISTRY and VM_LOAD
@@ -36,7 +43,7 @@ def _get_user_row(user_id):
 def find_available_vm():
     """Return first VM with available capacity (no locking)."""
     for vm, cap in VM_CAPACITY.items():
-        if VM_LOAD[vm] < cap:
+        if VM_LOAD.get(vm, 0) < cap:
             return vm
     return None
 
@@ -48,15 +55,6 @@ def add_tenant_to_db(tenant_name, vm_name, user_id):
         INSERT INTO tenants (name, vm_name, user_id)
         VALUES (%s, %s, %s)
     """, (tenant_name, vm_name, user_id))
-    conn.commit()
-    cur.close()
-    conn.close()
-
-
-def remove_tenant_from_db(tenant_name):
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("DELETE FROM tenants WHERE name = %s;", (tenant_name,))
     conn.commit()
     cur.close()
     conn.close()
@@ -86,10 +84,16 @@ def ensure_user_bucket(user_id):
     return new_bucket
 
 
+# helper: stable container name for a tenant
+def tenant_container_name(tenant_name, user_id):
+    return f"tenant_{tenant_name}_{user_id}" if user_id is not None else f"tenant_{tenant_name}"
+
+
 def add_tenant(tenant_name, vm_name=None, user_id=None):
     """
-    Add a tenant for a specific user, create their bucket, and assign a VM.
-    Allows same tenant names for different users.
+    Add a tenant for a specific user, create their bucket, assign a VM and create tenant container.
+    Uses docker_commands.assign_tenant_to_vm to persist assignment and divide_resources_for_tenant
+    to obtain per-tenant resource hints.
     """
     s3 = init_s3_client()
 
@@ -106,28 +110,46 @@ def add_tenant(tenant_name, vm_name=None, user_id=None):
     cur.close()
     conn.close()
 
-    # Choose VM automatically if not given
+    # Choose/assign VM (persist mapping)
     if not vm_name:
-        vm_name = find_available_vm()
-        if not vm_name:
-            print("No available VM capacity.")
-            return
+        vm_name = assign_tenant_to_vm(tenant_name, user_id)
 
-    if VM_LOAD[vm_name] >= VM_CAPACITY[vm_name]:
-        print(f"{vm_name} has reached maximum capacity.")
+    # Capacity check (best-effort)
+    if VM_LOAD.get(vm_name, 0) >= VM_CAPACITY.get(vm_name, 0):
+        print(f"[!] {vm_name} has reached maximum capacity.")
         return
+
+    # Ensure user exists and create bucket
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("SELECT username FROM users WHERE id = %s;", (user_id,))
-    username = cur.fetchone()[0]
+    row = cur.fetchone()
     cur.close()
     conn.close()
+    if not row:
+        print(f"[!] user_id={user_id} not found.")
+        return
+    username = row[0]
 
     bucket_name = create_user_bucket(username, s3)
 
+    # compute resource hints for tenant inside vm
+    try:
+        cpu_quota, mem_limit = divide_resources_for_tenant(vm_name)
+    except Exception:
+        cpu_quota, mem_limit = None, None
+
     # Update runtime registry
-    TENANT_REGISTRY[(tenant_name, user_id)] = {"vm": vm_name, "bucket": bucket_name}
-    VM_LOAD[vm_name] += 1
+    key = (tenant_name, user_id)
+    TENANT_REGISTRY[key] = {"vm": vm_name, "bucket": bucket_name}
+    VM_LOAD[vm_name] = VM_LOAD.get(vm_name, 0) + 1
+
+    # Create tenant container + user inside assigned VM (best-effort)
+    try:
+        cont = create_tenant_user(vm_name, tenant_name, user_id, cpu_quota=cpu_quota, mem_limit=mem_limit)
+        TENANT_REGISTRY[key]["container"] = cont.name
+    except Exception as e:
+        print(f"[!] Warning: failed to create tenant container/user: {e}")
 
     # Insert into database
     add_tenant_to_db(tenant_name, vm_name, user_id)
@@ -135,10 +157,9 @@ def add_tenant(tenant_name, vm_name=None, user_id=None):
     print(f"[+] Tenant '{tenant_name}' for user_id={user_id} assigned to {vm_name} with bucket '{bucket_name}'.")
 
 
-
 def remove_tenant(tenant_name, user_id):
     """
-    Remove a tenant for a specific user: delete bucket and DB entry.
+    Remove a tenant for a specific user: delete bucket, DB entry and tenant container.
     """
     s3 = init_s3_client()
     key = (tenant_name, user_id)
@@ -147,11 +168,30 @@ def remove_tenant(tenant_name, user_id):
         print(f"[!] Tenant '{tenant_name}' not found for your account.")
         return
 
+    # Attempt to remove the tenant container (best-effort) using docker_commands helper
+    try:
+        removed = remove_tenant_container(tenant_name, user_id, force=True)
+        if not removed:
+            # fallback: try direct client removal if helper returned False
+            container_name = tenant.get("container") or tenant_container_name(tenant_name, user_id)
+            try:
+                cont = client.containers.get(container_name)
+                cont.remove(force=True)
+            except docker.errors.NotFound:
+                pass
+    except Exception as e:
+        print(f"[!] Failed to remove container via helper: {e}")
+
     # Delete bucket
-    delete_bucket(tenant["bucket"], s3)
+    try:
+        delete_bucket(tenant["bucket"], s3)
+    except Exception as e:
+        print(f"[!] Failed to delete bucket '{tenant['bucket']}': {e}")
 
     # Decrease VM load
-    VM_LOAD[tenant["vm"]] -= 1
+    vm = tenant.get("vm")
+    if vm in VM_LOAD:
+        VM_LOAD[vm] = max(0, VM_LOAD[vm] - 1)
 
     # Remove from runtime registry
     del TENANT_REGISTRY[key]
@@ -179,7 +219,7 @@ def remove_tenant_from_db(tenant_name, user_id):
 def show_user_tenants(user_id):
     """
     Return a list of tenants for the given user from runtime.
-    Each item is a tuple: (tenant_name, vm_name, bucket_name)
+    Each item is a tuple: (tenant_name, vm_name, bucket_name, container_name)
     """
     result = []
     for key, tenant_info in TENANT_REGISTRY.items():
@@ -187,14 +227,74 @@ def show_user_tenants(user_id):
         if isinstance(key, tuple) and len(key) == 2:
             tenant_name, uid = key
             if uid == user_id:
-                result.append((tenant_name, tenant_info["vm"], tenant_info["bucket"]))
+                container_name = tenant_info.get("container") or tenant_container_name(tenant_name, uid)
+                result.append((tenant_name, tenant_info["vm"], tenant_info["bucket"], container_name))
         else:
             print(f"[!] Unexpected key in TENANT_REGISTRY: {key}")
     return result
 
+
 def remove_all_user_tenants(user_id):
     """Delete all tenants for a user."""
-    tenants = show_user_tenants(user_id)  # returns list of (tenant_name, vm_name, bucket)
-    for tenant_name, _, _ in tenants:     # unpack 3 values
+    tenants = show_user_tenants(user_id)  # returns list of (tenant_name, vm_name, bucket, container)
+    removed = 0
+    for tenant_name, _, _, _ in tenants:
         remove_tenant(tenant_name, user_id)
-    return {"user_id": user_id, "removed": len(tenants)}
+        removed += 1
+    return {"user_id": user_id, "removed": removed}
+
+
+def open_tenant_terminal(tenant_name, user_id):
+    """
+    Open an interactive shell inside the tenant's container.
+    Falls back to root if the tenant user does not exist.
+    Returns a docker socket object for interaction.
+    """
+    container_name = tenant_container_name(tenant_name, user_id)
+    username = container_name
+    home_dir = f"/home/{container_name}"
+
+    try:
+        container = get_tenant_container(tenant_name, user_id)
+        container.reload()
+        if container.status != "running":
+            container.start()
+            time.sleep(5)  # wait a bit for the container to be fully up"
+    except docker.errors.NotFound:
+        return f"[!] Tenant container '{container_name}' not found."
+
+    # Verify tenant user exists
+    try:
+        res = container.exec_run(f"id -u {username}", user="root")
+        if res.exit_code != 0:
+            print(f"[!] User '{username}' not found in container. Falling back to root.")
+            username = "root"
+            home_dir = "/root"
+    except Exception:
+        username = "root"
+        home_dir = "/root"
+
+    cmd = f"bash -c 'if [ -f {home_dir}/.bashrc ]; then source {home_dir}/.bashrc; fi; exec bash'"
+
+    # Retry exec_create + exec_start in case of transient 404 (common on Windows Docker)
+    # Retry exec_create + exec_start to avoid transient 404 errors
+    for attempt in range(3):
+        try:
+            exec_id = client.api.exec_create(
+                container.id,
+                cmd,
+                tty=True,
+                stdin=True,
+                stdout=True,
+                stderr=True,
+                workdir=home_dir,
+                user=username,
+            )["Id"]
+            sock = client.api.exec_start(exec_id, tty=True, socket=True)
+            break
+        except docker.errors.NotFound:
+            time.sleep(0.2)
+    else:
+        return f"[!] Failed to start tenant shell for container '{container_name}'."
+
+    return sock

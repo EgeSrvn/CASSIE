@@ -1,16 +1,19 @@
 import docker
 import time
 import psycopg2
+from psycopg2 import OperationalError
 
 def ensure_postgres_container():
-    """Ensure the PostgreSQL container is running or create it."""
+    """Ensure the PostgreSQL container is running or create it, and wait until it's accepting connections."""
     client = docker.from_env()
     container_name = "postgres-db"
+    started = False
     try:
         container = client.containers.get(container_name)
         if container.status != "running":
             print("[*] Starting existing PostgreSQL container...")
             container.start()
+            started = True
         else:
             print("[*] PostgreSQL container already running.")
     except docker.errors.NotFound:
@@ -28,18 +31,53 @@ def ensure_postgres_container():
             volumes={"postgres_data": {"bind": "/var/lib/postgresql/data", "mode": "rw"}}
         )
         print("[+] PostgreSQL container started.")
-        time.sleep(6)  # Give it a few seconds to initialize
+        started = True
+
+    # Wait until Postgres accepts connections (timeout 60s)
+    deadline = time.time() + 60
+    while time.time() < deadline:
+        try:
+            conn = psycopg2.connect(
+                host="localhost",
+                port=5432,
+                user="admin",
+                password="admin",
+                dbname="cloud_system",
+                connect_timeout=3
+            )
+            conn.close()
+            # ready
+            return
+        except OperationalError:
+            time.sleep(1)
+            continue
+
+    # If we reach here, Postgres never became ready
+    raise RuntimeError("PostgreSQL did not become ready within timeout. Check container logs.")
 
 def get_connection():
-    """Return a PostgreSQL connection."""
+    """Return a PostgreSQL connection (ensures Postgres container is running and ready)."""
+    # Ensure container exists & is running and ready to accept connections
     ensure_postgres_container()
-    return psycopg2.connect(
-        host="localhost",
-        port=5432,
-        user="admin",
-        password="admin",
-        dbname="cloud_system"
-    )
+
+    # Try to connect, raise if still failing after retries
+    deadline = time.time() + 30
+    last_exc = None
+    while time.time() < deadline:
+        try:
+            return psycopg2.connect(
+                host="localhost",
+                port=5432,
+                user="admin",
+                password="admin",
+                dbname="cloud_system",
+                connect_timeout=5
+            )
+        except OperationalError as e:
+            last_exc = e
+            time.sleep(1)
+
+    raise RuntimeError(f"Unable to connect to PostgreSQL: {last_exc}")
 
 def initialize_database():
     """Initialize or migrate database schema for multi-tenant user system."""
