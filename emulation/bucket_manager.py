@@ -9,7 +9,13 @@ from tkinter import filedialog
 # 🔹 Ensure MinIO container is running (AWS-compatible local S3)
 # -------------------------------------------------------------------
 def ensure_minio_container():
-    """Ensure a MinIO Docker container is running locally."""
+    """
+    Ensure a MinIO Docker container is running locally.
+
+    If the container is not running, it will start an existing container
+    or create and start a new one. The container is configured to run
+    MinIO with default credentials and ports.
+    """
     client = docker.from_env()
     container_name = "minio"
     try:
@@ -42,7 +48,12 @@ def ensure_minio_container():
 # 🔹 Initialize S3 client
 # -------------------------------------------------------------------
 def init_s3_client():
-    """Initialize and return an S3 client (MinIO-compatible)."""
+    """
+    Initialize and return an S3 client compatible with MinIO.
+
+    Returns:
+        boto3.client: A configured S3 client for interacting with MinIO.
+    """
     ensure_minio_container()
     return boto3.client(
         's3',
@@ -53,7 +64,16 @@ def init_s3_client():
 
 
 def create_user_bucket(username, s3=None):
-    """Create a unique bucket for a user."""
+    """
+    Create a unique S3 bucket for a user.
+
+    Args:
+        username (str): The username for whom the bucket is created.
+        s3 (boto3.client, optional): An existing S3 client. Defaults to None.
+
+    Returns:
+        str: The name of the created or existing bucket.
+    """
     s3 = s3 or init_s3_client()
     bucket_name = f"user-{username.lower()}-bucket"
     existing = s3.list_buckets().get("Buckets", [])
@@ -67,7 +87,13 @@ def create_user_bucket(username, s3=None):
 
 
 def delete_user_bucket(username, s3=None):
-    """Delete the user's bucket and its contents."""
+    """
+    Delete a user's S3 bucket and its contents.
+
+    Args:
+        username (str): The username whose bucket is to be deleted.
+        s3 (boto3.client, optional): An existing S3 client. Defaults to None.
+    """
     s3 = s3 or init_s3_client()
     bucket_name = f"user-{username.lower()}-bucket"
     try:
@@ -82,7 +108,12 @@ def delete_user_bucket(username, s3=None):
 
 
 def delete_all_buckets(s3=None):
-    """Delete all buckets (admin only)."""
+    """
+    Delete all S3 buckets (admin-only operation).
+
+    Args:
+        s3 (boto3.client, optional): An existing S3 client. Defaults to None.
+    """
     s3 = s3 or init_s3_client()
     response = s3.list_buckets()
     for bucket in response.get("Buckets", []):
@@ -91,7 +122,13 @@ def delete_all_buckets(s3=None):
 
 
 def delete_bucket(bucket_name, s3=None):
-    """Delete any specific bucket."""
+    """
+    Delete a specific S3 bucket and its contents.
+
+    Args:
+        bucket_name (str): The name of the bucket to delete.
+        s3 (boto3.client, optional): An existing S3 client. Defaults to None.
+    """
     s3 = s3 or init_s3_client()
     try:
         objects = s3.list_objects_v2(Bucket=bucket_name)
@@ -108,14 +145,26 @@ def delete_bucket(bucket_name, s3=None):
 # 🔹 File Operations (Upload, List, etc.)
 # -------------------------------------------------------------------
 def open_file_selector():
-    """Open a file selector dialog and return the selected file path."""
+    """
+    Open a file selector dialog and return the selected file path.
+
+    Returns:
+        str: The path of the selected file.
+    """
     root = tk.Tk()
     root.withdraw()
     return filedialog.askopenfilename()
 
 
 def upload_file(username, file_path, s3=None):
-    """Upload a file to the user's bucket."""
+    """
+    Upload a file to a user's S3 bucket.
+
+    Args:
+        username (str): The username whose bucket the file will be uploaded to.
+        file_path (str): The local path of the file to upload.
+        s3 (boto3.client, optional): An existing S3 client. Defaults to None.
+    """
     s3 = s3 or init_s3_client()
     bucket_name = f"user-{username.lower()}-bucket"
     if not os.path.isfile(file_path):
@@ -127,7 +176,13 @@ def upload_file(username, file_path, s3=None):
 
 
 def list_user_bucket(username, s3=None):
-    """List all files in a user's bucket."""
+    """
+    List all files in a user's S3 bucket.
+
+    Args:
+        username (str): The username whose bucket contents will be listed.
+        s3 (boto3.client, optional): An existing S3 client. Defaults to None.
+    """
     s3 = s3 or init_s3_client()
     bucket_name = f"user-{username.lower()}-bucket"
     try:

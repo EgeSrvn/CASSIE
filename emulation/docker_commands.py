@@ -23,7 +23,17 @@ client = docker.from_env()
 # 🔹 Helpers for resource division
 # -------------------------------------------------------------------
 def _parse_memory(mem_str):
-    """Parse memory string like '4g' or '512m' -> bytes (int)."""
+    """Parse a Docker-style memory string into bytes.
+
+    Supports suffixes 'g' and 'm' (case-insensitive). If no suffix is
+    present the value is interpreted as bytes.
+
+    Args:
+        mem_str (str): Memory string like '4g', '512m' or raw bytes.
+
+    Returns:
+        int: Memory size in bytes.
+    """
     s = mem_str.strip().lower()
     if s.endswith("g"):
         return int(float(s[:-1]) * 1024 ** 3)
@@ -32,19 +42,42 @@ def _parse_memory(mem_str):
     # assume bytes
     return int(s)
 
+
 def _format_memory(bytes_val):
-    """Format bytes into simplest 'Ng' or 'Nm' string for docker mem_limit."""
+    """Format a byte count to a compact memory string used by Docker.
+
+    Chooses 'Ng' if evenly divisible by a gigabyte, otherwise returns
+    an integer number of megabytes with 'm' suffix. Ensures at least
+    '1m' is returned.
+
+    Args:
+        bytes_val (int): Memory size in bytes.
+
+    Returns:
+        str: Memory string like '4g' or '512m'.
+    """
     gb = bytes_val // (1024 ** 3)
     if gb >= 1 and bytes_val % (1024 ** 3) == 0:
         return f"{gb}g"
     mb = bytes_val // (1024 ** 2)
     return f"{max(1, mb)}m"
 
+
 def divide_resources_for_tenant(vm_name):
-    """
-    Simple division of a VM's resources among tenants assigned to it.
-    Looks at tenant_map (persistent) to count tenants and divides CPU and memory evenly.
-    Returns (nano_cpus, mem_limit_string).
+    """Divide a VM's CPU and memory resources among tenants assigned to it.
+
+    Reads the persistent tenant map to determine how many tenants are
+    already assigned to the given vm_name and conservatively assumes one
+    additional tenant (count+1) when computing per-tenant allocations.
+
+    CPU is returned as Docker's nano_cpus integer. Memory is returned as
+    a Docker mem_limit string.
+
+    Args:
+        vm_name (str): Name of the VM to divide resources for.
+
+    Returns:
+        tuple: (nano_cpus: int, mem_limit_str: str)
     """
     tenant_map = load_tenant_map()
     count = sum(1 for v in tenant_map.values() if v == vm_name)
@@ -66,7 +99,14 @@ def divide_resources_for_tenant(vm_name):
 # 🔹 Network Management
 # -------------------------------------------------------------------
 def ensure_network():
-    """Create the Docker network if it doesn't exist."""
+    """Ensure the Docker network for VMs exists, creating it if necessary.
+
+    Uses the global NETWORK_NAME and the docker client configured at module import.
+    Prints progress to stdout.
+
+    Returns:
+        None
+    """
     existing_networks = [net.name for net in client.networks.list()]
     if NETWORK_NAME not in existing_networks:
         print(f"[+] Creating network '{NETWORK_NAME}'...")
@@ -74,13 +114,29 @@ def ensure_network():
     else:
         print(f"[*] Network '{NETWORK_NAME}' already exists.")
 
+
 # -------------------------------------------------------------------
 # 🔹 Provisioning Logic
 # -------------------------------------------------------------------
 def provision_vm(container, name, command_file="provisioning_commands.txt"):
-    """
-    Executes provisioning commands from a text file inside the container.
-    Does NOT create marker files; can run every time.
+    """Run provisioning commands inside a container from a text file.
+
+    The function will start the container temporarily if it is not running,
+    write the contents of command_file into a script under /tmp inside the
+    container, make it executable and execute it as root. The container is
+    stopped again if it was not running originally.
+
+    Args:
+        container (docker.models.containers.Container): Container object.
+        name (str): Logical name used for temporary filenames and logging.
+        command_file (str): Path to a local file containing shell commands.
+
+    Returns:
+        None
+
+    Notes:
+        - Any output and non-zero exit codes are printed to stdout.
+        - If command_file does not exist the function returns early.
     """
     if not os.path.exists(command_file):
         print(f"[!] Provisioning file '{command_file}' not found.")
@@ -124,7 +180,16 @@ def provision_vm(container, name, command_file="provisioning_commands.txt"):
 # 🔹 VM Management
 # -------------------------------------------------------------------
 def ensure_vms():
-    """Ensure all VM containers exist and are provisioned."""
+    """Ensure all configured VM containers exist and are provisioned.
+
+    For each name in VM_NAMES this will:
+      - create the Docker network if missing,
+      - create the container if it does not exist (with configured resources),
+      - run provisioning inside each container.
+
+    Returns:
+        None
+    """
     ensure_network()
 
     for name in VM_NAMES:
@@ -153,7 +218,14 @@ def ensure_vms():
 
 
 def start_vm(vm_name):
-    """Start one specific VM container."""
+    """Start a single VM container if it is not already running.
+
+    Args:
+        vm_name (str): Name of the VM container.
+
+    Returns:
+        None
+    """
     try:
         container = client.containers.get(vm_name)
         if container.status != "running":
@@ -166,7 +238,14 @@ def start_vm(vm_name):
 
 
 def stop_vm(vm_name):
-    """Stop one specific VM container."""
+    """Stop a single VM container if it is running.
+
+    Args:
+        vm_name (str): Name of the VM container.
+
+    Returns:
+        None
+    """
     try:
         container = client.containers.get(vm_name)
         if container.status == "running":
@@ -178,24 +257,15 @@ def stop_vm(vm_name):
         print(f"[!] Container '{vm_name}' not found.")
 
 
-def execute_in_vm(vm_name, command):
-    """Execute a command inside a specific VM container."""
-    try:
-        container = client.containers.get(vm_name)
-        if container.status != "running":
-            print(f"[*] Container '{vm_name}' not running. Starting it now...")
-            container.start()
-            time.sleep(2)
-
-        print(f"[>] Executing in '{vm_name}': {command}")
-        exec_result = container.exec_run(["/bin/sh", "-lc", command])
-        print(exec_result.output.decode(errors="replace"))
-    except docker.errors.NotFound:
-        print(f"[!] Container '{vm_name}' not found.")
-
-
 def list_vms():
-    """List all containers managed by this system."""
+    """Print the status of all configured VM containers to stdout.
+
+    Uses VM_NAMES to determine which containers to check. Missing containers
+    are reported as '[NOT FOUND]'.
+
+    Returns:
+        None
+    """
     print("\n=== Containers ===")
     for name in VM_NAMES:
         try:
@@ -207,33 +277,80 @@ def list_vms():
 
 
 def start_all():
-    """Start all VM containers."""
+    """Start all configured VM containers.
+
+    Iterates VM_NAMES and calls start_vm on each entry.
+
+    Returns:
+        None
+    """
     for name in VM_NAMES:
         start_vm(name)
 
 
 def stop_all():
-    """Stop all VM containers."""
+    """Stop all configured VM containers.
+
+    Iterates VM_NAMES and calls stop_vm on each entry.
+
+    Returns:
+        None
+    """
     for name in VM_NAMES:
         stop_vm(name)
 
 
 def get_vm_status(vm_name):
-    """Return the status of a specific VM (running/stopped/not found)."""
+    """Return the status of a specific VM container.
+
+    Args:
+        vm_name (str): Name of the VM container.
+
+    Returns:
+        str: Container status string (e.g. 'running', 'exited') or 'not_found'.
+    """
     try:
         container = client.containers.get(vm_name)
         return container.status
     except docker.errors.NotFound:
         return "not_found"
 
+
 def tenant_container_name(tenant_name, user_id):
+    """Construct the canonical tenant container name.
+
+    If user_id is provided the name includes it to allow duplicate tenant
+    names across different users.
+
+    Args:
+        tenant_name (str): Logical tenant name.
+        user_id (Optional[str|int]): Optional user identifier.
+
+    Returns:
+        str: Container name like 'tenant_<name>_<user_id>' or 'tenant_<name>'.
+    """
     return f"tenant_{tenant_name}_{user_id}" if user_id is not None else f"tenant_{tenant_name}"
 
+
 def create_tenant_container(vm_name, tenant_name, user_id=None, cpu_quota=None, mem_limit=None):
-    """
-    Create a Docker container per tenant inside a VM container.
-    Fully isolated: CPU/memory limits, home directory.
-    Inherits Python/pip and all packages from the VM.
+    """Create a tenant container derived from a VM container image.
+
+    This function:
+      - ensures a persistent host directory for the tenant home,
+      - computes resource defaults if not provided,
+      - commits the VM container as a base image (if necessary),
+      - runs a new container from that base image with the requested limits,
+      - shares the VM network by using network_mode 'container:<vm>'.
+
+    Args:
+        vm_name (str): VM container name to derive the image from.
+        tenant_name (str): Logical tenant name.
+        user_id (Optional[str|int]): Optional user identifier to isolate names.
+        cpu_quota (Optional[int]): nano_cpus integer for Docker (overrides computed).
+        mem_limit (Optional[str]): mem_limit string for Docker (overrides computed).
+
+    Returns:
+        docker.models.containers.Container: The newly created (or existing) tenant container.
     """
     suffix = f"_{user_id}" if user_id is not None else ""
     container_name = f"tenant_{tenant_name}{suffix}"
@@ -288,10 +405,23 @@ def create_tenant_container(vm_name, tenant_name, user_id=None, cpu_quota=None, 
 
     return cont
 
+
 def create_tenant_user(vm_name, tenant_name, user_id=None, cpu_quota=None, mem_limit=None):
-    """
-    Create (or ensure) a tenant container attached to the given VM and create the tenant OS user
-    inside that tenant container. Returns the container object.
+    """Ensure a tenant container exists and create an OS user inside it.
+
+    This will create the tenant container (if needed), start it if not
+    running, then create a Linux user with the same name as the tenant
+    container and set ownership of the home directory.
+
+    Args:
+        vm_name (str): VM to derive the tenant from.
+        tenant_name (str): Tenant name.
+        user_id (Optional[str|int]): Optional user id to disambiguate names.
+        cpu_quota (Optional[int]): Optional nano_cpus for container creation.
+        mem_limit (Optional[str]): Optional mem_limit for container creation.
+
+    Returns:
+        docker.models.containers.Container: The tenant container object.
     """
     cont = create_tenant_container(vm_name, tenant_name, user_id, cpu_quota=cpu_quota, mem_limit=mem_limit)
     container_name = tenant_container_name(tenant_name, user_id)
@@ -328,13 +458,36 @@ def create_tenant_user(vm_name, tenant_name, user_id=None, cpu_quota=None, mem_l
 # 🔹 Tenant helpers (container lifecycle)
 # -------------------------------------------------------------------
 def get_tenant_container(tenant_name, user_id=None):
-    """Return container object for tenant or raise docker.errors.NotFound."""
+    """Return the Docker container object for a tenant by name.
+
+    Args:
+        tenant_name (str): Tenant's logical name.
+        user_id (Optional[str|int]): Optional user scope.
+
+    Returns:
+        docker.models.containers.Container: The container object.
+
+    Raises:
+        docker.errors.NotFound: If the tenant container does not exist.
+    """
     suffix = f"_{user_id}" if user_id is not None else ""
     container_name = f"tenant_{tenant_name}{suffix}"
     return client.containers.get(container_name)
 
+
 def remove_tenant_container(tenant_name, user_id=None, force=True):
-    """Remove a tenant container by name (best-effort)."""
+    """Remove (delete) a tenant container if it exists.
+
+    Performs a best-effort removal and prints status.
+
+    Args:
+        tenant_name (str): Tenant name.
+        user_id (Optional[str|int]): Optional user id to disambiguate.
+        force (bool): If True, force removal of running containers.
+
+    Returns:
+        bool: True if removal was attempted and succeeded, False otherwise.
+    """
     try:
         cont = get_tenant_container(tenant_name, user_id)
         cont.remove(force=force)
@@ -351,6 +504,13 @@ def remove_tenant_container(tenant_name, user_id=None, force=True):
 # 🔹 Tenant to VM Assignment
 # -------------------------------------------------------------------
 def load_tenant_map():
+    """Load the persistent tenant->VM mapping from disk.
+
+    Returns an empty dict if the mapping file does not exist.
+
+    Returns:
+        dict: Mapping of tenant keys to VM names.
+    """
     if not os.path.exists(TENANT_MAP_FILE):
         return {}
     with open(TENANT_MAP_FILE, "r") as f:
@@ -358,23 +518,52 @@ def load_tenant_map():
 
 
 def save_tenant_map(data):
+    """Save the tenant->VM mapping to disk.
+
+    Ensures the parent directory exists and writes JSON with indentation.
+
+    Args:
+        data (dict): Mapping of tenant keys to VM names.
+
+    Returns:
+        None
+    """
     os.makedirs(os.path.dirname(TENANT_MAP_FILE), exist_ok=True)
     with open(TENANT_MAP_FILE, "w") as f:
         json.dump(data, f, indent=2)
 
 
 def _tenant_map_key(tenant_name, user_id):
-    """Create a stable key for tenant->vm mapping that allows duplicate tenant names across users."""
+    """Create a stable key for tenant map storage that includes user scope.
+
+    When user_id is None the key is simply tenant_name; otherwise it uses
+    'tenant_name|user_id' to avoid collisions between users.
+
+    Args:
+        tenant_name (str): Tenant name.
+        user_id (Optional[str|int]): Optional user identifier.
+
+    Returns:
+        str: Stable dictionary key for tenant mapping.
+    """
     if user_id is None:
         return tenant_name
     return f"{tenant_name}|{user_id}"
 
 
 def assign_tenant_to_vm(tenant_name, user_id=None):
-    """Assign a tenant (optionally scoped to a specific user) to one of the VMs.
+    """Assign a tenant to one of the configured VMs and persist the assignment.
 
-    When user_id is provided the mapping key is tenant_name|user_id so multiple users can
-    have the same tenant_name without colliding.
+    If the tenant (or tenant+user scope) already has an assignment that is
+    returned. Otherwise a simple least-used selection across vm1, vm2, vm3
+    is performed and the mapping is saved.
+
+    Args:
+        tenant_name (str): Logical tenant name.
+        user_id (Optional[str|int]): Optional user identifier to disambiguate.
+
+    Returns:
+        str: Chosen VM name for the tenant.
     """
     vms = ["vm1", "vm2", "vm3"]
     tenant_map = load_tenant_map()

@@ -28,6 +28,17 @@ TENANT_LOCK = threading.Lock()
 # DB helpers
 # --------------------------
 def _get_user_row(user_id):
+    """Retrieve a user's row from the database.
+
+    Args:
+        user_id (int): Database user id.
+
+    Returns:
+        tuple|None: (username, bucket_name) if the user exists, otherwise None.
+
+    Notes:
+        Closes the DB connection before returning.
+    """
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("SELECT username, bucket_name FROM users WHERE id = %s;", (user_id,))
@@ -41,7 +52,13 @@ def _get_user_row(user_id):
 # Tenant / bucket functions
 # --------------------------
 def find_available_vm():
-    """Return first VM with available capacity (no locking)."""
+    """Return the first VM that currently has free capacity.
+
+    This is a best-effort check and does not acquire any locks.
+
+    Returns:
+        str|None: VM name with available capacity, or None if none available.
+    """
     for vm, cap in VM_CAPACITY.items():
         if VM_LOAD.get(vm, 0) < cap:
             return vm
@@ -49,6 +66,16 @@ def find_available_vm():
 
 
 def add_tenant_to_db(tenant_name, vm_name, user_id):
+    """Insert a tenant record into the tenants database table.
+
+    Args:
+        tenant_name (str): Logical tenant name.
+        vm_name (str): Assigned VM name.
+        user_id (int): Owner user's id.
+
+    Returns:
+        None
+    """
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
@@ -61,9 +88,19 @@ def add_tenant_to_db(tenant_name, vm_name, user_id):
 
 
 def ensure_user_bucket(user_id):
-    """
-    Ensure user has a bucket. Returns bucket_name.
-    If user's bucket_name is not set in DB, create it and update DB.
+    """Ensure a user has an S3 bucket and return its name.
+
+    If the user's bucket is not recorded in the DB this will create a new
+    bucket via bucket_manager.create_user_bucket and update the DB.
+
+    Args:
+        user_id (int): Database user id.
+
+    Returns:
+        str: Bucket name for the user.
+
+    Raises:
+        RuntimeError: If the user_id is not found in the database.
     """
     s3 = init_s3_client()
     row = _get_user_row(user_id)
@@ -86,14 +123,40 @@ def ensure_user_bucket(user_id):
 
 # helper: stable container name for a tenant
 def tenant_container_name(tenant_name, user_id):
+    """Return the canonical tenant container name.
+
+    Args:
+        tenant_name (str): Tenant logical name.
+        user_id (int|None): Optional user id to scope the tenant.
+
+    Returns:
+        str: Container name in form 'tenant_<name>_<user_id>' or 'tenant_<name>'.
+    """
     return f"tenant_{tenant_name}_{user_id}" if user_id is not None else f"tenant_{tenant_name}"
 
 
 def add_tenant(tenant_name, vm_name=None, user_id=None):
-    """
-    Add a tenant for a specific user, create their bucket, assign a VM and create tenant container.
-    Uses docker_commands.assign_tenant_to_vm to persist assignment and divide_resources_for_tenant
-    to obtain per-tenant resource hints.
+    """Create a tenant for a user: bucket, container and DB entry.
+
+    Workflow:
+      - verify tenant does not already exist for the user,
+      - assign or use provided VM (persisted via assign_tenant_to_vm),
+      - ensure capacity on the VM,
+      - create or ensure user's S3 bucket,
+      - compute per-tenant resource hints,
+      - create tenant container and OS user,
+      - update runtime registry and DB.
+
+    Args:
+        tenant_name (str): Logical tenant name.
+        vm_name (str|None): Optional preferred VM name.
+        user_id (int): Owner user's id.
+
+    Returns:
+        None
+
+    Notes:
+        Best-effort: failures in container creation do not roll back bucket or DB changes.
     """
     s3 = init_s3_client()
 
@@ -158,8 +221,20 @@ def add_tenant(tenant_name, vm_name=None, user_id=None):
 
 
 def remove_tenant(tenant_name, user_id):
-    """
-    Remove a tenant for a specific user: delete bucket, DB entry and tenant container.
+    """Remove a tenant: container, bucket, runtime registry and DB entry.
+
+    Performs best-effort cleanup:
+      - attempts to remove the tenant container via helper or directly,
+      - deletes the user's bucket,
+      - decrements VM load and removes runtime registry entry,
+      - deletes the tenant row from the DB.
+
+    Args:
+        tenant_name (str): Tenant logical name.
+        user_id (int): Owner user's id.
+
+    Returns:
+        None
     """
     s3 = init_s3_client()
     key = (tenant_name, user_id)
@@ -203,7 +278,15 @@ def remove_tenant(tenant_name, user_id):
 
 
 def remove_tenant_from_db(tenant_name, user_id):
-    """Remove a tenant entry for a specific user from the database."""
+    """Delete a tenant row from the database for a given user.
+
+    Args:
+        tenant_name (str): Tenant logical name.
+        user_id (int): Owner user's id.
+
+    Returns:
+        None
+    """
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
@@ -217,9 +300,16 @@ def remove_tenant_from_db(tenant_name, user_id):
 
 
 def show_user_tenants(user_id):
-    """
-    Return a list of tenants for the given user from runtime.
-    Each item is a tuple: (tenant_name, vm_name, bucket_name, container_name)
+    """Return runtime tenant list for a user.
+
+    Iterates the in-memory TENANT_REGISTRY and returns entries for the
+    specified user.
+
+    Args:
+        user_id (int): Owner user's id.
+
+    Returns:
+        list of tuple: Each item is (tenant_name, vm_name, bucket_name, container_name).
     """
     result = []
     for key, tenant_info in TENANT_REGISTRY.items():
@@ -235,7 +325,16 @@ def show_user_tenants(user_id):
 
 
 def remove_all_user_tenants(user_id):
-    """Delete all tenants for a user."""
+    """Remove all tenants for a given user.
+
+    Calls remove_tenant for each tenant found via show_user_tenants.
+
+    Args:
+        user_id (int): Owner user's id.
+
+    Returns:
+        dict: Summary with keys 'user_id' and 'removed' count.
+    """
     tenants = show_user_tenants(user_id)  # returns list of (tenant_name, vm_name, bucket, container)
     removed = 0
     for tenant_name, _, _, _ in tenants:
@@ -245,10 +344,19 @@ def remove_all_user_tenants(user_id):
 
 
 def open_tenant_terminal(tenant_name, user_id):
-    """
-    Open an interactive shell inside the tenant's container.
-    Falls back to root if the tenant user does not exist.
-    Returns a docker socket object for interaction.
+    """Open an interactive shell inside a tenant container and return a socket.
+
+    Attempts to start the tenant container if needed, verifies the tenant OS
+    user exists and falls back to root if not. Uses the docker API to create
+    and start an exec instance and returns the socket for interactive use.
+
+    Args:
+        tenant_name (str): Tenant logical name.
+        user_id (int): Owner user's id.
+
+    Returns:
+        socket|str: A docker socket-like object for the exec session on success,
+                    or an error message string on failure.
     """
     container_name = tenant_container_name(tenant_name, user_id)
     username = container_name

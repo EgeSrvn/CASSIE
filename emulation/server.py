@@ -9,7 +9,6 @@ from tenant_commands import (
     remove_all_user_tenants,
     open_tenant_terminal,
     TENANT_REGISTRY,
-    VM_CAPACITY,
     VM_LOAD,
 )
 from db_manager import get_connection, initialize_database
@@ -28,7 +27,14 @@ TENANT_LOCK = threading.Lock()
 
 
 def migrate_tenants_from_db():
-    """Load existing tenants from DB into runtime TENANT_REGISTRY."""
+    """
+    Load existing tenants from the database into the runtime TENANT_REGISTRY.
+
+    This function retrieves tenant information from the database and populates
+    the TENANT_REGISTRY dictionary with tenant details, including the assigned
+    VM and bucket name. It also updates the VM_LOAD dictionary to reflect the
+    current load on each VM.
+    """
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("SELECT name, vm_name, user_id FROM tenants;")
@@ -50,7 +56,20 @@ migrate_tenants_from_db()
 
 
 def handle_client(conn, addr):
-    """Handle individual client connection."""
+    """
+    Handle an individual client connection.
+
+    This function manages the interaction with a connected client, including:
+    - Authenticating the user by username.
+    - Displaying a menu for tenant management operations.
+    - Handling user input to perform operations such as adding, removing, or
+      listing tenants, and opening a terminal for a tenant.
+
+    Args:
+        conn (socket.socket): The socket connection to the client.
+        addr (tuple): The address of the connected client.
+    """
+
     conn.sendall(b"Welcome to Cloud Emulator!\nEnter username: ")
     username = conn.recv(1024).decode().strip()
     if not username:
@@ -268,7 +287,13 @@ def handle_client(conn, addr):
 
 
 def start_server():
-    """Start the TCP server."""
+    """
+    Start the TCP server to handle client connections.
+
+    This function initializes a socket server that listens for incoming
+    connections on the specified HOST and PORT. For each connection, it spawns
+    a new thread to handle the client using the `handle_client` function.
+    """
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind((HOST, PORT))
         s.listen()

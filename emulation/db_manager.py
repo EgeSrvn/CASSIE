@@ -4,7 +4,21 @@ import psycopg2
 from psycopg2 import OperationalError
 
 def ensure_postgres_container():
-    """Ensure the PostgreSQL container is running or create it, and wait until it's accepting connections."""
+    """Ensure a PostgreSQL Docker container exists, is running, and accepts connections.
+
+    Behavior:
+      - If a container named "postgres-db" exists but is stopped, it will be started.
+      - If it does not exist, a new postgres:15 container is created with a persistent
+        volume and standard credentials (admin/admin) and published on host port 5432.
+      - After the container is running, this function waits (up to 60 seconds) for
+        the database service to accept TCP connections.
+
+    Returns:
+        None
+
+    Raises:
+        RuntimeError: If PostgreSQL does not become available within the 60 second timeout.
+    """
     client = docker.from_env()
     container_name = "postgres-db"
     started = False
@@ -56,7 +70,18 @@ def ensure_postgres_container():
     raise RuntimeError("PostgreSQL did not become ready within timeout. Check container logs.")
 
 def get_connection():
-    """Return a PostgreSQL connection (ensures Postgres container is running and ready)."""
+    """Obtain a psycopg2 connection to the local PostgreSQL instance.
+
+    This function ensures the PostgreSQL Docker container is present and ready
+    (via ensure_postgres_container) and then attempts to open a database
+    connection. It will retry until a 30 second deadline before failing.
+
+    Returns:
+        psycopg2.connection: An open database connection to the 'cloud_system' DB.
+
+    Raises:
+        RuntimeError: If a connection could not be established within the retry period.
+    """
     # Ensure container exists & is running and ready to accept connections
     ensure_postgres_container()
 
@@ -80,7 +105,22 @@ def get_connection():
     raise RuntimeError(f"Unable to connect to PostgreSQL: {last_exc}")
 
 def initialize_database():
-    """Initialize or migrate database schema for multi-tenant user system."""
+    """Create or migrate the minimal schema required by the system.
+
+    Ensures the following tables exist (idempotent):
+      - users: stores user accounts and associated S3 bucket names
+      - vms: declarative VM records with capacity and current load
+      - tenants: tenant records linking a tenant name to a VM and a user
+
+    The function opens a DB connection via get_connection(), executes the
+    DDL statements and commits the transaction.
+
+    Returns:
+        None
+
+    Raises:
+        psycopg2.Error: Propagates DB errors from executing DDL statements.
+    """
     conn = get_connection()
     cur = conn.cursor()
 

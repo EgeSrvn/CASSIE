@@ -7,7 +7,19 @@ PORT = 5000         # Server port
 
 
 def receive_until_prompt(sock):
-    """Receive data until the server sends a menu/prompt (ends with ': ' or '\n')."""
+    """
+    Receive data from the server until a prompt or full message is received.
+
+    This function reads data from the socket in chunks until it detects
+    the end of a message, which is determined by the data ending with
+    ': ' or '\n'. The received data is then decoded and returned.
+
+    Args:
+        sock (socket.socket): The socket object to receive data from.
+
+    Returns:
+        str: The decoded data received from the server.
+    """
     data = b""
     while True:
         chunk = sock.recv(1024)
@@ -21,6 +33,16 @@ def receive_until_prompt(sock):
 
 
 def main():
+    """
+    Main function to handle the client-side logic for interacting with the server.
+
+    This function establishes a connection to the server, handles the login phase,
+    and provides a menu-driven interface for the user to interact with the server.
+    The user can perform various actions such as adding/removing tenants, viewing
+    tenants, and entering an interactive tenant terminal.
+
+    The function runs until the user chooses to exit the client.
+    """
     print(f"[*] Connecting to server {HOST}:{PORT}...")
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.connect((HOST, PORT))
@@ -82,6 +104,13 @@ def main():
                 stop_event = threading.Event()
 
                 def reader():
+                    """
+                    Thread function to continuously read and print data from the server.
+
+                    This function runs in a separate thread and reads data from the
+                    server socket, printing it to the standard output. It stops when
+                    the `stop_event` is set or the server closes the connection.
+                    """
                     try:
                         while not stop_event.is_set():
                             data = sock.recv(4096)
