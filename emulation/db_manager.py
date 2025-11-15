@@ -129,7 +129,7 @@ def initialize_database():
         CREATE TABLE IF NOT EXISTS users (
             id SERIAL PRIMARY KEY,
             username VARCHAR(50) UNIQUE NOT NULL,
-            bucket_name VARCHAR(100) UNIQUE,
+            bucket_name VARCHAR(100),
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
     """)

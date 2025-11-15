@@ -4,6 +4,30 @@ import os
 import time
 import tkinter as tk
 from tkinter import filedialog
+# -------------------------------------------------------------------
+# 🔹 Global shared bucket
+# -------------------------------------------------------------------
+GLOBAL_BUCKET_NAME = "cassie-bucket"  # <- pick any name you like
+
+
+def ensure_global_bucket(s3=None):
+    """
+    Ensure that the single shared S3 bucket exists and return its name.
+
+    Args:
+        s3 (boto3.client, optional): Existing S3 client. Defaults to None.
+
+    Returns:
+        str: Name of the shared bucket.
+    """
+    s3 = s3 or init_s3_client()
+    existing = s3.list_buckets().get("Buckets", [])
+    if any(b["Name"] == GLOBAL_BUCKET_NAME for b in existing):
+        return GLOBAL_BUCKET_NAME
+
+    s3.create_bucket(Bucket=GLOBAL_BUCKET_NAME)
+    print(f"[+] Created global bucket '{GLOBAL_BUCKET_NAME}'.")
+    return GLOBAL_BUCKET_NAME
 
 # -------------------------------------------------------------------
 # 🔹 Ensure MinIO container is running (AWS-compatible local S3)
@@ -65,46 +89,25 @@ def init_s3_client():
 
 def create_user_bucket(username, s3=None):
     """
-    Create a unique S3 bucket for a user.
+    Return the single shared S3 bucket used by all users.
 
-    Args:
-        username (str): The username for whom the bucket is created.
-        s3 (boto3.client, optional): An existing S3 client. Defaults to None.
-
-    Returns:
-        str: The name of the created or existing bucket.
+    The username argument is kept for backward compatibility but is
+    ignored in the current design.
     """
     s3 = s3 or init_s3_client()
-    bucket_name = f"user-{username.lower()}-bucket"
-    existing = s3.list_buckets().get("Buckets", [])
-    if any(b["Name"] == bucket_name for b in existing):
-        print(f"[*] Bucket '{bucket_name}' already exists for user '{username}'.")
-        return bucket_name
-
-    s3.create_bucket(Bucket=bucket_name)
-    print(f"[+] Created bucket '{bucket_name}' for user '{username}'.")
-    return bucket_name
-
+    return ensure_global_bucket(s3)
 
 def delete_user_bucket(username, s3=None):
     """
-    Delete a user's S3 bucket and its contents.
+    Legacy helper when buckets were per-user.
 
-    Args:
-        username (str): The username whose bucket is to be deleted.
-        s3 (boto3.client, optional): An existing S3 client. Defaults to None.
+    With the global bucket design we do not delete the shared bucket
+    here to avoid affecting other users. This function is now a no-op.
     """
     s3 = s3 or init_s3_client()
-    bucket_name = f"user-{username.lower()}-bucket"
-    try:
-        objects = s3.list_objects_v2(Bucket=bucket_name)
-        if 'Contents' in objects:
-            for obj in objects['Contents']:
-                s3.delete_object(Bucket=bucket_name, Key=obj['Key'])
-        s3.delete_bucket(Bucket=bucket_name)
-        print(f"[-] Deleted bucket '{bucket_name}' for user '{username}'.")
-    except Exception as e:
-        print(f"[!] Failed to delete bucket '{bucket_name}': {e}")
+    ensure_global_bucket(s3)
+    print("[*] delete_user_bucket() is a no-op with the global bucket design.")
+
 
 
 def delete_all_buckets(s3=None):
@@ -158,42 +161,53 @@ def open_file_selector():
 
 def upload_file(username, file_path, s3=None):
     """
-    Upload a file to a user's S3 bucket.
+    Upload a file to the shared S3 bucket under a user-specific prefix.
 
     Args:
-        username (str): The username whose bucket the file will be uploaded to.
+        username (str): The username, used as a key prefix.
         file_path (str): The local path of the file to upload.
         s3 (boto3.client, optional): An existing S3 client. Defaults to None.
     """
     s3 = s3 or init_s3_client()
-    bucket_name = f"user-{username.lower()}-bucket"
+    bucket_name = ensure_global_bucket(s3)
+
     if not os.path.isfile(file_path):
         print(f"[!] File '{file_path}' does not exist.")
         return
+
     file_name = os.path.basename(file_path)
-    s3.upload_file(file_path, bucket_name, file_name)
-    print(f"[+] Uploaded '{file_name}' to bucket '{bucket_name}'.")
+    key = f"{username}/{file_name}"  # user-specific prefix
+    s3.upload_file(file_path, bucket_name, key)
+    print(f"[+] Uploaded '{key}' to bucket '{bucket_name}'.")
+
 
 
 def list_user_bucket(username, s3=None):
     """
-    List all files in a user's S3 bucket.
+    List all files for a user inside the shared S3 bucket.
 
     Args:
-        username (str): The username whose bucket contents will be listed.
+        username (str): The username whose files will be listed.
         s3 (boto3.client, optional): An existing S3 client. Defaults to None.
     """
     s3 = s3 or init_s3_client()
-    bucket_name = f"user-{username.lower()}-bucket"
+    bucket_name = ensure_global_bucket(s3)
+    prefix = f"{username}/"
+
     try:
-        response = s3.list_objects_v2(Bucket=bucket_name)
+        response = s3.list_objects_v2(Bucket=bucket_name, Prefix=prefix)
         contents = response.get("Contents", [])
         if not contents:
-            print(f"[~] Bucket '{bucket_name}' is empty.")
+            print(f"[~] No objects found for user '{username}' in bucket '{bucket_name}'.")
             return
-        print(f"\n=== Files in '{bucket_name}' ===")
+
+        print(f"\n=== Files for '{username}' in bucket '{bucket_name}' ===")
         for obj in contents:
-            print(obj["Key"])
-        print("===============================")
+            key = obj["Key"]
+            # Strip username/ prefix for nicer printing
+            display_name = key[len(prefix):] if key.startswith(prefix) else key
+            print(display_name)
+        print("===============================================")
     except Exception as e:
-        print(f"[!] Cannot list bucket '{bucket_name}': {e}")
+        print(f"[!] Cannot list objects for user '{username}': {e}")
+

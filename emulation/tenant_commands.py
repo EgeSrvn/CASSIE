@@ -221,20 +221,12 @@ def add_tenant(tenant_name, vm_name=None, user_id=None):
 
 
 def remove_tenant(tenant_name, user_id):
-    """Remove a tenant: container, bucket, runtime registry and DB entry.
+    """Remove a tenant: container, runtime registry and DB entry.
 
     Performs best-effort cleanup:
       - attempts to remove the tenant container via helper or directly,
-      - deletes the user's bucket,
       - decrements VM load and removes runtime registry entry,
       - deletes the tenant row from the DB.
-
-    Args:
-        tenant_name (str): Tenant logical name.
-        user_id (int): Owner user's id.
-
-    Returns:
-        None
     """
     s3 = init_s3_client()
     key = (tenant_name, user_id)
@@ -257,11 +249,7 @@ def remove_tenant(tenant_name, user_id):
     except Exception as e:
         print(f"[!] Failed to remove container via helper: {e}")
 
-    # Delete bucket
-    try:
-        delete_bucket(tenant["bucket"], s3)
-    except Exception as e:
-        print(f"[!] Failed to delete bucket '{tenant['bucket']}': {e}")
+    # NOTE: We no longer delete the shared S3 bucket here.
 
     # Decrease VM load
     vm = tenant.get("vm")

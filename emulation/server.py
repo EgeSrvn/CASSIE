@@ -11,6 +11,7 @@ from tenant_commands import (
     TENANT_REGISTRY,
     VM_LOAD,
 )
+from bucket_manager import ensure_global_bucket, GLOBAL_BUCKET_NAME
 from db_manager import get_connection, initialize_database
 from docker_commands import ensure_network, ensure_vms, assign_tenant_to_vm, create_tenant_user
 
@@ -21,6 +22,8 @@ PORT = 5000
 initialize_database()
 ensure_network()
 ensure_vms()
+ensure_global_bucket()  # make sure the shared MinIO bucket exists
+
 
 # Lock for tenant registry updates
 TENANT_LOCK = threading.Lock()
@@ -42,7 +45,7 @@ def migrate_tenants_from_db():
     for name, vm_name, user_id in rows:
         TENANT_REGISTRY[(name, user_id)] = {
             "vm": vm_name,
-            "bucket": f"{name}-bucket"
+            "bucket": GLOBAL_BUCKET_NAME,
         }
         if vm_name in VM_LOAD:
             VM_LOAD[vm_name] += 1
@@ -127,7 +130,7 @@ def handle_client(conn, addr):
                 else:
                     # Not present in runtime (defensive): assign and update registry minimally
                     assigned_vm = assign_tenant_to_vm(tenant_name, user_id)
-                    TENANT_REGISTRY[key] = {"vm": assigned_vm, "bucket": f"user-{user_id}-bucket"}
+                    TENANT_REGISTRY[key] = {"vm": assigned_vm, "bucket": GLOBAL_BUCKET_NAME}
                     VM_LOAD[assigned_vm] += 1
 
             conn.sendall(f"Tenant '{tenant_name}' added and assigned to {assigned_vm}.\n".encode())
@@ -176,7 +179,7 @@ def handle_client(conn, addr):
             else:
                 # fallback: assign tenant to a VM and create tenant user (include user_id)
                 assigned_vm = assign_tenant_to_vm(tenant_name, user_id)
-                TENANT_REGISTRY[key] = {"vm": assigned_vm, "bucket": f"user-{user_id}-bucket"}
+                TENANT_REGISTRY[key] = {"vm": assigned_vm, "bucket": GLOBAL_BUCKET_NAME}
                 VM_LOAD[assigned_vm] += 1
                 try:
                     create_tenant_user(assigned_vm, tenant_name, user_id)
