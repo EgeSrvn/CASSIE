@@ -2,6 +2,8 @@ import subprocess
 import docker
 import json
 import os
+from pathlib import Path
+import platform
 import time
 import base64
 
@@ -14,9 +16,18 @@ IMAGE_NAME = "ubuntu:22.04"
 NETWORK_NAME = "workflow-net"
 CPU_COUNT = 2           # CPUs per VM container (logical count)
 MEMORY_LIMIT = "4g"     # Memory limit per VM container (string)
-DATA_BASE_PATH = "C:/data"  # Adjust for your host OS
+DATA_BASE_PATH = ""  
 
-TENANT_MAP_FILE = os.path.join("data", "tenant_map.json")
+if platform.system() == "Windows":
+    DATA_BASE_PATH = "C:/data"
+else:
+    DATA_BASE_PATH = os.path.join(os.getcwd(), "emulation_run", "data")
+
+os.makedirs(DATA_BASE_PATH, exist_ok=True)
+
+TENANT_MAP_FILE = Path(DATA_BASE_PATH) / "tenant_map.json"
+TENANT_MAP_FILE.parent.mkdir(exist_ok=True, parents=True)
+
 client = docker.from_env()
 
 # -------------------------------------------------------------------

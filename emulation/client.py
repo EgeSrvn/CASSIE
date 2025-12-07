@@ -3,7 +3,7 @@ import threading
 import sys
 
 HOST = "127.0.0.1"  # Server address
-PORT = 5000         # Server port
+PORT = 5001        # Server port
 
 
 def receive_until_prompt(sock):

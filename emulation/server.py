@@ -16,7 +16,7 @@ from db_manager import get_connection, initialize_database
 from docker_commands import ensure_network, ensure_vms, assign_tenant_to_vm, create_tenant_user
 
 HOST = "0.0.0.0"
-PORT = 5000
+PORT = 5001
 
 # Initialize database and Docker network/VMs
 initialize_database()
