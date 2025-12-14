@@ -5,6 +5,8 @@ import sys
 HOST = "127.0.0.1"  # Server address
 PORT = 5001        # Server port
 
+_RECV_BUFFER = b""
+
 
 def receive_until_prompt(sock):
     """
@@ -193,8 +195,26 @@ def main():
 
                 # server response
                 print(receive_until_prompt(sock))
-
+            
             elif choice == "7":
+                # Generate Pipeline
+                print("[*] Fetching tenant list...")
+                # 1. Select Tenant
+                print(receive_until_prompt(sock), end="") 
+                sock.sendall((input() + "\n").encode())
+                
+                # 2. Select Tools
+                print(receive_until_prompt(sock), end="") # Tool list + "Enter indices: "
+                sock.sendall((input() + "\n").encode())
+                
+                # 3. Input Path
+                print(receive_until_prompt(sock), end="") # "Enter path: "
+                sock.sendall((input() + "\n").encode())
+                
+                # 4. Result
+                print(receive_until_prompt(sock))
+
+            elif choice == "8":
                 print(receive_until_prompt(sock))
                 print("[*] Exiting client...")
                 break

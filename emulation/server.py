@@ -13,7 +13,8 @@ from tenant_commands import (
 )
 from bucket_manager import ensure_global_bucket, GLOBAL_BUCKET_NAME, upload_bytes
 from db_manager import get_connection, initialize_database
-from docker_commands import ensure_network, ensure_vms, assign_tenant_to_vm, create_tenant_user
+from docker_commands import ensure_network, ensure_vms, assign_tenant_to_vm, create_tenant_user, get_tenant_container
+import nextflow_manager
 
 HOST = "0.0.0.0"
 PORT = 5001
@@ -107,7 +108,8 @@ def handle_client(conn, addr):
             "4. Remove All My Tenants\n"
             "5. Open Terminal for Tenant\n"
             "6. Upload file\n"
-            "7. Exit\n"
+            "7. Generate & Run Pipeline\n"
+            "8. Exit\n"
             "Select option: "
         )
 
@@ -334,9 +336,49 @@ def handle_client(conn, addr):
             except Exception as e:
                 conn.sendall(f"Upload failed: {e}\n".encode())
 
+        elif choice == "7": # Generate & Run Pipeline
+            # 1. Select Tenant
+            tenants = show_user_tenants(user_id)
+            if not tenants:
+                conn.sendall(b"No tenants found. Create a tenant first.\n")
+                continue
+
+            tenant_list = "\n".join([f"{i+1}. {t[0]}" for i, t in enumerate(tenants)]) + "\n"
+            conn.sendall(b"Select tenant to run pipeline:\n" + tenant_list.encode())
+            selection = conn.recv(1024).decode().strip()
+            try:
+                idx = int(selection) - 1
+                tenant_name = tenants[idx][0]
+            except:
+                conn.sendall(b"Invalid selection.\n")
+                continue
+            
+            # 2. List Tools
+            tools = nextflow_manager.get_tool_list()
+            tool_menu = "\n".join([f"{i}. {name}" for i, name in enumerate(tools)])
+            conn.sendall(f"Available Tools:\n{tool_menu}\nEnter tool indices (comma separated, e.g., 0,2): ".encode())
+            
+            indices_str = conn.recv(1024).decode().strip()
+            indices = [x.strip() for x in indices_str.split(",") if x.strip().isdigit()]
+            
+            # 3. Input Data Path
+            conn.sendall(b"Enter initial input data path (absolute path inside tenant): ")
+            input_path = conn.recv(1024).decode().strip()
+            
+            conn.sendall(b"Submitting pipeline... (this may take a moment)\n")
+            
+            try:
+                # Get the actual container object
+                cont = get_tenant_container(tenant_name, user_id)
+                
+                # Run
+                result = nextflow_manager.run_pipeline(cont, input_path, indices)
+                conn.sendall(f"\n{result}\n".encode())
+            except Exception as e:
+                conn.sendall(f"Pipeline execution error: {e}\n".encode())
 
             
-        elif choice == "7":
+        elif choice == "8":
             conn.sendall(b"Goodbye!\n")
             break
 
