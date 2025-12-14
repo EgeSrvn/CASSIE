@@ -34,57 +34,38 @@ def ensure_global_bucket(s3=None):
 # -------------------------------------------------------------------
 def ensure_minio_container():
     """
-    Ensure a MinIO Docker container is running AND attached to workflow-net
-    with DNS name 'minio' so VMs/tenants can reach http://minio:9000.
+    Ensure a MinIO Docker container is running locally.
+
+    If the container is not running, it will start an existing container
+    or create and start a new one. The container is configured to run
+    MinIO with default credentials and ports.
     """
     client = docker.from_env()
     container_name = "minio"
-    network_name = "workflow-net"
-
-    # Ensure network exists
-    try:
-        client.networks.get(network_name)
-    except docker.errors.NotFound:
-        client.networks.create(network_name)
-
     try:
         container = client.containers.get(container_name)
-        container.reload()
-        print(f"[*] MinIO container '{container_name}' exists (status: {container.status}).")
+        if container.status != "running":
+            print("[*] Starting existing MinIO container...")
+            container.start()
+        else:
+            print("[*] MinIO container already running.")
     except docker.errors.NotFound:
         print("[*] MinIO container not found. Creating a new one...")
-        container = client.containers.run(
+        client.containers.run(
             "minio/minio:latest",
             "server /data --console-address :9001",
             name=container_name,
             detach=True,
             tty=True,
-            network=network_name,             # ✅ attach at creation
+            ports={"9000/tcp": 9000, "9001/tcp": 9001},  # API + console
             environment={
                 "MINIO_ROOT_USER": "minioadmin",
                 "MINIO_ROOT_PASSWORD": "minioadmin",
             },
-            ports={"9000/tcp": 9000, "9001/tcp": 9001},
-            volumes={"minio_data": {"bind": "/data", "mode": "rw"}},
+            volumes={"minio_data": {"bind": "/data", "mode": "rw"}}
         )
-        time.sleep(5)
-
-    # Ensure attached to workflow-net with alias 'minio'
-    container.reload()
-    networks = container.attrs.get("NetworkSettings", {}).get("Networks", {}) or {}
-    if network_name not in networks:
-        print(f"[+] Connecting MinIO to '{network_name}' with alias 'minio'...")
-        net = client.networks.get(network_name)
-        net.connect(container, aliases=["minio"])
-
-    # Ensure running
-    container.reload()
-    if container.status != "running":
-        print("[+] Starting MinIO container...")
-        container.start()
-        time.sleep(3)
-
-    print("[✓] MinIO ready at http://minio:9000")
+        print("[+] MinIO container started.")
+        time.sleep(6)  # Give it a few seconds to initialize
 
 
 # -------------------------------------------------------------------
@@ -177,6 +158,30 @@ def open_file_selector():
     root.withdraw()
     return filedialog.askopenfilename()
 
+
+def upload_file(username, file_path, s3=None):
+    """
+    Upload a file to the shared S3 bucket under a user-specific prefix.
+
+    Args:
+        username (str): The username, used as a key prefix.
+        file_path (str): The local path of the file to upload.
+        s3 (boto3.client, optional): An existing S3 client. Defaults to None.
+    """
+    s3 = s3 or init_s3_client()
+    bucket_name = ensure_global_bucket(s3)
+
+    if not os.path.isfile(file_path):
+        print(f"[!] File '{file_path}' does not exist.")
+        return
+
+    file_name = os.path.basename(file_path)
+    key = f"{username}/{file_name}"  # user-specific prefix
+    s3.upload_file(file_path, bucket_name, key)
+    print(f"[+] Uploaded '{key}' to bucket '{bucket_name}'.")
+
+
+
 def list_user_bucket(username, s3=None):
     """
     List all files for a user inside the shared S3 bucket.
@@ -206,26 +211,3 @@ def list_user_bucket(username, s3=None):
     except Exception as e:
         print(f"[!] Cannot list objects for user '{username}': {e}")
 
-import os
-import time
-
-def upload_bytes(username: str, filename: str, data: bytes, s3=None, prefix: str = "uploads", user_id=None):
-    """
-    Upload raw bytes to the shared S3 bucket.
-
-    Stores objects under:
-      uploads/<user_id>_<timestamp>_<filename>
-    or if user_id is None:
-      uploads/<username>_<timestamp>_<filename>
-    """
-    s3 = s3 or init_s3_client()
-    bucket_name = ensure_global_bucket(s3)
-
-    safe_name = os.path.basename(filename)
-    uid = str(user_id) if user_id is not None else username
-
-    key = f"{prefix}/{uid}_{int(time.time())}_{safe_name}"
-
-    s3.put_object(Bucket=bucket_name, Key=key, Body=data)
-    print(f"[+] Uploaded '{key}' to bucket '{bucket_name}'.")
-    return bucket_name, key

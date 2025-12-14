@@ -1,13 +1,13 @@
 #!/bin/bash
-set -euo pipefail
+set -e
 
-echo "[TOOLS] Rebuilding FastQC image (no cache)..."
-docker build --no-cache -t fastqc:0.12.1 ./fastqc
+echo "Building FastQC image..."
+docker build -t fastqc:0.12.1 ./fastqc
 
-echo "[TOOLS] Rebuilding SPAdes image (no cache)..."
-docker build --no-cache -t spades:3.15.5 ./spades
+echo "Building SPAdes image..."
+docker build -t spades:3.15.5 ./spades
 
-echo "[TOOLS] Verifying FastQC image..."
-docker run --rm fastqc:0.12.1 --version
+echo "Building GenomeScope2 image..."
+docker build -t genomescope2 ./genomescope2
 
-echo "[TOOLS] All images built and verified successfully."
+echo "All images built successfully."

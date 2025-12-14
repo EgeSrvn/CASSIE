@@ -11,7 +11,7 @@ from tenant_commands import (
     TENANT_REGISTRY,
     VM_LOAD,
 )
-from bucket_manager import ensure_global_bucket, GLOBAL_BUCKET_NAME, upload_bytes
+from bucket_manager import ensure_global_bucket, GLOBAL_BUCKET_NAME
 from db_manager import get_connection, initialize_database
 from docker_commands import ensure_network, ensure_vms, assign_tenant_to_vm, create_tenant_user
 
@@ -106,11 +106,9 @@ def handle_client(conn, addr):
             "3. Show My Tenants\n"
             "4. Remove All My Tenants\n"
             "5. Open Terminal for Tenant\n"
-            "6. Upload file\n"
-            "7. Exit\n"
+            "6. Exit\n"
             "Select option: "
         )
-
         conn.sendall(menu.encode())
         choice = conn.recv(1024).decode().strip()
 
@@ -278,65 +276,10 @@ def handle_client(conn, addr):
                 docker_sock.close()
                 conn.sendall(b"\n--- Tenant shell closed. ---\n")
 
-        elif choice == "6":
-            # Ask which tenant (optional, only for UI)
-            tenants = show_user_tenants(user_id)
-            if not tenants:
-                conn.sendall(b"No tenants found. Create a tenant first.\n")
-                continue
-
-            tenant_list = "\n".join([f"{i+1}. {t[0]}" for i, t in enumerate(tenants)]) + "\n"
-            conn.sendall(b"Select tenant for this upload:\n" + tenant_list.encode())
-            selection = conn.recv(1024).decode().strip()
-            try:
-                idx = int(selection) - 1
-                tenant_name = tenants[idx][0]
-            except:
-                conn.sendall(b"Invalid selection.\n")
-                continue
-
-            # Receive filename
-            conn.sendall(b"Enter filename (or keep original): ")
-            filename = conn.recv(4096).decode().strip()
-            if not filename:
-                filename = "uploaded.bin"
-
-            # Receive file size (as ASCII int)
-            conn.sendall(b"Enter file size in bytes: ")
-            size_str = conn.recv(1024).decode().strip()
-            try:
-                size = int(size_str)
-            except:
-                conn.sendall(b"Invalid size.\n")
-                continue
-
-            conn.sendall(b"Send file bytes now...\n")
-
-            # Receive exactly size bytes
-            buf = bytearray()
-            remaining = size
-            while remaining > 0:
-                chunk = conn.recv(min(65536, remaining))
-                if not chunk:
-                    break
-                buf.extend(chunk)
-                remaining -= len(chunk)
-
-            if remaining != 0:
-                conn.sendall(b"Upload failed: connection dropped early.\n")
-                continue
-
-            # Upload to MinIO under username/uploads/
-            try:
-                _, key = upload_bytes(username=username, filename=filename, data=bytes(buf), prefix="uploads")
-                msg = f"Uploaded to bucket as: {key}\nTenant '{tenant_name}' can download it.\n"
-                conn.sendall(msg.encode())
-            except Exception as e:
-                conn.sendall(f"Upload failed: {e}\n".encode())
 
 
             
-        elif choice == "7":
+        elif choice == "6":
             conn.sendall(b"Goodbye!\n")
             break
 
