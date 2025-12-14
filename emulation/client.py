@@ -153,6 +153,48 @@ def main():
 
             # --- 6. Exit ---
             elif choice == "6":
+                # server will send tenant list prompt
+                print(receive_until_prompt(sock))  # "Select tenant..."
+                tenant_choice = input().strip()
+                sock.sendall((tenant_choice + "\n").encode())
+
+                # filename prompt
+                prompt = receive_until_prompt(sock)
+                local_path = input("Local file path to upload: ").strip()
+
+                import os
+                if not os.path.isfile(local_path):
+                    print("File not found.")
+                    # still need to respond something reasonable; send dummy and bail
+                    sock.sendall(("uploaded.bin\n").encode())
+                    print(receive_until_prompt(sock))
+                    sock.sendall(("0\n").encode())
+                    print(receive_until_prompt(sock))
+                    continue
+
+                filename = os.path.basename(local_path)
+                sock.sendall((filename + "\n").encode())
+
+                # size prompt
+                print(receive_until_prompt(sock))
+                size = os.path.getsize(local_path)
+                sock.sendall((str(size) + "\n").encode())
+
+                # "Send file bytes now..."
+                print(receive_until_prompt(sock))
+
+                # send bytes
+                with open(local_path, "rb") as f:
+                    while True:
+                        chunk = f.read(65536)
+                        if not chunk:
+                            break
+                        sock.sendall(chunk)
+
+                # server response
+                print(receive_until_prompt(sock))
+
+            elif choice == "7":
                 print(receive_until_prompt(sock))
                 print("[*] Exiting client...")
                 break

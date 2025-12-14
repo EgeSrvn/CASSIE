@@ -1,9 +1,67 @@
+#!/bin/bash
 export DEBIAN_FRONTEND=noninteractive
+set -euo pipefail
+
+echo "[PROVISION] apt update"
 apt-get update -y
+
+echo "[PROVISION] install core packages"
 apt-get install -y --no-install-recommends \
-    python3 python3-pip python3-venv curl git build-essential unzip \
-    sudo passwd bash shadow vim 
-ln -sf $(command -v pip3) /usr/bin/pip || true
-echo 'export PATH=$PATH:/usr/local/bin:/usr/bin' >> /etc/profile
-apt-get clean
-rm -rf /var/lib/apt/lists/*
+  python3 python3-pip python3-venv \
+  curl git build-essential unzip sudo \
+  bash vim docker.io awscli
+
+mkdir -p /usr/local/bin
+
+echo "[PROVISION] install fetch helper"
+cat >/tmp/fetch <<'EOF'
+#!/bin/bash
+set -euo pipefail
+
+if [ $# -lt 1 ]; then
+  echo "Usage: fetch <object-key> [dest_dir]"
+  exit 1
+fi
+
+OBJ="$1"
+DEST="${2:-/data}"
+
+[[ "$OBJ" != */* ]] && OBJ="uploads/$OBJ"
+
+mkdir -p "$DEST"
+
+export AWS_EC2_METADATA_DISABLED=true
+export AWS_ACCESS_KEY_ID=minioadmin
+export AWS_SECRET_ACCESS_KEY=minioadmin
+export AWS_DEFAULT_REGION=us-east-1
+
+aws --endpoint-url http://minio:9000 \
+  s3 cp "s3://cassie-bucket/$OBJ" "$DEST/"
+EOF
+
+chmod +x /tmp/fetch
+install -m 755 /tmp/fetch /usr/local/bin/fetch
+rm -f /tmp/fetch
+
+echo "[PROVISION] install tool wrappers"
+mkdir -p /tmp/dockerized_tools
+cp -r /opt/dockerized_tools/* /tmp/dockerized_tools/
+find /tmp/dockerized_tools -name "*.sh" -exec sed -i 's/\r$//' {} \;
+
+for f in /tmp/dockerized_tools/run*.sh; do
+  [ -f "$f" ] || continue
+  install -m 755 "$f" "/usr/local/bin/$(basename "$f" .sh)"
+done
+
+groupadd -f docker || true
+chgrp docker /var/run/docker.sock 2>/dev/null || true
+chmod g+rw /var/run/docker.sock 2>/dev/null || true
+
+echo "[PROVISION] docker info"
+docker info
+
+echo "[PROVISION] build tool images"
+cd /tmp/dockerized_tools
+bash ./buildtools.sh
+
+echo "[PROVISION] DONE"
