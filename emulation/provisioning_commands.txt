@@ -5,13 +5,51 @@ set -euo pipefail
 echo "[PROVISION] apt update"
 apt-get update -y
 
-echo "[PROVISION] install core packages"
+echo "[PROVISION] install core packages + Java"
 apt-get install -y --no-install-recommends \
   python3 python3-pip python3-venv \
   curl git build-essential unzip sudo \
-  bash vim docker.io awscli
+  bash vim docker.io awscli \
+  ca-certificates \
+  openjdk-17-jre-headless
 
 mkdir -p /usr/local/bin
+
+# --- HARD GUARANTEE: java exists on PATH ---
+echo "[PROVISION] verify java"
+if ! command -v java >/dev/null 2>&1; then
+  echo "[PROVISION] java not in PATH, attempting to link it..."
+  # common Debian/Ubuntu location:
+  if [ -x /usr/lib/jvm/java-17-openjdk-amd64/bin/java ]; then
+    ln -sf /usr/lib/jvm/java-17-openjdk-amd64/bin/java /usr/bin/java
+    ln -sf /usr/lib/jvm/java-17-openjdk-amd64/bin/java /usr/local/bin/java
+  fi
+fi
+
+if ! command -v java >/dev/null 2>&1; then
+  echo "[PROVISION][ERROR] Java still missing after install/link."
+  echo "Debug info:"
+  ls -la /usr/bin/java || true
+  find /usr/lib/jvm -type f -name java 2>/dev/null | head -n 20 || true
+  exit 1
+fi
+
+java -version
+
+# -------------------------------------------------
+# NEXTFLOW INSTALL
+# -------------------------------------------------
+echo "[PROVISION] install Nextflow"
+curl -s https://get.nextflow.io | bash
+mv nextflow /usr/local/bin/nextflow
+chmod +x /usr/local/bin/nextflow
+
+# sanity check
+nextflow -version || true
+
+# Pre-create cache dirs to avoid permission issues
+mkdir -p /root/.nextflow /root/.nextflow/assets /root/.nextflow/plugins
+# -------------------------------------------------
 
 echo "[PROVISION] install fetch helper"
 cat >/tmp/fetch <<'EOF'
@@ -53,6 +91,7 @@ for f in /tmp/dockerized_tools/run*.sh; do
   install -m 755 "$f" "/usr/local/bin/$(basename "$f" .sh)"
 done
 
+echo "[PROVISION] docker permissions"
 groupadd -f docker || true
 chgrp docker /var/run/docker.sock 2>/dev/null || true
 chmod g+rw /var/run/docker.sock 2>/dev/null || true
