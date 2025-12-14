@@ -11,7 +11,7 @@ import base64
 # -------------------------------------------------------------------
 # 🔹 Configuration
 # -------------------------------------------------------------------
-VM_NAMES = ["vm1", "vm2", "vm3"]
+VM_NAMES = ["vm1"]
 IMAGE_NAME = "ubuntu:22.04"
 NETWORK_NAME = "workflow-net"
 CPU_COUNT = 2           # CPUs per VM container (logical count)
@@ -129,29 +129,33 @@ def ensure_network():
 # -------------------------------------------------------------------
 # 🔹 Provisioning Logic
 # -------------------------------------------------------------------
-def provision_vm(container, name, command_file="provisioning_commands.txt"):
-    """Run provisioning commands inside a container from a text file.
-
-    The function will start the container temporarily if it is not running,
-    write the contents of command_file into a script under /tmp inside the
-    container, make it executable and execute it as root. The container is
-    stopped again if it was not running originally.
-
-    Args:
-        container (docker.models.containers.Container): Container object.
-        name (str): Logical name used for temporary filenames and logging.
-        command_file (str): Path to a local file containing shell commands.
-
-    Returns:
-        None
-
-    Notes:
-        - Any output and non-zero exit codes are printed to stdout.
-        - If command_file does not exist the function returns early.
+def _exec(container, cmd, user="root"):
     """
-    if not os.path.exists(command_file):
-        print(f"[!] Provisioning file '{command_file}' not found.")
-        return
+    Helper that works across docker SDK variants:
+    - returns (exit_code:int, output:str)
+    """
+    res = container.exec_run(cmd, user=user)
+
+    # docker SDK sometimes returns an object with .exit_code/.output
+    if hasattr(res, "exit_code"):
+        code = res.exit_code
+        outb = getattr(res, "output", b"") or b""
+        return int(code), outb.decode(errors="replace")
+
+    # or returns (exit_code, output_bytes)
+    if isinstance(res, tuple) and len(res) == 2:
+        code, outb = res
+        outb = outb or b""
+        return int(code), outb.decode(errors="replace")
+
+    # fallback
+    return 0, str(res)
+
+
+def provision_vm(container, name, command_file="provisioning_commands.txt"):
+    command_file = (Path(__file__).resolve().parent / command_file)
+    if not command_file.exists():
+        raise FileNotFoundError(f"Provisioning file not found: {command_file}")
 
     container.reload()
     was_running = container.status == "running"
@@ -160,31 +164,47 @@ def provision_vm(container, name, command_file="provisioning_commands.txt"):
         container.start()
         time.sleep(2)
 
-    # Read commands from file
-    with open(command_file, "r") as f:
-        commands = f.read()
+    # Normalize CRLF -> LF BEFORE injecting
+    commands = command_file.read_text(encoding="utf-8")
+    commands = commands.replace("\r\n", "\n").replace("\r", "\n")
 
-    # Use heredoc to safely write the script inside container
     dest_path = f"/tmp/provision_{name}.sh"
-    container.exec_run([
-        '/bin/sh', '-c',
-        f"cat <<'EOF' > {dest_path}\n{commands}\nEOF"
-    ])
-    container.exec_run(['/bin/sh', '-c', f"chmod +x {dest_path}"])
 
-    # Execute the script
-    print(f"[*] Executing provisioning script in '{name}'...")
-    result = container.exec_run(['/bin/sh', dest_path], user="root")
-    exit_code = getattr(result, "exit_code", None)
-    output = getattr(result, "output", b"").decode(errors="replace")
+    # Write script
+    container.exec_run(
+        ["/bin/sh", "-c", f"cat <<'__PROVISION_EOF__' > {dest_path}\n{commands}\n__PROVISION_EOF__"],
+        user="root"
+    )
 
-    if exit_code == 0 or exit_code is None:
-        print(f"[✓] Provisioning completed successfully for '{name}'.")
-    else:
-        print(f"[!] Provisioning failed for '{name}' (exit {exit_code}).\nOutput:\n{output}")
+    # Ensure LF inside container
+    container.exec_run(["/bin/sh", "-c", f"sed -i 's/\\r$//' {dest_path}"], user="root")
+    container.exec_run(["/bin/sh", "-c", f"chmod +x {dest_path}"], user="root")
+
+    print(f"[*] Executing provisioning script in '{name}' using bash...")
+
+    # 🔥 IMPORTANT: USE BASH
+    res = container.exec_run(
+        ["/bin/bash", "-eux", dest_path],
+        user="root"
+    )
+
+    output = getattr(res, "output", b"").decode(errors="replace")
+    print(output)
+
+    if getattr(res, "exit_code", 0) != 0:
+        raise RuntimeError(f"Provisioning failed for '{name}'.")
+
+    # Hard check
+    res = container.exec_run(
+        ["/bin/bash", "-c", "test -x /usr/local/bin/fetch"],
+        user="root"
+    )
+    if res.exit_code != 0:
+        raise RuntimeError("fetch missing after provisioning")
+
+    print(f"[✓] Provisioning completed successfully for '{name}'.")
 
     if not was_running:
-        print(f"[*] Stopping '{name}' after provisioning...")
         container.stop()
 
 # -------------------------------------------------------------------
@@ -210,6 +230,7 @@ def ensure_vms():
         except docker.errors.NotFound:
             print(f"[+] Creating container '{name}'...")
             os.makedirs(f"{DATA_BASE_PATH}/{name}", exist_ok=True)
+            tools_host = (Path(__file__).resolve().parent / ".." / "dockerized_tools").resolve()
             container = client.containers.run(
                 image=IMAGE_NAME,
                 name=name,
@@ -220,7 +241,12 @@ def ensure_vms():
                 mem_limit=MEMORY_LIMIT,
                 tty=True,
                 stdin_open=True,
-                volumes={f"{DATA_BASE_PATH}/{name}": {"bind": "/data", "mode": "rw"}},
+                privileged=True,
+                volumes={
+                    f"{DATA_BASE_PATH}/{name}": {"bind": "/data", "mode": "rw"},
+                    str(tools_host): {"bind": "/opt/dockerized_tools", "mode": "ro"},
+                    "/var/run/docker.sock": {"bind": "/var/run/docker.sock", "mode": "rw"},  # ✅ host mount, no copy
+                },
             )
             time.sleep(2)
         provision_vm(container, name)
@@ -403,12 +429,16 @@ def create_tenant_container(vm_name, tenant_name, user_id=None, cpu_quota=None, 
         name=container_name,
         command="sleep infinity",
         detach=True,
-        network_mode=f"container:{vm_name}",  # share VM network
+        network_mode=f"container:{vm_name}",
         nano_cpus=int(cpu_quota),
         mem_limit=mem_limit,
         tty=True,
         stdin_open=True,
-        volumes={home_dir_host: {"bind": f"/home/{container_name}", "mode": "rw"}},
+        volumes={
+            home_dir_host: {"bind": f"/home/{container_name}", "mode": "rw"},
+            f"{DATA_BASE_PATH}/{vm_name}": {"bind": "/data", "mode": "rw"},  # ✅ ADD THIS
+            "/var/run/docker.sock": {"bind": "/var/run/docker.sock", "mode": "rw"},
+        },
     )
 
     print(f"[+] Tenant container '{container_name}' created from VM '{vm_name}' "
@@ -418,25 +448,10 @@ def create_tenant_container(vm_name, tenant_name, user_id=None, cpu_quota=None, 
 
 
 def create_tenant_user(vm_name, tenant_name, user_id=None, cpu_quota=None, mem_limit=None):
-    """Ensure a tenant container exists and create an OS user inside it.
-
-    This will create the tenant container (if needed), start it if not
-    running, then create a Linux user with the same name as the tenant
-    container and set ownership of the home directory.
-
-    Args:
-        vm_name (str): VM to derive the tenant from.
-        tenant_name (str): Tenant name.
-        user_id (Optional[str|int]): Optional user id to disambiguate names.
-        cpu_quota (Optional[int]): Optional nano_cpus for container creation.
-        mem_limit (Optional[str]): Optional mem_limit for container creation.
-
-    Returns:
-        docker.models.containers.Container: The tenant container object.
-    """
     cont = create_tenant_container(vm_name, tenant_name, user_id, cpu_quota=cpu_quota, mem_limit=mem_limit)
     container_name = tenant_container_name(tenant_name, user_id)
-    home_dir = f"/home/{container_name}"
+    username = container_name
+    home_dir = f"/home/{username}"
 
     # Ensure container is running
     try:
@@ -447,22 +462,36 @@ def create_tenant_user(vm_name, tenant_name, user_id=None, cpu_quota=None, mem_l
     except Exception:
         pass
 
-    username = container_name
+    def sh(cmd: str):
+        return cont.exec_run(["/bin/sh", "-c", cmd], user="root")
 
-    # Attempt to create tenant OS user
-    try:
-        res = cont.exec_run(f"id -u {username}", user="root")
-        if res.exit_code != 0:
-            # user doesn't exist → create
-            create_cmd = f"useradd -m -d {home_dir} -s /bin/bash {username} || true"
-            chown_cmd = f"chown -R {username}:{username} {home_dir} || true"
-            res_create = cont.exec_run(f"/bin/sh -c '{create_cmd} && {chown_cmd}'", user="root")
-            if res_create.exit_code != 0:
-                print(f"[!] Warning: Failed to create tenant user {username}. Output:\n{res_create.output.decode(errors='replace')}")
-    except Exception as e:
-        print(f"[!] Exception while creating tenant user: {e}")
+    # Ensure user exists (idempotent)
+    res = sh(f"id -u {username} >/dev/null 2>&1; echo $?")
+    if res.exit_code == 0 and res.output.strip() == b"0":
+        user_created = False
+    else:
+        user_created = True
+        sh(f"useradd -m -d {home_dir} -s /bin/bash {username} 2>/dev/null || true")
+        sh(f"mkdir -p {home_dir}")
+        sh(f"chown -R {username}:{username} {home_dir} || true")
 
-    print(f"[+] Tenant user '{username}' ready in container '{cont.name}'.")
+    # --- Permanent docker access setup (run ALWAYS) ---
+    sh("groupadd -f docker || true")
+    sh(f"usermod -aG docker {username} || true")
+
+    # Prefer group access over world-writable
+    sh("chgrp docker /var/run/docker.sock 2>/dev/null || true")
+    sh("chmod 660 /var/run/docker.sock 2>/dev/null || true")
+
+    # Ensure /data exists and is writable by tenant
+    sh("mkdir -p /data || true")
+    sh(f"chown -R {username}:{username} /data || true")
+    sh("chmod 775 /data || true")
+
+    # Ensure default output dir exists and owned
+    sh(f"mkdir -p {home_dir}/fastqc_out && chown -R {username}:{username} {home_dir}/fastqc_out || true")
+
+    print(f"[+] Tenant user '{username}' ready in container '{cont.name}' (created={user_created}).")
     return cont
 
 # -------------------------------------------------------------------
