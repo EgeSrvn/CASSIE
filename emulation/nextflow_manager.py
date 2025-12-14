@@ -14,18 +14,18 @@ AVAILABLE_TOOLS = [
         "description": "Quality control for raw sequence data",
         "process_template": """
 process FASTQC {
-    publishDir "$params.outdir/FastQC", mode: 'copy'
-    
+    publishDir "$params.outdir/FastQC", [mode: 'copy']
+
     input:
     path reads
 
     output:
-    path "*_fastqc*"
+    path "out/*"
 
     script:
     \"\"\"
-    mkdir -p fastqc_out
-    fastqc -o . $reads
+    mkdir -p out
+    runfastqc "$reads" "/data"
     \"\"\"
 }
 """
@@ -35,23 +35,20 @@ process FASTQC {
         "id": "GENOMESCOPE2",
         "type": "qc", 
         "description": "Reference-free profiling of polyploid genomes",
-        # Assuming input is a histogram or reads treated as such for emulation
         "process_template": """
 process GENOMESCOPE2 {
-    publishDir "$params.outdir/GenomeScope2", mode: 'copy'
+    publishDir "$params.outdir/GenomeScope2", [mode: 'copy']
 
     input:
     path reads
 
     output:
-    path "*"
+    path "out/*"
 
     script:
     \"\"\"
-    # Emulation: Running genomescope logic
-    # In reality, this needs a jellyfish histogram. 
-    # For this system, we run a dummy command or wrapper.
-    echo "Running GenomeScope2 on $reads" > genomescope_summary.txt
+    mkdir -p out
+    rungenomescope2 "$reads" "/data"
     \"\"\"
 }
 """
@@ -63,24 +60,24 @@ process GENOMESCOPE2 {
         "description": "Genome assembler",
         "process_template": """
 process SPADES {
-    publishDir "$params.outdir/SPAdes", mode: 'copy'
+    publishDir "$params.outdir/SPAdes", [mode: 'copy']
 
     input:
     path reads
 
     output:
-    path "scaffolds.fasta"
+    path "out/*"
 
     script:
     \"\"\"
-    # Emulation wrapper for spades
-    # In production: spades.py -s $reads -o .
-    echo "Simulated Assembly" > scaffolds.fasta
+    mkdir -p out
+    runspades "$reads" "/data"
     \"\"\"
 }
 """
     }
 ]
+
 
 def get_tool_list():
     """Return a list of tool names for display."""
@@ -146,13 +143,79 @@ def setup_nextflow(container):
 def run_pipeline(tenant_container, input_path, tool_indices):
     """
     Orchestrate the pipeline execution in the tenant.
+
+    1. Ensure Nextflow is present.
+    2. Generate main.nf.
+    3. Write main.nf safely to tenant.
+    4. Run Nextflow using the absolute script path.
+    """
+
+    # 1) Setup
+    setup_nextflow(tenant_container)
+
+    # 2) Generate Script
+    nf_script, error = generate_nextflow_script(tool_indices, input_path)
+    if error:
+        return error
+
+    # 3) Work dir + script path
+    work_dir = f"/home/{tenant_container.name}/pipeline_run_{int(time.time())}"
+    script_path = f"{work_dir}/main.nf"
+
+    # Make sure work dir exists
+    res = tenant_container.exec_run(
+        ["/bin/bash", "-lc", f"mkdir -p {work_dir}"],
+        user="root"
+    )
+    if res.exit_code != 0:
+        return f"Pipeline failed: could not create work_dir\n{getattr(res, 'output', b'').decode(errors='replace')}"
+
+    # ✅ SAFE write (no shell expansion, no quote-breaking)
+    write_cmd = f"cat <<'__NF_EOF__' > {script_path}\n{nf_script}\n__NF_EOF__"
+    res = tenant_container.exec_run(
+        ["/bin/bash", "-lc", write_cmd],
+        user="root"
+    )
+    out = getattr(res, "output", b"").decode(errors="replace")
+    if res.exit_code != 0:
+        return f"Pipeline failed: could not write main.nf\n{out}"
+
+    # Hard-check that main.nf exists and is non-empty
+    res = tenant_container.exec_run(
+        ["/bin/bash", "-lc", f"test -s {script_path} && head -n 20 {script_path}"],
+        user="root"
+    )
+    if res.exit_code != 0:
+        out = getattr(res, "output", b"").decode(errors="replace")
+        return f"Pipeline failed: main.nf was not created (or empty)\n{out}"
+
+    # 4) Execute Nextflow (use absolute path so cwd doesn't matter)
+    print(f"[*] Starting Nextflow pipeline in {tenant_container.name}...")
+    cmd = f"nextflow run {script_path}"
+    res = tenant_container.exec_run(
+        ["/bin/bash", "-lc", cmd],
+        user="root"
+    )
+
+    output_log = getattr(res, "output", b"").decode(errors="replace")
+
+    if res.exit_code == 0:
+        return (
+            "Pipeline completed successfully.\n"
+            f"Results saved to: {work_dir}/results\n\n"
+            f"Logs:\n{output_log}"
+        )
+    else:
+        return f"Pipeline failed.\n\nLogs:\n{output_log}"
+    """
+    Orchestrate the pipeline execution in the tenant.
     
     1. Ensure Nextflow is present.
     2. Generate main.nf.
     3. Write main.nf to tenant.
     4. Run Nextflow.
     """
-    
+
     # 1. Setup
     setup_nextflow(tenant_container)
     
@@ -172,9 +235,8 @@ def run_pipeline(tenant_container, input_path, tool_indices):
     script_path = f"{work_dir}/main.nf"
     
     # Using a helper to write content safely
-    encoded_script = nf_script.replace('$', '\\$').replace('"', '\\"')
-    write_cmd = f"cat <<EOF > {script_path}\n{nf_script}\nEOF"
-    tenant_container.exec_run(f"/bin/bash -c '{write_cmd}'", user="root")
+    write_cmd = f"cat <<'EOF' > {script_path}\n{nf_script}\nEOF"
+    tenant_container.exec_run(write_cmd, user="root")
     
     # 4. Execute
     print(f"[*] Starting Nextflow pipeline in {tenant_container.name}...")
