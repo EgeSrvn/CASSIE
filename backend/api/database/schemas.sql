@@ -1,5 +1,6 @@
 -- CASSIE Database Schema
 -- Created incrementally for Task 1.1
+-- Revised to be idempotent (safe to run multiple times)
 
 -- ============================================================================
 -- Table 1: Users
@@ -49,12 +50,29 @@ CREATE TABLE IF NOT EXISTS workflows (
     created_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL
 );
 
--- Check constraints for workflows
-ALTER TABLE workflows ADD CONSTRAINT chk_workflow_type 
-    CHECK (workflow_type IN ('predefined', 'custom', 'template'));
+-- Check constraints for workflows (idempotent)
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'chk_workflow_type'
+          AND conrelid = 'workflows'::regclass
+    ) THEN
+        ALTER TABLE workflows
+        ADD CONSTRAINT chk_workflow_type
+        CHECK (workflow_type IN ('predefined', 'custom', 'template'));
+    END IF;
 
-ALTER TABLE workflows ADD CONSTRAINT chk_validation_status 
-    CHECK (validation_status IN ('pending', 'valid', 'invalid', 'error'));
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'chk_validation_status'
+          AND conrelid = 'workflows'::regclass
+    ) THEN
+        ALTER TABLE workflows
+        ADD CONSTRAINT chk_validation_status
+        CHECK (validation_status IN ('pending', 'valid', 'invalid', 'error'));
+    END IF;
+END $$;
 
 -- Indexes for workflows table
 CREATE INDEX IF NOT EXISTS idx_workflows_user_id ON workflows(user_id);
@@ -66,8 +84,8 @@ CREATE INDEX IF NOT EXISTS idx_workflows_workflow_type_active ON workflows(workf
 
 -- Unique constraint: workflow name per user (for custom workflows)
 -- System workflows (user_id = NULL) can have duplicate names
-CREATE UNIQUE INDEX IF NOT EXISTS idx_workflows_user_name_unique 
-    ON workflows(user_id, name) 
+CREATE UNIQUE INDEX IF NOT EXISTS idx_workflows_user_name_unique
+    ON workflows(user_id, name)
     WHERE user_id IS NOT NULL;
 
 -- ============================================================================
@@ -111,12 +129,29 @@ CREATE TABLE IF NOT EXISTS jobs (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Check constraints for jobs table
-ALTER TABLE jobs ADD CONSTRAINT chk_job_status 
-    CHECK (status IN ('pending', 'running', 'completed', 'failed', 'cancelled'));
+-- Check constraints for jobs table (idempotent)
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'chk_job_status'
+          AND conrelid = 'jobs'::regclass
+    ) THEN
+        ALTER TABLE jobs
+        ADD CONSTRAINT chk_job_status
+        CHECK (status IN ('pending', 'running', 'completed', 'failed', 'cancelled'));
+    END IF;
 
-ALTER TABLE jobs ADD CONSTRAINT chk_cloud_provider 
-    CHECK (cloud_provider IN ('aws', 'gcp', 'azure', 'local') OR cloud_provider IS NULL);
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'chk_cloud_provider'
+          AND conrelid = 'jobs'::regclass
+    ) THEN
+        ALTER TABLE jobs
+        ADD CONSTRAINT chk_cloud_provider
+        CHECK (cloud_provider IN ('aws', 'gcp', 'azure', 'local') OR cloud_provider IS NULL);
+    END IF;
+END $$;
 
 -- Indexes for jobs table
 CREATE INDEX IF NOT EXISTS idx_jobs_user_id ON jobs(user_id);
@@ -148,13 +183,29 @@ CREATE TABLE IF NOT EXISTS job_executions (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Check constraint for job_executions table
-ALTER TABLE job_executions ADD CONSTRAINT chk_execution_status 
-    CHECK (status IN ('running', 'completed', 'failed', 'cancelled'));
+-- Constraints for job_executions (idempotent)
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'chk_execution_status'
+          AND conrelid = 'job_executions'::regclass
+    ) THEN
+        ALTER TABLE job_executions
+        ADD CONSTRAINT chk_execution_status
+        CHECK (status IN ('running', 'completed', 'failed', 'cancelled'));
+    END IF;
 
--- Unique constraint: one execution number per job
-ALTER TABLE job_executions ADD CONSTRAINT uq_job_execution_number 
-    UNIQUE (job_id, execution_number);
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'uq_job_execution_number'
+          AND conrelid = 'job_executions'::regclass
+    ) THEN
+        ALTER TABLE job_executions
+        ADD CONSTRAINT uq_job_execution_number
+        UNIQUE (job_id, execution_number);
+    END IF;
+END $$;
 
 -- Indexes for job_executions table
 CREATE INDEX IF NOT EXISTS idx_job_executions_job_id ON job_executions(job_id);
@@ -181,9 +232,19 @@ CREATE TABLE IF NOT EXISTS files (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Check constraint for files table
-ALTER TABLE files ADD CONSTRAINT chk_file_type 
-    CHECK (file_type IN ('input', 'output', 'intermediate', 'log'));
+-- Check constraint for files table (idempotent)
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'chk_file_type'
+          AND conrelid = 'files'::regclass
+    ) THEN
+        ALTER TABLE files
+        ADD CONSTRAINT chk_file_type
+        CHECK (file_type IN ('input', 'output', 'intermediate', 'log'));
+    END IF;
+END $$;
 
 -- Indexes for files table
 CREATE INDEX IF NOT EXISTS idx_files_job_id ON files(job_id);
@@ -202,24 +263,28 @@ BEGIN
     NEW.updated_at = CURRENT_TIMESTAMP;
     RETURN NEW;
 END;
-$$ language 'plpgsql';
+$$ LANGUAGE plpgsql;
 
--- Apply trigger to tables with updated_at column
+-- Triggers (idempotent: drop then create)
+DROP TRIGGER IF EXISTS trigger_update_users_updated_at ON users;
 CREATE TRIGGER trigger_update_users_updated_at
     BEFORE UPDATE ON users
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
 
+DROP TRIGGER IF EXISTS trigger_update_workflows_updated_at ON workflows;
 CREATE TRIGGER trigger_update_workflows_updated_at
     BEFORE UPDATE ON workflows
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
 
+DROP TRIGGER IF EXISTS trigger_update_pipeline_configs_updated_at ON pipeline_configs;
 CREATE TRIGGER trigger_update_pipeline_configs_updated_at
     BEFORE UPDATE ON pipeline_configs
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
 
+DROP TRIGGER IF EXISTS trigger_update_jobs_updated_at ON jobs;
 CREATE TRIGGER trigger_update_jobs_updated_at
     BEFORE UPDATE ON jobs
     FOR EACH ROW

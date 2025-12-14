@@ -28,8 +28,8 @@ def get_db_config():
         dict: Database connection parameters
     """
     return {
-        "host": os.getenv("DB_HOST", "localhost"),
-        "port": int(os.getenv("DB_PORT", "5432")),
+        "host": os.getenv("DB_HOST", "127.0.0.1"),
+        "port": int(os.getenv("DB_PORT", "5433")),
         "user": os.getenv("DB_USER", "admin"),
         "password": os.getenv("DB_PASSWORD", "admin"),
         "database": os.getenv("DB_NAME", "cassie_db")
@@ -111,90 +111,30 @@ def initialize_database():
     """
     Initialize the database schema by executing the SQL schema file.
     This function is idempotent and can be safely called multiple times.
-    
-    The schema file is read from: backend/api/database/schemas.sql
-    
-    Returns:
-        None
-    
-    Raises:
-        FileNotFoundError: If schema SQL file is not found
-        psycopg2.Error: If database operations fail
-        RuntimeError: If connection cannot be established
     """
-    # Get the path to the schema SQL file
     current_dir = os.path.dirname(os.path.abspath(__file__))
     schema_file = os.path.join(current_dir, "schemas.sql")
-    
+
     if not os.path.exists(schema_file):
         raise FileNotFoundError(f"Schema file not found: {schema_file}")
-    
-    # Read the SQL schema file
-    with open(schema_file, 'r', encoding='utf-8') as f:
+
+    with open(schema_file, "r", encoding="utf-8") as f:
         schema_sql = f.read()
-    
-    # Execute the schema SQL
+
     with get_db_connection() as conn:
-        # Use autocommit mode for DDL statements
         conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
         cur = conn.cursor()
-        
         try:
-            # Simple approach for prototyping: split and execute statements
-            # Handle dollar-quoted strings by using regex to find statement boundaries
-            # Remove single-line comments
-            no_comments = re.sub(r'--.*$', '', schema_sql, flags=re.MULTILINE)
-            
-            # Split statements: semicolon not inside dollar quotes
-            # Use a simple state machine approach
-            statements = []
-            buffer = []
-            in_dollar = False
-            dollar_delim = None
-            
-            for i, char in enumerate(no_comments):
-                buffer.append(char)
-                
-                # Track dollar-quoted delimiters
-                if char == '$' and not in_dollar:
-                    # Find the full delimiter (e.g., $$ or $tag$)
-                    lookahead = no_comments[i:]
-                    match = re.match(r'(\$[^$]*\$)', lookahead)
-                    if match:
-                        dollar_delim = match.group(1)
-                        in_dollar = True
-                elif in_dollar and char == '$':
-                    # Check if we're closing the dollar quote
-                    if i + 1 <= len(no_comments):
-                        remaining = ''.join(buffer[-len(dollar_delim):])
-                        if remaining == dollar_delim:
-                            in_dollar = False
-                            dollar_delim = None
-                
-                # Statement separator (semicolon outside dollar quotes)
-                if char == ';' and not in_dollar:
-                    stmt = ''.join(buffer).strip()
-                    if stmt and stmt != ';':
-                        statements.append(stmt)
-                    buffer = []
-            
-            # Final statement
-            if buffer:
-                stmt = ''.join(buffer).strip()
-                if stmt:
-                    statements.append(stmt)
-            
-            # Execute each statement
-            for statement in statements:
-                if statement.strip():
-                    cur.execute(statement)
-            
+            # Execute entire schema in one go — Postgres handles $$ blocks correctly
+            cur.execute(schema_sql)
             print("[+] Database schema initialized successfully.")
         except Exception as e:
             print(f"[!] Error initializing database schema: {e}")
             raise
         finally:
             cur.close()
+
+
 
 
 def close_pool():
