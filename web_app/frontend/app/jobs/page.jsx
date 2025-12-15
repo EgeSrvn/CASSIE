@@ -28,8 +28,8 @@ export default function Jobs() {
     if (!hasCompleted && user) {
       const sample = {
         id: `sample-${Date.now()}`,
-        name: 'Example Completed Job',
-        pipeline: 'Example Pipeline',
+        name: 'A. naeslundii Genome Analysis',
+        pipeline: 'A. naeslundii Genome Analysis',
         analyses: [],
         files: [],
         createdAt: new Date().toISOString(),
@@ -147,8 +147,8 @@ export default function Jobs() {
               <div className="card mt-6">
                 <div className="flex justify-between items-start">
                   <div className="flex-1">
-                    <h3 className="text-xl font-semibold text-primary-blue mb-2">Example Completed Job</h3>
-                    <p className="text-gray-600 mb-2">Pipeline: Example Pipeline</p>
+                    <h3 className="text-xl font-semibold text-primary-blue mb-2">A. naeslundii Genome Analysis</h3>
+                    <p className="text-gray-600 mb-2">A. naeslundii Genome Analysis</p>
                     <p className="text-sm text-gray-500">Created: {new Date().toLocaleString()}</p>
                   </div>
                   <div className="flex flex-col items-end gap-2">
