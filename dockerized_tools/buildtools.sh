@@ -1,11 +1,27 @@
 #!/bin/bash
 set -euo pipefail
 
-echo "[TOOLS] Rebuilding FastQC image (no cache)..."
-docker build --no-cache -t fastqc:0.12.1 ./fastqc
+echo "[TOOLS] Rebuilding tool images (no cache, deterministic)..."
 
-# echo "[TOOLS] Rebuilding SPAdes image (no cache)..."
-# docker build --no-cache -t spades:3.15.5 ./spades
+docker build --no-cache \
+  -f fastqc/Dockerfile \
+  -t fastqc:0.12.1 \
+  fastqc
+
+docker build --no-cache \
+  -f genomescope2/Dockerfile \
+  -t genomescope2 \
+  genomescope2
+
+docker build --no-cache \
+  -f spades/Dockerfile \
+  -t spades \
+  spades
+
+docker build --no-cache \
+  -f quast/Dockerfile \
+  -t quast \
+  quast
 
 echo "[TOOLS] Verifying FastQC image..."
 docker run --rm fastqc:0.12.1 --version
