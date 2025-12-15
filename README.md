@@ -10,3 +10,12 @@ Automated genome assembly and annotation: Build a website that has many options 
 ## Assembly QC - sedef/biser vs mrcanavar
 ## The website should then spawn all these processes on e.g., AWS/GCP/Azure. Multi-cloud support would be very good to have (as an option in the interface)
 ## CAMP for more tools and inspiration
+
+
+# add_tenant t1 vm1
+# does_tenant_exist t1
+# upload_file t1 filename
+# run_pipeline t1 tool_indices input_path
+# after server says job submitted, client will wait until job finished signal
+# after sending results to backend, client will exit
+

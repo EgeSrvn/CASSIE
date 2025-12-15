@@ -1,16 +1,17 @@
 FROM ubuntu:22.04
 
-RUN apt-get update && \
-    apt-get install -y git r-base wget build-essential zlib1g-dev jellyfish
+ENV DEBIAN_FRONTEND=noninteractive
 
-# Install devtools to install genomescope2.0
-RUN R -e 'install.packages("devtools", repos="https://cloud.r-project.org")'
+RUN apt-get update && apt-get install -y \
+    r-base \
+    r-base-dev \
+    jellyfish \
+    git \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
-# Install GenomeScope2.0 from GitHub
-RUN R -e 'devtools::install_github("tbenavi1/genomescope2.0")'
+RUN R -e "install.packages('remotes', repos='https://cloud.r-project.org')"
 
-# Wrapper script
-COPY run_genomescope.sh /usr/local/bin/run_genomescope.sh
-RUN chmod +x /usr/local/bin/run_genomescope.sh
+RUN R -e "remotes::install_github('tbenavi1/genomescope2', subdir='genomescope2')"
 
-ENTRYPOINT ["run_genomescope.sh"]
+WORKDIR /data

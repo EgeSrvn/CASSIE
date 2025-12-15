@@ -45,4 +45,3 @@ exit
 cd /data
 ls
 exit
-exit
