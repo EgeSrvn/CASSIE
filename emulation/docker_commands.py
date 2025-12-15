@@ -229,7 +229,7 @@ def ensure_vms():
     for name in VM_NAMES:
         try:
             container = client.containers.get(name)
-            print(f"[*] Container '{name}' already exists (status: {container.status}).")
+            print(f"[*] Container '{name}' already exists (status: {container.status}). Skipping provisioning.")
         except docker.errors.NotFound:
             print(f"[+] Creating container '{name}'...")
             os.makedirs(f"{DATA_BASE_PATH}/{name}", exist_ok=True)
@@ -252,9 +252,10 @@ def ensure_vms():
                 },
             )
             time.sleep(2)
-        provision_vm(container, name)
+            # Provision ONLY if it's a new container
+            provision_vm(container, name)
 
-    print("[✓] VM initialization and provisioning complete.")
+    print("[✓] VM initialization complete.")
 
 
 def start_vm(vm_name):
@@ -443,11 +444,15 @@ def create_tenant_container(vm_name, tenant_name, user_id=None, cpu_quota=None, 
 
     # --- WAIT FOR IMAGE (race-safe) -------------------------------------------
 
-    for _ in range(15):
+    # FIX: Increased wait time from 15 to 60 seconds to prevent "not ready" errors
+    print(f"[*] Waiting for base image '{tenant_base_image}' to be ready...")
+    for i in range(60):
         try:
             client.images.get(tenant_base_image)
             break
         except docker.errors.ImageNotFound:
+            if i % 5 == 0 and i > 0:
+                print(f"    ... waiting for image commit ({i}s)")
             time.sleep(1)
     else:
         raise RuntimeError(

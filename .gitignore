@@ -211,4 +211,4 @@ data/*
 
 *.fastq
 *.fasta
-
+/dataset/*
