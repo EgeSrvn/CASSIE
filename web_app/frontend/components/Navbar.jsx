@@ -11,29 +11,34 @@ export default function Navbar() {
 
   useEffect(() => {
     const token = localStorage.getItem('token')
-    if (token) {
+    const storedUser = localStorage.getItem('user')
+    if (token && storedUser) {
       setIsAuthenticated(true)
-      // Fetch user info - gracefully handle if backend is not available
-      fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/auth/me`, {
-        headers: { Authorization: `Bearer ${token}` }
-      })
-        .then(res => {
-          if (res.ok) return res.json()
-          throw new Error('Backend not available')
-        })
-        .then(data => setUser(data))
-        .catch(() => {
-          // Keep authentication state if token exists, even if backend is down
-          // This allows frontend-only browsing
-          setUser({ email: 'Demo User' })
-        })
+      setUser(JSON.parse(storedUser))
     }
+    const handleAuthChange = () => {
+      const token2 = localStorage.getItem('token')
+      const storedUser2 = localStorage.getItem('user')
+      if (token2 && storedUser2) {
+        setIsAuthenticated(true)
+        setUser(JSON.parse(storedUser2))
+      } else {
+        setIsAuthenticated(false)
+        setUser(null)
+      }
+    }
+
+    window.addEventListener('authChanged', handleAuthChange)
+    return () => window.removeEventListener('authChanged', handleAuthChange)
   }, [])
 
   const handleLogout = () => {
     localStorage.removeItem('token')
+    localStorage.removeItem('user')
     setIsAuthenticated(false)
     setUser(null)
+    // notify other components
+    window.dispatchEvent(new Event('authChanged'))
     router.push('/')
   }
 
@@ -48,9 +53,6 @@ export default function Navbar() {
           <div className="flex items-center gap-6">
             <Link href="/" className="hover:text-secondary-pink transition-colors">
               Home
-            </Link>
-            <Link href="/upload" className="hover:text-secondary-pink transition-colors">
-              Upload
             </Link>
             <Link href="/configure" className="hover:text-secondary-pink transition-colors">
               Configure
@@ -67,6 +69,9 @@ export default function Navbar() {
             
             {isAuthenticated ? (
               <div className="flex items-center gap-4">
+                          <Link href="/profile" className="hover:text-secondary-pink transition-colors">
+                            Profile
+                          </Link>
                 <span className="text-sm">Welcome, {user?.email || 'User'}</span>
                 <button
                   onClick={handleLogout}
