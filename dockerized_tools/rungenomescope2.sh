@@ -1,48 +1,39 @@
 #!/bin/bash
 set -euo pipefail
 
-if [ $# -lt 1 ]; then
-  echo "Usage: rungenomescope2 <reads.fastq.gz | reads.fastq>"
-  exit 1
-fi
+# Interface MUST match runfastqc.sh
+READS="$1"
+OUTROOT="$2"
 
-READS_PATH="$1"
+TOOL="genomescope2"
+WORKDIR="/data/${TOOL}_run"
 
-# Resolve to an absolute path if possible
-if command -v realpath >/dev/null 2>&1; then
-  READS_ABS="$(realpath "$READS_PATH")"
-else
-  READS_ABS="$READS_PATH"
-fi
+mkdir -p "$WORKDIR"
+mkdir -p out
 
-if [ ! -f "$READS_ABS" ]; then
-  echo "Error: reads file not found: $READS_ABS"
-  exit 1
-fi
-
-READS_DIR="$(dirname "$READS_ABS")"
-READS_FILE="$(basename "$READS_ABS")"
-
-# Always output to ~/genomescope2_out (independent of cwd)
-OUT_DIR="${HOME}/genomescope2_out"
-mkdir -p "$OUT_DIR"
-
-# Optional tuning via env vars
-KMER_SIZE="${KMER_SIZE:-21}"
-HASH_SIZE="${HASH_SIZE:-200M}"
-THREADS="${THREADS:-8}"
-MAX_KMERCOV="${MAX_KMERCOV:-10000}"
-
-# Run: mount input dir read-only, mount output dir read-write
 docker run --rm \
-  -v "${READS_DIR}:/in:ro" \
-  -v "${OUT_DIR}:/out:rw" \
+  -v /data:/data \
   genomescope2 \
   bash -lc "
-    set -euo pipefail
-    jellyfish count -C -m ${KMER_SIZE} -s ${HASH_SIZE} -t ${THREADS} <(zcat /in/${READS_FILE}) -o /out/counts.jf
-    jellyfish histo /out/counts.jf > /out/histogram.histo
-    Rscript -e \"genomescope2::genomescope('/out/histogram.histo', ${KMER_SIZE}, '/out/genomescope_output', max_kmercov=${MAX_KMERCOV})\"
+    jellyfish count -C -m 21 -s 100M -t 4 \
+      <(zcat /data/$READS) \
+      -o $WORKDIR/reads.jf
+
+    jellyfish histo $WORKDIR/reads.jf > $WORKDIR/reads.histo
+
+    Rscript -e '
+      library(genomescope2)
+      genomescope2(
+        input=\"$WORKDIR/reads.histo\",
+        k=21,
+        ploidy=1,
+        read_length=150,
+        output_dir=\"$WORKDIR\"
+      )
+    '
   "
 
-echo "GenomeScope2 finished. Output: ${OUT_DIR}/genomescope_output/"
+# Follow EXACT FastQC finalization semantics
+rm -rf "$OUTROOT/$TOOL"
+mv "$WORKDIR" "$OUTROOT/$TOOL"
+cp -r "$OUTROOT/$TOOL" out/

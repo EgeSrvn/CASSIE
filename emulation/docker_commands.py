@@ -6,6 +6,7 @@ from pathlib import Path
 import platform
 import time
 import base64
+import threading
 
 
 # -------------------------------------------------------------------
@@ -22,6 +23,8 @@ if platform.system() == "Windows":
     DATA_BASE_PATH = "C:/data"
 else:
     DATA_BASE_PATH = os.path.join(os.getcwd(), "emulation_run", "data")
+
+IS_LINUX = platform.system() == "Linux"
 
 os.makedirs(DATA_BASE_PATH, exist_ok=True)
 
@@ -392,12 +395,12 @@ def create_tenant_container(vm_name, tenant_name, user_id=None, cpu_quota=None, 
     suffix = f"_{user_id}" if user_id is not None else ""
     container_name = f"tenant_{tenant_name}{suffix}"
     home_dir_host = os.path.join(DATA_BASE_PATH, container_name)
-    os.makedirs(home_dir_host, exist_ok=True)  # persistent home per tenant
+    os.makedirs(home_dir_host, exist_ok=True)
 
-    # Check if tenant container already exists
+    # If container already exists, return it
     try:
         cont = client.containers.get(container_name)
-        print(f"[*] Tenant container '{container_name}' already exists (status: {cont.status}).")
+        print(f"[*] Tenant container '{container_name}' already exists.")
         return cont
     except docker.errors.NotFound:
         pass
@@ -408,22 +411,51 @@ def create_tenant_container(vm_name, tenant_name, user_id=None, cpu_quota=None, 
             computed_cpu, computed_mem = divide_resources_for_tenant(vm_name)
         except Exception:
             computed_cpu, computed_mem = int(CPU_COUNT * 1e9 // 2), "2g"
-        if cpu_quota is None:
-            cpu_quota = int(computed_cpu)
-        if mem_limit is None:
-            mem_limit = computed_mem
 
-    # Commit the VM as a base image for tenants
+        cpu_quota = int(cpu_quota or computed_cpu)
+        mem_limit = mem_limit or computed_mem
+
     tenant_base_image = f"tenant_base_{vm_name}"
+
+    # --- COMMIT LOGIC (WINDOWS = sync, LINUX = async) -------------------------
+
+    def commit_vm_async():
+        try:
+            vm_container = client.containers.get(vm_name)
+            print(f"[+] (async) Committing VM '{vm_name}' as '{tenant_base_image}'...")
+            client.api.commit(vm_container.id, tenant_base_image)
+            print(f"[+] (async) VM '{vm_name}' committed successfully.")
+        except Exception as e:
+            print(f"[!] (async) VM commit failed: {e}")
+
     try:
         client.images.get(tenant_base_image)
         print(f"[*] Tenant base image '{tenant_base_image}' already exists.")
     except docker.errors.ImageNotFound:
-        print(f"[+] Committing VM '{vm_name}' as base image '{tenant_base_image}'...")
-        vm_container = client.containers.get(vm_name)
-        client.api.commit(vm_container.id, tenant_base_image)
+        if IS_LINUX:
+            # Linux: do NOT block
+            threading.Thread(target=commit_vm_async, daemon=True).start()
+        else:
+            # Windows: original behavior preserved
+            print(f"[+] Committing VM '{vm_name}' as base image '{tenant_base_image}'...")
+            vm_container = client.containers.get(vm_name)
+            client.api.commit(vm_container.id, tenant_base_image)
 
-    # Run tenant container from VM base image
+    # --- WAIT FOR IMAGE (race-safe) -------------------------------------------
+
+    for _ in range(15):
+        try:
+            client.images.get(tenant_base_image)
+            break
+        except docker.errors.ImageNotFound:
+            time.sleep(1)
+    else:
+        raise RuntimeError(
+            f"Tenant base image '{tenant_base_image}' not ready yet. Retry shortly."
+        )
+
+    # --- RUN TENANT CONTAINER -------------------------------------------------
+
     cont = client.containers.run(
         image=tenant_base_image,
         name=container_name,
@@ -436,14 +468,12 @@ def create_tenant_container(vm_name, tenant_name, user_id=None, cpu_quota=None, 
         stdin_open=True,
         volumes={
             home_dir_host: {"bind": f"/home/{container_name}", "mode": "rw"},
-            f"{DATA_BASE_PATH}/{vm_name}": {"bind": "/data", "mode": "rw"},  # ✅ ADD THIS
+            f"{DATA_BASE_PATH}/{vm_name}": {"bind": "/data", "mode": "rw"},
             "/var/run/docker.sock": {"bind": "/var/run/docker.sock", "mode": "rw"},
         },
     )
 
-    print(f"[+] Tenant container '{container_name}' created from VM '{vm_name}' "
-          f"(cpu_nano={cpu_quota}, mem={mem_limit}). Python and pip are inherited from VM.")
-
+    print(f"[+] Tenant container '{container_name}' created on VM '{vm_name}'.")
     return cont
 
 

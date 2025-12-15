@@ -63,7 +63,7 @@ process SPADES {
     publishDir "$params.outdir/SPAdes", [mode: 'copy']
 
     input:
-    path reads
+    tuple path(r1), path(r2)
 
     output:
     path "out/*"
@@ -71,7 +71,30 @@ process SPADES {
     script:
     \"\"\"
     mkdir -p out
-    runspades "$reads" "/data"
+    runspades "$r1" "$r2" "/data"
+    \"\"\"
+}
+"""
+    },
+    {
+  "name": "QUAST",
+  "id": "QUAST",
+  "type": "qc",
+  "description": "Assembly quality assessment",
+  "process_template": """
+process QUAST {
+    publishDir "$params.outdir/QUAST", [mode: 'copy']
+
+    input:
+    path assembly
+
+    output:
+    path "out/*"
+
+    script:
+    \"\"\"
+    mkdir -p out
+    runquast "$assembly" "/data"
     \"\"\"
 }
 """
@@ -115,7 +138,7 @@ params.outdir = "$baseDir/results"
 
     # 3. Build Workflow Logic
     script += "workflow {\n"
-    script += "    data_ch = Channel.fromPath(params.input)\n\n"
+    script += "    data_ch = Channel.fromFilePairs(params.input, flat: true)\n\n"
 
     for tool in active_tools:
         process_name = tool["id"]

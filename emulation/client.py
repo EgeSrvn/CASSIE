@@ -5,34 +5,41 @@ import sys
 HOST = "127.0.0.1"  # Server address
 PORT = 5001        # Server port
 
-_RECV_BUFFER = b""
+END_MARKER = "<WAIT>"
 
+BUFFER = b""
 
 def receive_until_prompt(sock):
     """
-    Receive data from the server until a prompt or full message is received.
-
-    This function reads data from the socket in chunks until it detects
-    the end of a message, which is determined by the data ending with
-    ': ' or '\n'. The received data is then decoded and returned.
-
-    Args:
-        sock (socket.socket): The socket object to receive data from.
-
-    Returns:
-        str: The decoded data received from the server.
+    Reads data until the first END_MARKER is found.
+    Handles cases where multiple messages arrive in one packet.
     """
-    data = b""
+    global BUFFER
+    
     while True:
-        chunk = sock.recv(1024)
-        if not chunk:
+        # 1. Check if the marker is already in our buffer
+        if END_MARKER.encode() in BUFFER:
+            # Split at the FIRST marker found
+            message, _, rest = BUFFER.partition(END_MARKER.encode())
+            # Save the rest for the next call
+            BUFFER = rest
+            return message.decode(errors="replace")
+        
+        # 2. If not found, read more data from network
+        try:
+            chunk = sock.recv(4096)
+            if not chunk:
+                # Connection closed. Return remaining buffer if any.
+                if BUFFER:
+                    ret = BUFFER
+                    BUFFER = b""
+                    return ret.decode(errors="replace")
+                break
+            BUFFER += chunk
+        except socket.error:
             break
-        data += chunk
-        # Heuristic: stop when prompt or full message is received
-        if data.endswith(b": ") or data.endswith(b"\n"):
-            break
-    return data.decode(errors="replace")
-
+            
+    return ""
 
 def main():
     """
@@ -102,56 +109,91 @@ def main():
                 tenant_choice = input("Select tenant (number): ")
                 sock.sendall((tenant_choice + "\n").encode())
 
-                # Start a reader thread to print server -> client output
                 stop_event = threading.Event()
 
                 def reader():
-                    """
-                    Thread function to continuously read and print data from the server.
-
-                    This function runs in a separate thread and reads data from the
-                    server socket, printing it to the standard output. It stops when
-                    the `stop_event` is set or the server closes the connection.
-                    """
+                    """Background thread that listens for server output."""
+                    global BUFFER
                     try:
                         while not stop_event.is_set():
-                            data = sock.recv(4096)
-                            if not data:
+                            try:
+                                sock.settimeout(0.5)
+                                data = sock.recv(4096)
+                            except socket.timeout:
+                                continue
+                            except:
                                 break
-                            # decode and print raw bytes
-                            sys.stdout.write(data.decode(errors="replace"))
+                            
+                            if not data: break
+
+                            text = data.decode(errors="replace")
+                            
+                            # --- CRITICAL FIX: Detect when shell closes ---
+                            if "--- Tenant shell closed. ---" in text:
+                                # 1. Split the output: Shell stuff vs Menu stuff
+                                shell_part, _, menu_part = text.partition("--- Tenant shell closed. ---")
+                                
+                                # 2. Print the final shell message
+                                sys.stdout.write(shell_part + "\n--- Tenant shell closed. ---\n")
+                                sys.stdout.flush()
+                                
+                                # 3. Save the "Phantom Menu" into the buffer for the MAIN loop to find later
+                                if menu_part:
+                                    BUFFER += menu_part.encode()
+                                
+                                # 4. Tell the main loop to STOP waiting for input
+                                stop_event.set()
+                                break
+                            
+                            # Standard cleanup
+                            if "<WAIT>" in text:
+                                text = text.replace("<WAIT>", "")
+                            
+                            sys.stdout.write(text)
                             sys.stdout.flush()
                     except Exception:
                         pass
+                    stop_event.set()
 
                 t = threading.Thread(target=reader, daemon=True)
                 t.start()
 
                 print("[*] Enter interactive tenant shell. Type /exit on a line to quit.")
+                
+                # --- Main Loop Logic ---
                 try:
-                    while True:
+                    while not stop_event.is_set():
+                        # Check before blocking on input
+                        if stop_event.is_set(): break
+                        
+                        # Use a select-like approach or just input(). 
+                        # Since input() blocks, we rely on the user hitting Enter one last time 
+                        # OR the thread setting the event.
+                        
+                        # We use a simple trick: if the reader sees the close signal, 
+                        # it sets stop_event. The loop condition handles the rest.
                         try:
                             line = input()
                         except EOFError:
                             break
+                            
+                        # Double check after input returns
+                        if stop_event.is_set(): break
+
                         if line.strip() == "/exit":
                             sock.sendall(("/exit\n").encode())
                             break
+                        
                         sock.sendall((line + "\n").encode())
-                except KeyboardInterrupt:
-                    try:
-                        sock.sendall(("/exit\n").encode())
-                    except Exception:
-                        pass
+                        
+                except (BrokenPipeError, OSError):
+                    # If server cuts connection, stop gracefully
+                    stop_event.set()
 
+                # Cleanup
                 stop_event.set()
-                # allow reader thread to drain
                 t.join(timeout=1)
-                # print any remaining data
-                try:
-                    print(receive_until_prompt(sock), end="")
-                except Exception:
-                    pass
+                sock.setblocking(True)
 
             # --- 6. Exit ---
             elif choice == "6":
