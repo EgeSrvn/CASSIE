@@ -2,20 +2,10 @@
 
 import { useState, useEffect } from 'react'
 import axios from 'axios'
-
-interface Workflow {
-  _id: string
-  name: string
-  description: string
-  author: string
-  votes: number
-  downloads: number
-  createdAt: string
-  tags: string[]
-}
+import { useRouter } from 'next/navigation'
 
 export default function Community() {
-  const [workflows, setWorkflows] = useState<Workflow[]>([])
+  const [workflows, setWorkflows] = useState([])
   const [loading, setLoading] = useState(true)
   const [searchTerm, setSearchTerm] = useState('')
 
@@ -36,7 +26,7 @@ export default function Community() {
     }
   }
 
-  const handleVote = async (workflowId: string) => {
+  const handleVote = async (workflowId) => {
     const token = localStorage.getItem('token')
     try {
       await axios.post(
@@ -111,9 +101,7 @@ export default function Community() {
               >
                 ↑ Vote ({workflow.votes})
               </button>
-              <button className="flex-1 btn-primary text-sm">
-                Use Pipeline
-              </button>
+              <UseButton workflow={workflow} />
             </div>
           </div>
         ))}
@@ -125,6 +113,28 @@ export default function Community() {
         </div>
       )}
     </div>
+  )
+}
+
+function UseButton({ workflow }) {
+  const router = useRouter()
+  const handleUse = () => {
+    // store the workflow as a draft pipeline for Builder
+    const draft = {
+      id: workflow._id || workflow.id || Date.now().toString(),
+      name: workflow.name,
+      description: workflow.description,
+      nodes: workflow.nodes || [],
+      edges: workflow.edges || [],
+    }
+    localStorage.setItem('pipelineDraft', JSON.stringify(draft))
+    router.push('/builder?draft=true')
+  }
+
+  return (
+    <button onClick={handleUse} className="flex-1 btn-primary text-sm">
+      Use Pipeline
+    </button>
   )
 }
 

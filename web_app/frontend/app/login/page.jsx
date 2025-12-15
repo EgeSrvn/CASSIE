@@ -3,42 +3,40 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
-import axios from 'axios'
 
-export default function Register() {
+export default function Login() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
-  const [confirmPassword, setConfirmPassword] = useState('')
   const [error, setError] = useState('')
   const router = useRouter()
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = async (e) => {
     e.preventDefault()
     setError('')
 
-    if (password !== confirmPassword) {
-      setError('Passwords do not match')
+    const stored = localStorage.getItem('user')
+    const storedUser = stored ? JSON.parse(stored) : { email: 'demo@cassie.dev', password: 'demo123' }
+    const isValid =
+      (email === storedUser.email && password === storedUser.password) ||
+      (email === 'demo@cassie.dev' && password === 'demo123')
+
+    if (!isValid) {
+      setError('Invalid credentials. Try demo@cassie.dev / demo123.')
       return
     }
 
-    try {
-      const response = await axios.post(`${process.env.NEXT_PUBLIC_API_URL}/api/auth/register`, {
-        email,
-        password,
-      })
-
-      localStorage.setItem('token', response.data.token)
-      router.push('/')
-    } catch (err: any) {
-      setError(err.response?.data?.message || 'Registration failed')
-    }
+    localStorage.setItem('token', 'demo-token')
+    localStorage.setItem('user', JSON.stringify({ email }))
+    // notify other components that auth changed
+    window.dispatchEvent(new Event('authChanged'))
+    router.push('/')
   }
 
   return (
     <div className="container mx-auto px-4 py-12">
       <div className="max-w-md mx-auto card">
         <h1 className="text-3xl font-bold text-primary-blue mb-6 text-center">
-          Register
+          Login
         </h1>
         
         {error && (
@@ -74,31 +72,18 @@ export default function Register() {
             />
           </div>
 
-          <div>
-            <label className="block text-gray-700 font-medium mb-2">
-              Confirm Password
-            </label>
-            <input
-              type="password"
-              value={confirmPassword}
-              onChange={(e) => setConfirmPassword(e.target.value)}
-              required
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-blue focus:border-transparent"
-            />
-          </div>
-
           <button
             type="submit"
             className="w-full btn-primary"
           >
-            Register
+            Login
           </button>
         </form>
 
         <p className="mt-4 text-center text-gray-600">
-          Already have an account?{' '}
-          <Link href="/login" className="text-primary-blue hover:underline">
-            Login here
+          Don't have an account?{' '}
+          <Link href="/register" className="text-primary-blue hover:underline">
+            Register here
           </Link>
         </p>
       </div>
