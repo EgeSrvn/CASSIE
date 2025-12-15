@@ -239,19 +239,20 @@ def main():
                 print(receive_until_prompt(sock))
             
             elif choice == "7":
-                # Generate Pipeline
                 print("[*] Fetching tenant list...")
                 # 1. Select Tenant
                 print(receive_until_prompt(sock), end="") 
                 sock.sendall((input() + "\n").encode())
                 
                 # 2. Select Tools
-                print(receive_until_prompt(sock), end="") # Tool list + "Enter indices: "
+                print(receive_until_prompt(sock), end="") # Tool list
                 sock.sendall((input() + "\n").encode())
                 
-                # 3. Input Path
-                print(receive_until_prompt(sock), end="") # "Enter path: "
-                sock.sendall((input() + "\n").encode())
+                # 3. Input Arguments (UPDATED)
+                # Server will send: "Enter input parameters (e.g. -fasta f.fa -fastq fwd.fq -fastq rev.fq): "
+                print(receive_until_prompt(sock), end="") 
+                args_input = input()
+                sock.sendall((args_input + "\n").encode())
                 
                 # 4. Result
                 print(receive_until_prompt(sock))
