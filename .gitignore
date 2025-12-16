@@ -212,3 +212,4 @@ data/*
 *.fastq
 *.fasta
 /dataset/*
+emulation/emulation_run/*
