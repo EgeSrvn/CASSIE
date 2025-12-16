@@ -9,6 +9,18 @@ export default function Jobs() {
   const [filter, setFilter] = useState('all')
   const [isAuthed, setIsAuthed] = useState(false)
 
+  const formatPrice = (p) => {
+    const n = Number(p)
+    if (!Number.isFinite(n)) return null
+    return `$${n.toFixed(2)}`
+  }
+
+  const formatTime = (t) => {
+    const n = Number(t)
+    if (!Number.isFinite(n)) return null
+    return `${n} hr${n !== 1 ? 's' : ''}`
+  }
+
   useEffect(() => {
     const token = localStorage.getItem('token')
     if (!token) {
@@ -171,9 +183,11 @@ export default function Jobs() {
                 <div key={job.id || job._id} className="card">
                   <div className="flex justify-between items-start">
                     <div className="flex-1">
-                      <h3 className="text-xl font-semibold text-primary-blue mb-2">
-                        {job.name}
-                      </h3>
+                      <Link href={`/jobs/${job.id}`} className="inline-block">
+                        <h3 className="text-xl font-semibold text-primary-blue mb-2">
+                          {job.name}
+                        </h3>
+                      </Link>
                       <p className="text-gray-600 mb-2">Pipeline: {job.pipeline}</p>
                       <p className="text-sm text-gray-500">
                         Created: {new Date(job.createdAt).toLocaleString()}
@@ -181,6 +195,26 @@ export default function Jobs() {
                       {job.completedAt && (
                         <p className="text-sm text-gray-500">
                           Completed: {new Date(job.completedAt).toLocaleString()}
+                        </p>
+                      )}
+
+                      {job.analyses && job.analyses.length > 0 && (
+                        <p className="text-sm text-gray-600 mt-2">Tools: {job.analyses.join(', ')}</p>
+                      )}
+
+                      {job.files && job.files.length > 0 && (
+                        <p className="text-sm text-gray-600 mt-1">Data: {job.files.map(f => (typeof f === 'string' ? f : f.name)).join(', ')}</p>
+                      )} 
+
+                      {job.estimatedTime != null && formatTime(job.estimatedTime) && (
+                        <p className="text-sm text-gray-600 mt-2">
+                          Estimated Time: {formatTime(job.estimatedTime)}
+                        </p>
+                      )}
+
+                      {job.estimatedPrice != null && formatPrice(job.estimatedPrice) && (
+                        <p className="text-sm text-gray-600">
+                          Estimated Price: {formatPrice(job.estimatedPrice)}
                         </p>
                       )}
                     </div>

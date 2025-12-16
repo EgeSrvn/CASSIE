@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 
 const analyses = [
@@ -14,8 +14,76 @@ export default function Configure() {
   const router = useRouter()
   const [projectName, setProjectName] = useState('')
   const [notes, setNotes] = useState('')
+  const [estimatedTime, setEstimatedTime] = useState(null)
+  const [estimatedPrice, setEstimatedPrice] = useState(null)
   const [selectedAnalyses, setSelectedAnalyses] = useState([])
   const [files, setFiles] = useState([])
+
+  // Simple estimation rules (client-side): time per file per analysis and a size factor
+  const ANALYSIS_CONFIG = {
+    'Read Quality (FastQC)': { timePerFile: 0.1 },
+    'Genomic Property Estimation (GenomeScope2)': { timePerFile: 0.5 },
+    'Assembly (Spades)': { timePerFile: 2.0 },
+    'Quality Assessment for Assembly (QUAST)': { timePerFile: 0.5 },
+  }
+  const RATE_PER_HOUR = 5.0 // USD per hour
+
+  const formatPrice = (p) => {
+    if (p == null) return null
+    const n = Number(p)
+    if (!Number.isFinite(n)) return null
+    return `$${n.toFixed(2)}`
+  }
+
+  const formatTime = (t) => {
+    if (t == null) return null
+    const n = Number(t)
+    if (!Number.isFinite(n)) return null
+    return `${n} hr${n !== 1 ? 's' : ''}`
+  }
+
+  const formatBytes = (bytes) => {
+    if (bytes == null) return ''
+    const units = ['B', 'KB', 'MB', 'GB', 'TB']
+    let i = 0
+    let n = Number(bytes) || 0
+    while (n >= 1024 && i < units.length - 1) { n /= 1024; i++ }
+    return `${Math.round(n * 10) / 10} ${units[i]}`
+  }
+
+  useEffect(() => {
+    // Recompute estimates when files or analyses change
+    const compute = () => {
+      const fileCount = Math.max(files.length, 1) // assume at least one file if analyses selected
+      const totalBytes = files.reduce((s, f) => s + (f.size || 0), 0)
+      const sizeGB = totalBytes / 1e9
+
+      let time = 0
+      selectedAnalyses.forEach(a => {
+        const cfg = ANALYSIS_CONFIG[a] || { timePerFile: 0.5 }
+        time += cfg.timePerFile * fileCount
+      })
+
+      // Add a size factor only when a real file is present
+      if (files.length > 0) {
+        time += sizeGB * 2 // 2 hours per GB
+      }
+
+      // If no analyses selected and no files, clear estimates
+      if (selectedAnalyses.length === 0 && files.length === 0) {
+        setEstimatedTime(null)
+        setEstimatedPrice(null)
+        return
+      }
+
+      const timeRounded = Math.round(time * 100) / 100
+      const priceRounded = Math.round(timeRounded * RATE_PER_HOUR * 100) / 100
+      setEstimatedTime(timeRounded)
+      setEstimatedPrice(priceRounded)
+    }
+
+    compute()
+  }, [files, selectedAnalyses])
 
   const handleAnalysisToggle = (analysis) => {
     setSelectedAnalyses(prev =>
@@ -27,8 +95,20 @@ export default function Configure() {
 
   const handleFileSelect = (e) => {
     if (e.target.files) {
-      setFiles(Array.from(e.target.files))
+      const newFiles = Array.from(e.target.files)
+      // Merge new files with existing, avoiding duplicates by name
+      const existing = files.slice()
+      const combined = [...existing, ...newFiles].reduce((acc, f) => {
+        const name = f.name || String(f)
+        if (!acc.some(x => x.name === name)) acc.push(f)
+        return acc
+      }, [])
+      setFiles(combined)
     }
+  }
+
+  const removeFile = (name) => {
+    setFiles(prev => prev.filter(f => f.name !== name))
   }
 
   const handleSubmit = (e) => {
@@ -38,8 +118,10 @@ export default function Configure() {
       JSON.stringify({
         projectName,
         notes,
+        estimatedTime,
+        estimatedPrice,
         analyses: selectedAnalyses,
-        files: files.map(f => f.name),
+        files: files.map(f => ({ name: f.name, size: f.size || null })),
       })
     )
     alert('Configuration captured locally for this template app.')
@@ -63,6 +145,9 @@ export default function Configure() {
       pipeline: projectName,
       analyses: selectedAnalyses,
       files: files.map(f => f.name),
+      notes,
+      estimatedTime: estimatedTime ? Number(estimatedTime) : null,
+      estimatedPrice: estimatedPrice ? Number(estimatedPrice) : null,
       createdAt: new Date().toISOString(),
       status: 'pending',
       owner,
@@ -109,6 +194,8 @@ export default function Configure() {
                 placeholder="Add reminders or run parameters"
               />
             </div>
+
+
           </div>
         </div>
 
@@ -130,14 +217,21 @@ export default function Configure() {
             Select Files
           </label>
           {files.length > 0 && (
-            <ul className="space-y-2">
-              {files.map(file => (
-                <li key={file.name} className="p-2 bg-gray-50 rounded border border-gray-200">
-                  {file.name}
-                </li>
-              ))}
-            </ul>
-          )}
+            <>
+              <ul className="space-y-2">
+                {files.map(file => (
+                  <li key={file.name} className="p-2 bg-gray-50 rounded border border-gray-200 flex justify-between items-center">
+                    <div>
+                      <div className="font-medium">{file.name}</div>
+                      <div className="text-sm text-gray-500">{formatBytes(file.size)}</div>
+                    </div>
+                    <button type="button" onClick={() => removeFile(file.name)} className="text-sm text-red-500">Remove</button>
+                  </li>
+                ))}
+              </ul>
+              <p className="text-sm text-gray-500 mt-2">Total: {files.length} file(s), {formatBytes(files.reduce((s, f) => s + (f.size || 0), 0))}</p>
+            </>
+          )} 
         </div>
 
         <div className="card">
@@ -159,13 +253,24 @@ export default function Configure() {
           </div>
         </div>
 
-        <div className="flex gap-4">
-          <button type="submit" className="btn-primary text-lg px-8 py-3">
-            Save Draft
-          </button>
-          <button type="button" onClick={handleSubmitJob} className="btn-secondary text-lg px-8 py-3">
-            Submit Job
-          </button>
+        <div className="flex items-center gap-4">
+          <div className="flex gap-4">
+            <button type="submit" className="btn-primary text-lg px-8 py-3">
+              Save Draft
+            </button>
+            <button type="button" onClick={handleSubmitJob} className="btn-secondary text-lg px-8 py-3">
+              Submit Job
+            </button>
+          </div>
+
+          <div className="ml-auto text-right">
+            <p className="text-sm text-gray-600">
+              Estimated Time: <strong>{formatTime(estimatedTime) || '—'}</strong>
+            </p>
+            <p className="text-sm text-gray-600">
+              Estimated Price: <strong>{formatPrice(estimatedPrice) || '—'}</strong>
+            </p>
+          </div>
         </div>
       </form>
     </div>
