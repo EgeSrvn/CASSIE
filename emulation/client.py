@@ -1,6 +1,68 @@
 import socket
 import threading
+import os
 import sys
+
+"""
+Cloud Emulator Client
+=====================
+
+This client connects to the Cloud Emulator Server (default 127.0.0.1:5001).
+It supports two modes: Interactive (Menu-based) and Command Line Interface (CLI).
+
+USAGE
+-----
+1. Interactive Mode:
+   Run without arguments to enter the interactive menu.
+   $ python3 client.py
+
+2. CLI Mode:
+   Run with the `-cli` flag to execute a single command and exit immediately 
+   (except for 'open_terminal' which stays open).
+   
+   General Syntax:
+   $ python3 client.py -cli <COMMAND> <USERNAME> [ARGS...]
+
+AVAILABLE CLI COMMANDS
+----------------------
+
+1. add_tenant
+   - Description: Creates a new tenant and assigns it to a VM (Docker container).
+   - Usage: python3 client.py -cli add_tenant <user> <tenant_name> [vm_name]
+   - Example: python3 client.py -cli add_tenant ege my_tenant vm1
+
+2. remove_tenant
+   - Description: Deletes a specific tenant and its associated container.
+   - Usage: python3 client.py -cli remove_tenant <user> <tenant_name>
+   - Example: python3 client.py -cli remove_tenant ege my_tenant
+
+3. show_tenants
+   - Description: Lists all tenants currently registered to the user.
+   - Usage: python3 client.py -cli show_tenants <user>
+   - Example: python3 client.py -cli show_tenants ege
+
+4. remove_all
+   - Description: Wipes all tenants belonging to the user.
+   - Usage: python3 client.py -cli remove_all <user>
+   - Example: python3 client.py -cli remove_all ege
+
+5. open_terminal
+   - Description: Connects to a running tenant's shell. 
+     (Note: This command keeps the connection open until you type /exit).
+   - Usage: python3 client.py -cli open_terminal <user> <tenant_name>
+   - Example: python3 client.py -cli open_terminal ege my_tenant
+
+6. upload
+   - Description: Uploads a local file to the server's global bucket for a specific tenant.
+   - Usage: python3 client.py -cli upload <user> <tenant_name> <local_file_path>
+   - Example: python3 client.py -cli upload ege my_tenant ./data.txt
+
+7. pipeline
+   - Description: Submits a Nextflow pipeline job on a tenant's container.
+   - Usage: python3 client.py -cli pipeline <user> <tenant_name> <tool_indices> "<args>"
+   - Note: 'tool_indices' is a comma-separated string (e.g., "0,1") selecting tools from the server list.
+   - Example: python3 client.py -cli pipeline ege my_tenant 0,1 "-fasta input.fa"
+"""
 
 HOST = "127.0.0.1"  # Server address
 PORT = 5001        # Server port
@@ -41,7 +103,11 @@ def receive_until_prompt(sock):
             
     return ""
 
-def main():
+def send_line(sock, text):
+    """Helper to send text with a newline."""
+    sock.sendall((text + "\n").encode())
+
+def interactive():
     """
     Main function to handle the client-side logic for interacting with the server.
 
@@ -266,6 +332,246 @@ def main():
                 # Invalid input fallback
                 print(receive_until_prompt(sock))
 
+def get_tenant_index(list_text, tenant_name):
+    """Parses the server's list response to find the index of a tenant."""
+    # Expected format: "1. name\n2. other"
+    for line in list_text.splitlines():
+        parts = line.strip().split(". ")
+        if len(parts) >= 2:
+            idx_str = parts[0]
+            name = parts[1]
+            if name == tenant_name:
+                return idx_str
+    return None
+def start_terminal_loop(sock):
+    """
+    Handles the read/write loop for the interactive terminal.
+    Used by both interactive() and cli() modes.
+    """
+    stop_event = threading.Event()
 
+    def reader():
+        """Background thread that listens for server output."""
+        global BUFFER
+        try:
+            while not stop_event.is_set():
+                try:
+                    sock.settimeout(0.5)
+                    data = sock.recv(4096)
+                except socket.timeout:
+                    continue
+                except:
+                    break
+                
+                if not data: break
+
+                text = data.decode(errors="replace")
+                
+                # --- Detect when shell closes ---
+                if "--- Tenant shell closed. ---" in text:
+                    shell_part, _, menu_part = text.partition("--- Tenant shell closed. ---")
+                    
+                    sys.stdout.write(shell_part + "\n--- Tenant shell closed. ---\n")
+                    sys.stdout.flush()
+                    
+                    if menu_part:
+                        BUFFER += menu_part.encode()
+                    
+                    stop_event.set()
+                    break
+                
+                if "<WAIT>" in text:
+                    text = text.replace("<WAIT>", "")
+                
+                sys.stdout.write(text)
+                sys.stdout.flush()
+        except Exception:
+            pass
+        stop_event.set()
+
+    t = threading.Thread(target=reader, daemon=True)
+    t.start()
+
+    print("[*] Enter interactive tenant shell. Type /exit on a line to quit.")
+    
+    # --- Main Input Loop ---
+    try:
+        while not stop_event.is_set():
+            if stop_event.is_set(): break
+            
+            try:
+                line = input()
+            except EOFError:
+                break
+                
+            if stop_event.is_set(): break
+
+            if line.strip() == "/exit":
+                send_line(sock, "/exit")
+                break
+            
+            send_line(sock, line)
+            
+    except (BrokenPipeError, OSError):
+        stop_event.set()
+
+    stop_event.set()
+    t.join(timeout=1)
+    sock.setblocking(True)
+
+def cli():
+    """
+    Handles command-line interface execution.
+    Usage: python client.py -cli <command> <username> [args...]
+    """
+    args = sys.argv
+    # args[0]=client.py, args[1]=-cli
+    if len(args) < 4:
+        print("Usage: python client.py -cli <command> <username> [args...]")
+        print("Commands: add_tenant, show_tenants, open_terminal, upload, ...")
+        return
+
+    command = args[2]
+    username = args[3]
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        try:
+            sock.connect((HOST, PORT))
+        except ConnectionRefusedError:
+            print("[!] Could not connect to server.")
+            return
+
+        # 1. Login Handshake
+        receive_until_prompt(sock)  # Welcome prompt
+        send_line(sock, username)
+        receive_until_prompt(sock)  # Logged in confirmation
+        
+        # 2. Wait for Main Menu
+        receive_until_prompt(sock)
+
+        # 3. Execute Command
+        if command == "add_tenant":
+            # Usage: ... add_tenant <user> <tenant_name> [vm_name]
+            if len(args) < 5:
+                print("Usage: ... add_tenant <user> <tenant_name> [vm_name]")
+                return
+            t_name = args[4]
+            vm_name = args[5] if len(args) > 5 else ""
+
+            send_line(sock, "1")
+            receive_until_prompt(sock) # "Enter tenant name"
+            send_line(sock, t_name)
+            receive_until_prompt(sock) # "Enter VM"
+            send_line(sock, vm_name)
+            print(receive_until_prompt(sock)) # Success message
+
+        elif command == "remove_tenant":
+            # Usage: ... remove_tenant <user> <tenant_name>
+            if len(args) < 5:
+                print("Usage: ... remove_tenant <user> <tenant_name>")
+                return
+            t_name = args[4]
+            
+            send_line(sock, "2")
+            receive_until_prompt(sock) # "Enter tenant name to remove"
+            send_line(sock, t_name)
+            print(receive_until_prompt(sock))
+
+        elif command == "show_tenants":
+            send_line(sock, "3")
+            print(receive_until_prompt(sock))
+
+        elif command == "remove_all":
+            send_line(sock, "4")
+            print(receive_until_prompt(sock))
+
+        elif command == "open_terminal":
+            # Usage: ... open_terminal <user> <tenant_name>
+            if len(args) < 5:
+                print("Usage: ... open_terminal <user> <tenant_name>")
+                return
+            t_name = args[4]
+
+            send_line(sock, "5") # Select Open Terminal
+            list_text = receive_until_prompt(sock) # Get list
+            
+            idx = get_tenant_index(list_text, t_name)
+            if not idx:
+                print(f"Error: Tenant '{t_name}' not found.")
+                return
+            
+            send_line(sock, idx)
+            # Enter the terminal loop (same as interactive)
+            start_terminal_loop(sock)
+
+        elif command == "upload":
+            # Usage: ... upload <user> <tenant_name> <path>
+            if len(args) < 6:
+                print("Usage: ... upload <user> <tenant_name> <path>")
+                return
+            t_name = args[4]
+            local_path = args[5]
+
+            if not os.path.isfile(local_path):
+                print(f"Error: File '{local_path}' not found.")
+                return
+
+            send_line(sock, "6") # Select Upload
+            list_text = receive_until_prompt(sock)
+            
+            idx = get_tenant_index(list_text, t_name)
+            if not idx:
+                print(f"Error: Tenant '{t_name}' not found.")
+                return
+
+            send_line(sock, idx)
+
+            receive_until_prompt(sock) # Enter filename
+            filename = os.path.basename(local_path)
+            send_line(sock, filename)
+
+            receive_until_prompt(sock) # Enter size
+            size = os.path.getsize(local_path)
+            send_line(sock, str(size))
+
+            receive_until_prompt(sock) # Send bytes
+            with open(local_path, "rb") as f:
+                while True:
+                    chunk = f.read(65536)
+                    if not chunk: break
+                    sock.sendall(chunk)
+            
+            print(receive_until_prompt(sock)) # Success message
+
+        elif command == "pipeline":
+             # Usage: ... pipeline <user> <tenant> <tools_idx> <pipeline_args>
+             if len(args) < 7:
+                 print("Usage: ... pipeline <user> <tenant> <tools_idx> <pipeline_args>")
+                 return
+             
+             t_name = args[4]
+             tools = args[5]
+             p_args = args[6]
+
+             send_line(sock, "7")
+             list_text = receive_until_prompt(sock)
+             
+             idx = get_tenant_index(list_text, t_name)
+             if not idx:
+                 print(f"Error: Tenant '{t_name}' not found.")
+                 return
+            
+             send_line(sock, idx)
+             receive_until_prompt(sock) # Tool list
+             send_line(sock, tools)
+             receive_until_prompt(sock) # input params
+             send_line(sock, p_args)
+             print(receive_until_prompt(sock))
+
+        else:
+            print(f"Unknown command: {command}")
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) > 1 and sys.argv[1] == "-cli":
+        cli()
+    else:
+        interactive()

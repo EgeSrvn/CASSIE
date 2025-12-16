@@ -37,6 +37,7 @@ def send_prompt(conn, text):
     msg = text + END_MARKER
     conn.sendall(msg.encode())
 
+
 def migrate_tenants_from_db():
     """
     Load existing tenants from the database into the runtime TENANT_REGISTRY.

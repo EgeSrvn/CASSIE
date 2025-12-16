@@ -1,10 +1,9 @@
 import docker
-import os
 import time
 import shlex
 
 # -------------------------------------------------------------------
-# 🔹 Tool Definitions (Unchanged)
+# Tool Definitions
 # -------------------------------------------------------------------
 AVAILABLE_TOOLS = [
     {
@@ -12,7 +11,7 @@ AVAILABLE_TOOLS = [
         "id": "FASTQC",
         "type": "qc",
         "description": "Quality control for raw sequence data",
-        "process_template": """
+        "process_template": '''
 process FASTQC {
     publishDir "$params.outdir/FastQC", mode: 'copy'
 
@@ -23,45 +22,44 @@ process FASTQC {
     path "out/*"
 
     script:
-    \"\"\"
+    """
     mkdir -p out
-    # If reads is a list/tuple (paired), this expands to "file1 file2"
-    runfastqc "$reads" "/data"
-    \"\"\"
+    # IMPORTANT: do NOT quote $reads; paired inputs become "file1 file2" and quoting breaks it.
+    runfastqc $reads "$PWD/out"
+    """
 }
-"""
+'''
     },
     {
         "name": "SPAdes",
         "id": "SPADES",
         "type": "transform",
         "description": "Genome assembler",
-        "process_template": """
+        "process_template": '''
 process SPADES {
     publishDir "$params.outdir/SPAdes", mode: 'copy'
 
     input:
-    # SPAdes expects a tuple of two files for paired mode
     tuple path(r1), path(r2)
 
     output:
     path "out/contigs.fasta", emit: assembly
-    path "out/*"
+    path "out/*",            emit: files
 
     script:
-    \"\"\"
+    """
     mkdir -p out
-    runspades "$r1" "$r2" "/data"
-    \"\"\"
+    runspades "$r1" "$r2" "$PWD/out"
+    """
 }
-"""
+'''
     },
     {
         "name": "QUAST",
         "id": "QUAST",
         "type": "qc",
         "description": "Assembly quality assessment",
-        "process_template": """
+        "process_template": '''
 process QUAST {
     publishDir "$params.outdir/QUAST", mode: 'copy'
 
@@ -72,19 +70,19 @@ process QUAST {
     path "out/*"
 
     script:
-    \"\"\"
+    """
     mkdir -p out
-    runquast "$assembly" "/data"
-    \"\"\"
+    runquast "$assembly" "$PWD/out"
+    """
 }
-"""
+'''
     },
     {
         "name": "GenomeScope2",
         "id": "GENOMESCOPE2",
         "type": "qc",
         "description": "Reference-free profiling",
-        "process_template": """
+        "process_template": '''
 process GENOMESCOPE2 {
     publishDir "$params.outdir/GenomeScope2", mode: 'copy'
 
@@ -95,22 +93,27 @@ process GENOMESCOPE2 {
     path "out/*"
 
     script:
-    \"\"\"
+    """
     mkdir -p out
-    rungenomescope2 "$reads" "/data"
-    \"\"\"
+    # Same rule as FASTQC: avoid quoting $reads if multiple files may be passed.
+    rungenomescope2 $reads "$PWD/out"
+    """
 }
-"""
+'''
     }
 ]
+
 
 def get_tool_list():
     return [t["name"] for t in AVAILABLE_TOOLS]
 
-def parse_input_args(arg_str):
+
+def parse_input_args(arg_str: str):
     """
-    Parses a string like "-fasta ref.fa -fastq fwd.fq -fastq rev.fq"
-    into a dictionary: {'fasta': 'ref.fa', 'fastq': ['fwd.fq', 'rev.fq']}
+    Parses:
+      "-fasta ref.fa -fastq fwd.fq -fastq rev.fq"
+    into:
+      {'fasta': 'ref.fa', 'fastq': ['fwd.fq', 'rev.fq']}
     """
     try:
         parts = shlex.split(arg_str)
@@ -123,14 +126,13 @@ def parse_input_args(arg_str):
         curr = parts[i]
         if curr.startswith("-"):
             key = curr.lstrip("-")
-            if i + 1 < len(parts) and not parts[i+1].startswith("-"):
-                val = parts[i+1]
+            if i + 1 < len(parts) and not parts[i + 1].startswith("-"):
+                val = parts[i + 1]
                 i += 2
             else:
-                val = "true" # Flag without value
+                val = "true"
                 i += 1
-            
-            # Handle duplicate keys (append to list)
+
             if key in params:
                 if not isinstance(params[key], list):
                     params[key] = [params[key]]
@@ -139,31 +141,31 @@ def parse_input_args(arg_str):
                 params[key] = val
         else:
             i += 1
+
     return params
+
 
 def generate_nextflow_script(selected_indices, input_arg_str):
     """
-    Generate main.nf with dynamic params and flexible channel creation.
+    Generate main.nf with:
+      - smart channel creation
+      - correct SPADES -> QUAST wiring (QUAST gets only assembly)
+      - QC tools run on reads channel
+      - fixes FASTQC quoting issue for paired reads
     """
-    
-    # 1. Header
-    script = """
+    script = '''
 nextflow.enable.dsl=2
 
 params.outdir = "$baseDir/results"
-"""
+'''
 
-    # 2. Parse User Arguments & Populate Params
     user_params = parse_input_args(input_arg_str)
-    
-    # If no args provided, default for safety
     if not user_params:
         user_params = {"input": "data/*_{1,2}.fastq"}
 
-    # Write params to script
+    # write params into the .nf
     for k, v in user_params.items():
         if isinstance(v, list):
-            # Create a groovy list string: ["a", "b"]
             val_str = "[" + ", ".join([f"'{x}'" for x in v]) + "]"
             script += f"params.{k} = {val_str}\n"
         else:
@@ -171,67 +173,74 @@ params.outdir = "$baseDir/results"
 
     script += "\n"
 
-    # 3. Add Process Definitions
+    # add process defs
     active_tools = []
     try:
         for idx in selected_indices:
             tool = AVAILABLE_TOOLS[int(idx)]
             script += tool["process_template"] + "\n"
             active_tools.append(tool)
-    except IndexError:
+    except (IndexError, ValueError):
         return None, "Invalid tool index selected."
 
-    # 4. Build Workflow Logic
+    # workflow
     script += "workflow {\n"
 
-    # --- SMART CHANNEL SELECTION ---
-    # Heuristic: 
-    # 1. If 'fastq' is a list of 2 items (e.g. -fastq fwd -fastq rev), make a tuple.
-    # 2. If 'r1' and 'r2' exist, make a tuple.
-    # 3. If 'input' exists (glob pattern), use fromFilePairs.
-    # 4. Else, take the first param available and make a Path channel.
-
+    # channel creation
     if "fastq" in user_params and isinstance(user_params["fastq"], list) and len(user_params["fastq"]) == 2:
-        # Explicit paired list
         script += "    // Detected paired list in 'fastq'\n"
-        script += "    data_ch = Channel.of( tuple(file(params.fastq[0]), file(params.fastq[1])) )\n"
-        
+        script += "    reads_pair_ch = Channel.of( tuple(file(params.fastq[0]), file(params.fastq[1])) )\n"
+        script += "    reads_ch = reads_pair_ch\n"
+        script += "    data_ch  = reads_pair_ch\n"
+
     elif "r1" in user_params and "r2" in user_params:
-        # Explicit r1/r2 flags
         script += "    // Detected r1/r2 keys\n"
-        script += "    data_ch = Channel.of( tuple(file(params.r1), file(params.r2)) )\n"
+        script += "    reads_pair_ch = Channel.of( tuple(file(params.r1), file(params.r2)) )\n"
+        script += "    reads_ch = reads_pair_ch\n"
+        script += "    data_ch  = reads_pair_ch\n"
 
     elif "input" in user_params:
-        # Standard Nextflow glob (legacy support)
         script += "    // Detected 'input' glob pattern\n"
-        script += "    data_ch = Channel.fromFilePairs(params.input, flat: true)\n"
+        script += "    reads_ch = Channel.fromFilePairs(params.input, flat: true)\n"
+        script += "    data_ch  = reads_ch\n"
 
     elif "fasta" in user_params:
-        # Single fasta input
         script += "    // Detected single 'fasta'\n"
-        script += "    data_ch = Channel.fromPath(params.fasta)\n"
-    
+        script += "    reads_ch = Channel.fromPath(params.fasta)\n"
+        script += "    data_ch  = reads_ch\n"
+
     else:
-        # Fallback: just grab the first key found and try to use it
         first_key = list(user_params.keys())[0]
         script += f"    // Fallback: using params.{first_key}\n"
-        script += f"    data_ch = Channel.fromPath(params.{first_key})\n"
+        script += f"    reads_ch = Channel.fromPath(params.{first_key})\n"
+        script += f"    data_ch  = reads_ch\n"
 
     script += "\n"
+    script += "    // --- Pipeline wiring ---\n"
+    script += "    def assembly_ch_defined = false\n\n"
 
-    # 5. Chain Processes
     for tool in active_tools:
-        process_name = tool["id"]
-        if tool["type"] == "qc":
-            script += f"    {process_name}(data_ch)\n"
-        elif tool["type"] == "transform":
-            script += f"    data_ch = {process_name}(data_ch)\n"
+        pid = tool["id"]
+
+        if pid == "SPADES":
+            script += "    spades_res = SPADES(data_ch)\n"
+            script += "    assembly_ch = spades_res.assembly\n"
+            script += "    assembly_ch_defined = true\n\n"
+
+        elif pid == "QUAST":
+            script += "    if( !assembly_ch_defined ) error 'QUAST requires an assembly. Select SPADES before QUAST.'\n"
+            script += "    QUAST(assembly_ch)\n\n"
+
+        else:
+            if tool["type"] == "qc":
+                script += f"    {pid}(reads_ch)\n\n"
+            elif tool["type"] == "transform":
+                script += f"    data_ch = {pid}(data_ch)\n\n"
 
     script += "}\n"
-    
     return script, None
 
-# ... (rest of setup_nextflow and run_pipeline remains the same) ...
+
 def setup_nextflow(container):
     """Ensure Nextflow is installed in the tenant container."""
     check = container.exec_run("which nextflow")
@@ -240,47 +249,43 @@ def setup_nextflow(container):
         cmd = "curl -s https://get.nextflow.io | bash && mv nextflow /usr/local/bin/ && chmod +x /usr/local/bin/nextflow"
         container.exec_run(f"/bin/bash -c '{cmd}'", user="root")
 
-def run_pipeline(tenant_container, input_args, tool_indices):
-    """
-    Orchestrate the pipeline execution.
-    input_args is now the raw string of arguments (e.g. "-r1 x -r2 y").
-    """
 
-    # 1) Setup
+def run_pipeline(tenant_container, input_args: str, tool_indices):
+    """
+    Orchestrate pipeline execution in the tenant container.
+    """
     setup_nextflow(tenant_container)
 
-    # 2) Generate Script
     nf_script, error = generate_nextflow_script(tool_indices, input_args)
     if error:
         return error
 
-    # 3) Work dir + script path
     work_dir = f"/home/{tenant_container.name}/pipeline_run_{int(time.time())}"
     script_path = f"{work_dir}/main.nf"
 
-    # Make sure work dir exists
+    # create work dir
     res = tenant_container.exec_run(
         ["/bin/bash", "-lc", f"mkdir -p {work_dir}"],
         user="root"
     )
     if res.exit_code != 0:
-        return f"Pipeline failed: could not create work_dir\n{getattr(res, 'output', b'').decode(errors='replace')}"
+        return (
+            "Pipeline failed: could not create work_dir\n"
+            + getattr(res, "output", b"").decode(errors="replace")
+        )
 
-    # Write script safely
+    # write main.nf
     write_cmd = f"cat <<'__NF_EOF__' > {script_path}\n{nf_script}\n__NF_EOF__"
     res = tenant_container.exec_run(
         ["/bin/bash", "-lc", write_cmd],
         user="root"
     )
-    
     if res.exit_code != 0:
         out = getattr(res, "output", b"").decode(errors="replace")
         return f"Pipeline failed: main.nf was not created\n{out}"
 
-    # 4) Execute Nextflow
+    # run nextflow
     print(f"[*] Starting Nextflow pipeline in {tenant_container.name}...")
-    
-    # We run inside the work_dir so 'results' appear there
     cmd = f"cd {work_dir} && nextflow run main.nf"
     res = tenant_container.exec_run(
         ["/bin/bash", "-lc", cmd],
@@ -295,5 +300,17 @@ def run_pipeline(tenant_container, input_args, tool_indices):
             f"Results saved to: {work_dir}/results\n\n"
             f"Logs:\n{output_log}"
         )
-    else:
-        return f"Pipeline failed.\n\nLogs:\n{output_log}"
+
+    return f"Pipeline failed.\n\nLogs:\n{output_log}"
+
+# -fasta uploads/ege_1765832522_ecoli.fasta -fastq uploads/ege_1765832546_ecoli_f.fastq -fastq uploads/ege_1765832574_ecoli_r.fastq
+
+# -------------------------------------------------------------
+# Optional: tiny helper for local testing (won't run unless you call it)
+# -------------------------------------------------------------
+if __name__ == "__main__":
+    # Example usage (edit to match your environment):
+    # client = docker.from_env()
+    # tenant = client.containers.get("tenant_tt1_1")
+    # print(run_pipeline(tenant, "-fastq reads_1.fq -fastq reads_2.fq", ["1", "2"]))  # SPADES + QUAST
+    pass
