@@ -1,22 +1,61 @@
-'use client'
+"use client"
 
 import { useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
+import axios from 'axios'
 
 export default function JobDetail({ params }) {
   const { id } = params
   const router = useRouter()
   const [job, setJob] = useState(null)
   const [, setNow] = useState(Date.now())
+  const [downloading, setDownloading] = useState(false)
 
   useEffect(() => {
-    const jobsObjRaw = localStorage.getItem('jobs')
-    let jobsObj = JSON.parse(jobsObjRaw || 'null')
-    if (!jobsObj || typeof jobsObj !== 'object') jobsObj = {}
-    const allJobs = Object.values(jobsObj).flat()
-    const found = allJobs.find(j => j.id === id)
-    setJob(found || null)
+    const token = localStorage.getItem('token')
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL
+
+    const loadFromLocal = () => {
+      const jobsObjRaw = localStorage.getItem('jobs')
+      let jobsObj = JSON.parse(jobsObjRaw || 'null')
+      if (!jobsObj || typeof jobsObj !== 'object') jobsObj = {}
+      const allJobs = Object.values(jobsObj).flat()
+      const found = allJobs.find(j => String(j.id) === String(id))
+      setJob(found || null)
+    }
+
+    const fetchFromApi = async () => {
+      if (!token || !apiUrl) {
+        loadFromLocal()
+        return
+      }
+      try {
+        const { data } = await axios.get(`${apiUrl}/api/jobs/${id}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+        const mapped = {
+          id: data.id,
+          name: data.name,
+          pipeline: data.pipeline,
+          notes: data.notes,
+          analyses: data.analyses || [],
+          files: data.files || [],
+          status: data.status,
+          estimatedTime: data.estimated_time ?? null,
+          estimatedPrice: data.estimated_price ?? null,
+          createdAt: data.created_at,
+          completedAt: data.completed_at,
+          results: data.results,
+        }
+        setJob(mapped)
+      } catch (err) {
+        console.error('Failed to fetch job from backend, trying local draft store.', err)
+        loadFromLocal()
+      }
+    }
+
+    fetchFromApi()
   }, [id])
 
   // Update clock every 5 seconds to keep remaining time live
@@ -143,7 +182,13 @@ export default function JobDetail({ params }) {
           </div>
 
           <div className="mt-6">
-            <button onClick={() => downloadJobResults(job)} className="btn-secondary">Download Results</button>
+            <button
+              onClick={async () => await attemptDownload()}
+              className={`btn-secondary ${job?.status !== 'completed' ? 'opacity-50 cursor-not-allowed' : ''}`}
+              disabled={job?.status !== 'completed' || downloading}
+            >
+              {downloading ? 'Checking...' : 'Download Results'}
+            </button>
             <Link href="/jobs" className="btn-primary ml-3">Back to Jobs</Link>
           </div>
         </div>
@@ -152,7 +197,59 @@ export default function JobDetail({ params }) {
   )
 }
 
+async function attemptDownload() {
+  if (!job) return
+  const token = localStorage.getItem('token')
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL
+
+  // If we have a backend, refetch the job from DB to get authoritative status
+  if (token && apiUrl) {
+    try {
+      setDownloading(true)
+      const { data } = await axios.get(`${apiUrl}/api/jobs/${job.id}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      const latest = {
+        id: data.id,
+        name: data.name,
+        pipeline: data.pipeline,
+        notes: data.notes,
+        analyses: data.analyses || [],
+        files: data.files || [],
+        status: data.status,
+        estimatedTime: data.estimated_time ?? null,
+        estimatedPrice: data.estimated_price ?? null,
+        createdAt: data.created_at,
+        completedAt: data.completed_at,
+        results: data.results,
+      }
+      setJob(latest)
+      if (latest.status !== 'completed') {
+        alert('Job is not finished yet. Results will be available once the job completes.')
+        return
+      }
+      // if completed, proceed to download using existing helper
+      downloadJobResults(latest)
+    } catch (err) {
+      console.error('Failed to fetch latest job status; aborting download', err)
+      alert('Unable to check job status with backend. Please try again later.')
+    } finally {
+      setDownloading(false)
+    }
+    return
+  }
+
+  // Fallback if no backend: rely on local job object and existing helper
+  if (job.status !== 'completed') {
+    alert('Job is not finished yet. Results will be available once the job completes.')
+    return
+  }
+  downloadJobResults(job)
+}
+
 function downloadJobResults(job) {
+  if (!job) return
+
   if (job.results && job.results.content) {
     const blob = new Blob([job.results.content], { type: 'text/plain' })
     const url = URL.createObjectURL(blob)

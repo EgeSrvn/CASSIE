@@ -1,7 +1,8 @@
-'use client'
+"use client"
 
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
+import axios from 'axios'
 
 const analyses = [
   'Read Quality (FastQC)',
@@ -127,34 +128,75 @@ export default function Configure() {
     alert('Configuration captured locally for this template app.')
   }
 
-  const handleSubmitJob = (e) => {
-    e.preventDefault()
-    const user = JSON.parse(localStorage.getItem('user') || 'null')
-    if (!user) {
-      alert('You must be logged in to submit a job')
-      router.push('/login')
+  const handleSubmitJob = async (e) => {
+    const token = localStorage.getItem('token')
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL
+
+    // If there is no configured backend, fall back to localStorage behaviour
+    if (!apiUrl || !token) {
+      const jobsObj = JSON.parse(localStorage.getItem('jobs') || '{}')
+      const owner = user.email
+      const userJobs = jobsObj[owner] || []
+      const newJob = {
+        id: Date.now().toString(),
+        name: projectName || `Job ${userJobs.length + 1}`,
+        pipeline: projectName,
+        analyses: selectedAnalyses,
+        files: files.map(f => f.name),
+        notes,
+        estimatedTime: estimatedTime ? Number(estimatedTime) : null,
+        estimatedPrice: estimatedPrice ? Number(estimatedPrice) : null,
+        createdAt: new Date().toISOString(),
+        status: 'pending',
+        owner,
+      }
+      jobsObj[owner] = [...userJobs, newJob]
+      localStorage.setItem('jobs', JSON.stringify(jobsObj))
+      router.push('/jobs')
       return
     }
 
-    const jobsObj = JSON.parse(localStorage.getItem('jobs') || '{}')
-    const owner = user.email
-    const userJobs = jobsObj[owner] || []
-    const newJob = {
-      id: Date.now().toString(),
-      name: projectName || `Job ${userJobs.length + 1}`,
-      pipeline: projectName,
-      analyses: selectedAnalyses,
-      files: files.map(f => f.name),
-      notes,
-      estimatedTime: estimatedTime ? Number(estimatedTime) : null,
-      estimatedPrice: estimatedPrice ? Number(estimatedPrice) : null,
-      createdAt: new Date().toISOString(),
-      status: 'pending',
-      owner,
+    try {
+      await axios.post(
+        `${apiUrl}/api/jobs`,
+        {
+          name: projectName || 'Untitled Job',
+          pipeline: projectName,
+          notes,
+          estimated_time: estimatedTime ? Number(estimatedTime) : null,
+          estimated_price: estimatedPrice ? Number(estimatedPrice) : null,
+          analyses: selectedAnalyses,
+          files: files.map(f => f.name),
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      )
+      router.push('/jobs')
+    } catch (err) {
+      console.error('Failed to submit job to backend, falling back to local draft store.', err)
+      const jobsObj = JSON.parse(localStorage.getItem('jobs') || '{}')
+      const owner = user.email
+      const userJobs = jobsObj[owner] || []
+      const newJob = {
+        id: Date.now().toString(),
+        name: projectName || `Job ${userJobs.length + 1}`,
+        pipeline: projectName,
+        analyses: selectedAnalyses,
+        files: files.map(f => f.name),
+        notes,
+        estimatedTime: estimatedTime ? Number(estimatedTime) : null,
+        estimatedPrice: estimatedPrice ? Number(estimatedPrice) : null,
+        createdAt: new Date().toISOString(),
+        status: 'pending',
+        owner,
+      }
+      jobsObj[owner] = [...userJobs, newJob]
+      localStorage.setItem('jobs', JSON.stringify(jobsObj))
+      router.push('/jobs')
     }
-    jobsObj[owner] = [...userJobs, newJob]
-    localStorage.setItem('jobs', JSON.stringify(jobsObj))
-    router.push('/jobs')
   }
 
   return (

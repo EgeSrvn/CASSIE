@@ -3,33 +3,34 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
+import axios from 'axios'
 
 export default function Login() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
   const router = useRouter()
 
   const handleSubmit = async (e) => {
     e.preventDefault()
     setError('')
-
-    const stored = localStorage.getItem('user')
-    const storedUser = stored ? JSON.parse(stored) : { email: 'demo@cassie.dev', password: 'demo123' }
-    const isValid =
-      (email === storedUser.email && password === storedUser.password) ||
-      (email === 'demo@cassie.dev' && password === 'demo123')
-
-    if (!isValid) {
-      setError('Invalid credentials. Try demo@cassie.dev / demo123.')
-      return
+    setLoading(true)
+    try {
+      const { data } = await axios.post(
+        `${process.env.NEXT_PUBLIC_API_URL}/api/auth/login`,
+        { email, password },
+      )
+      localStorage.setItem('token', data.access_token)
+      localStorage.setItem('user', JSON.stringify(data.user))
+      window.dispatchEvent(new Event('authChanged'))
+      router.push('/')
+    } catch (err) {
+      console.error(err)
+      setError('Invalid credentials or backend unavailable.')
+    } finally {
+      setLoading(false)
     }
-
-    localStorage.setItem('token', 'demo-token')
-    localStorage.setItem('user', JSON.stringify({ email }))
-    // notify other components that auth changed
-    window.dispatchEvent(new Event('authChanged'))
-    router.push('/')
   }
 
   return (
@@ -74,9 +75,10 @@ export default function Login() {
 
           <button
             type="submit"
-            className="w-full btn-primary"
+            className="w-full btn-primary disabled:opacity-50"
+            disabled={loading}
           >
-            Login
+            {loading ? 'Logging in...' : 'Login'}
           </button>
         </form>
 
