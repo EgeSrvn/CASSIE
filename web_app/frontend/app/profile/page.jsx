@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
+import axios from 'axios'
 
 export default function ProfilePage() {
   const router = useRouter()
@@ -17,16 +18,47 @@ export default function ProfilePage() {
       router.push('/login')
       return
     }
-    setUser(JSON.parse(storedUser))
-    let pipelinesObj = JSON.parse(localStorage.getItem('pipelines') || 'null')
-    const userEmail = JSON.parse(storedUser).email
-    if (Array.isArray(pipelinesObj)) {
-      // legacy global list, show it
-      setPipelines(pipelinesObj)
-    } else {
-      pipelinesObj = pipelinesObj || {}
-      setPipelines(pipelinesObj[userEmail] || [])
+    const parsedUser = JSON.parse(storedUser)
+    setUser(parsedUser)
+
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL
+
+    const loadFromLocal = () => {
+      let pipelinesObj = JSON.parse(localStorage.getItem('pipelines') || 'null')
+      const userEmail = parsedUser.email
+      if (Array.isArray(pipelinesObj)) {
+        setPipelines(pipelinesObj)
+      } else {
+        pipelinesObj = pipelinesObj || {}
+        setPipelines(pipelinesObj[userEmail] || [])
+      }
     }
+
+    const fetchFromApi = async () => {
+      if (!apiUrl || !token) {
+        loadFromLocal()
+        return
+      }
+      try {
+        const { data } = await axios.get(`${apiUrl}/api/pipelines`, {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+        const mapped = data.map(p => ({
+          id: p.id,
+          name: p.name,
+          description: p.description,
+          nodes: p.nodes || [],
+          edges: p.edges || [],
+          savedAt: p.saved_at,
+        }))
+        setPipelines(mapped)
+      } catch (err) {
+        console.error('Failed to fetch pipelines from backend, using local store.', err)
+        loadFromLocal()
+      }
+    }
+
+    fetchFromApi()
     const handleAuthChange = () => {
       const sUser = localStorage.getItem('user')
       if (!sUser) {
@@ -40,6 +72,7 @@ export default function ProfilePage() {
     }
 
     window.addEventListener('authChanged', handleAuthChange)
+    // For backwards-compatibility with the builder's local fallback
     const handlePipelinesChanged = () => {
       const sUser = localStorage.getItem('user')
       if (!sUser) return
@@ -98,13 +131,35 @@ export default function ProfilePage() {
                       Load
                     </button>
                     <button
-                      onClick={() => {
-                        const remaining = pipelines.filter((x) => x.id !== p.id)
-                        setPipelines(remaining)
-                        const pipelinesObj = JSON.parse(localStorage.getItem('pipelines') || '{}')
-                        const owner = user.email
-                        pipelinesObj[owner] = remaining
-                        localStorage.setItem('pipelines', JSON.stringify(pipelinesObj))
+                      onClick={async () => {
+                        const apiUrl = process.env.NEXT_PUBLIC_API_URL
+                        const token = localStorage.getItem('token')
+
+                        // If no backend, keep previous local-only delete
+                        if (!apiUrl || !token) {
+                          const remaining = pipelines.filter((x) => x.id !== p.id)
+                          setPipelines(remaining)
+                          const pipelinesObj = JSON.parse(localStorage.getItem('pipelines') || '{}')
+                          const owner = user.email
+                          pipelinesObj[owner] = remaining
+                          localStorage.setItem('pipelines', JSON.stringify(pipelinesObj))
+                          return
+                        }
+
+                        try {
+                          await axios.delete(`${apiUrl}/api/pipelines/${p.id}`, {
+                            headers: { Authorization: `Bearer ${token}` },
+                          })
+                          setPipelines((prev) => prev.filter((x) => x.id !== p.id))
+                        } catch (err) {
+                          console.error('Failed to delete pipeline from backend, falling back to local delete.', err)
+                          const remaining = pipelines.filter((x) => x.id !== p.id)
+                          setPipelines(remaining)
+                          const pipelinesObj = JSON.parse(localStorage.getItem('pipelines') || '{}')
+                          const owner = user.email
+                          pipelinesObj[owner] = remaining
+                          localStorage.setItem('pipelines', JSON.stringify(pipelinesObj))
+                        }
                       }}
                       className="btn-danger px-3 py-1"
                     >

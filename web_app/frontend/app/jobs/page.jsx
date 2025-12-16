@@ -1,13 +1,61 @@
-'use client'
+"use client"
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect } from 'react'
 import Link from 'next/link'
+import axios from 'axios'
 
 export default function Jobs() {
   const [jobs, setJobs] = useState([])
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState('all')
   const [isAuthed, setIsAuthed] = useState(false)
+  // Clock tick used to keep remaining time live
+  const [, setNow] = useState(Date.now())
+  useEffect(() => {
+    const iv = setInterval(() => setNow(Date.now()), 5000)
+    return () => clearInterval(iv)
+  }, [])
+
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL
+
+  // Refresh jobs from backend (keeps estimated time and status up-to-date)
+  const refreshFromApi = async () => {
+    const token = localStorage.getItem('token')
+    if (!token || !apiUrl) return
+    try {
+      const { data } = await axios.get(`${apiUrl}/api/jobs`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      const mapped = data.map(j => ({
+        id: j.id,
+        name: j.name,
+        pipeline: j.pipeline,
+        notes: j.notes,
+        analyses: j.analyses || [],
+        files: j.files || [],
+        status: j.status,
+        estimatedTime: j.estimated_time ?? null,
+        estimatedPrice: j.estimated_price ?? null,
+        // backend can optionally return an estimated_finish timestamp (ISO)
+        estimatedFinish: j.estimated_finish ?? null,
+        createdAt: j.created_at,
+        completedAt: j.completed_at,
+        results: j.results,
+      }))
+      setJobs(mapped)
+    } catch (err) {
+      console.error('Failed to refresh jobs from backend.', err)
+    }
+  }
+
+  // Poll backend for updates when authed
+  useEffect(() => {
+    let poll = null
+    if (isAuthed && apiUrl) {
+      poll = setInterval(refreshFromApi, 5000)
+    }
+    return () => { if (poll) clearInterval(poll) }
+  }, [isAuthed, apiUrl])
 
   const formatPrice = (p) => {
     const n = Number(p)
@@ -21,6 +69,30 @@ export default function Jobs() {
     return `${n} hr${n !== 1 ? 's' : ''}`
   }
 
+  const formatRemaining = (job) => {
+    if (!job) return null
+    let remainingHours = null
+    // Prefer explicit estimatedFinish if provided by backend
+    if (job.estimatedFinish) {
+      const finishMs = new Date(job.estimatedFinish).getTime()
+      const diffMs = finishMs - Date.now()
+      remainingHours = diffMs / (1000 * 60 * 60)
+    } else if (job.estimatedTime != null && job.createdAt) {
+      const start = new Date(job.createdAt).getTime()
+      const finishMs = start + (Number(job.estimatedTime) * 60 * 60 * 1000)
+      remainingHours = (finishMs - Date.now()) / (1000 * 60 * 60)
+    } else {
+      return null
+    }
+
+    const abs = Math.abs(remainingHours)
+    const rounded = Math.round(abs * 100) / 100
+    if (remainingHours >= 0) {
+      return `${rounded} hr${rounded !== 1 ? 's' : ''} remaining`
+    }
+    return `+${rounded} hr${rounded !== 1 ? 's' : ''}`
+  }
+
   useEffect(() => {
     const token = localStorage.getItem('token')
     if (!token) {
@@ -30,34 +102,55 @@ export default function Jobs() {
     }
     setIsAuthed(true)
     const user = JSON.parse(localStorage.getItem('user') || 'null')
-    const jobsObjRaw = localStorage.getItem('jobs')
-    let jobsObj = JSON.parse(jobsObjRaw || 'null')
-    if (!jobsObj || typeof jobsObj !== 'object') jobsObj = {}
-    const userJobs = user ? (jobsObj[user.email] || []) : []
 
-    // Ensure there is at least one completed job for demonstration and that completed jobs are visible under 'All'
-    const hasCompleted = userJobs.some(j => j.status === 'completed')
-    if (!hasCompleted && user) {
-      const sample = {
-        id: `sample-${Date.now()}`,
-        name: 'A. naeslundii Genome Analysis',
-        pipeline: 'A. naeslundii Genome Analysis',
-        analyses: [],
-        files: [],
-        createdAt: new Date().toISOString(),
-        completedAt: new Date().toISOString(),
-        status: 'completed',
-        owner: user.email,
-        results: { content: 'Example job results\nSample metrics: accuracy=0.98\nFiles: result.txt' },
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL
+
+    const loadFromLocal = () => {
+      const jobsObjRaw = localStorage.getItem('jobs')
+      let jobsObj = JSON.parse(jobsObjRaw || 'null')
+      if (!jobsObj || typeof jobsObj !== 'object') jobsObj = {}
+      const userJobs = user ? (jobsObj[user.email] || []) : []
+
+      const hasCompleted = userJobs.some(j => j.status === 'completed')
+      if (!hasCompleted && user) {
+        const sample = {
+          id: `sample-${Date.now()}`,
+          name: 'A. naeslundii Genome Analysis',
+          pipeline: 'A. naeslundii Genome Analysis',
+          analyses: [],
+          files: [],
+          createdAt: new Date().toISOString(),
+          completedAt: new Date().toISOString(),
+          status: 'completed',
+          owner: user.email,
+          results: { content: 'Example job results\nSample metrics: accuracy=0.98\nFiles: result.txt' },
+        }
+        const updated = [...userJobs, sample]
+        jobsObj[user.email] = updated
+        localStorage.setItem('jobs', JSON.stringify(jobsObj))
+        setJobs(updated)
+      } else {
+        setJobs(userJobs)
       }
-      const updated = [...userJobs, sample]
-      jobsObj[user.email] = updated
-      localStorage.setItem('jobs', JSON.stringify(jobsObj))
-      setJobs(updated)
-    } else {
-      setJobs(userJobs)
     }
-    setLoading(false)
+
+    const fetchFromApi = async () => {
+      if (!apiUrl) {
+        loadFromLocal()
+        setLoading(false)
+        return
+      }
+      // Use refreshFromApi which also handles mapping and error handling
+      await refreshFromApi()
+      setLoading(false)
+    }
+
+    fetchFromApi()
+
+    // Refresh jobs when the user explicitly clicks the Jobs link in the navbar
+    const handleJobsRefresh = () => { refreshFromApi() }
+    window.addEventListener('jobs:refresh', handleJobsRefresh)
+    return () => window.removeEventListener('jobs:refresh', handleJobsRefresh)
   }, [])
 
   const filteredJobs = jobs.filter(job => {
@@ -207,9 +300,16 @@ export default function Jobs() {
                       )} 
 
                       {job.estimatedTime != null && formatTime(job.estimatedTime) && (
-                        <p className="text-sm text-gray-600 mt-2">
-                          Estimated Time: {formatTime(job.estimatedTime)}
-                        </p>
+                        <>
+                          <p className="text-sm text-gray-600 mt-2">
+                            Estimated Time: {formatTime(job.estimatedTime)}
+                          </p>
+                          {(job.status === 'running' || job.status === 'pending') && (
+                            <p className="text-sm text-gray-700 mt-1 font-semibold">
+                              {formatRemaining(job)}
+                            </p>
+                          )}
+                        </>
                       )}
 
                       {job.estimatedPrice != null && formatPrice(job.estimatedPrice) && (

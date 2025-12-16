@@ -2,6 +2,7 @@
 
 import { useCallback, useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
+import axios from 'axios'
 import ReactFlow, {
   Background,
   Controls,
@@ -120,35 +121,64 @@ export default function Builder() {
     setNodes((nds) => [...nds, newNode])
   }
 
-  const savePipeline = () => {
+  const savePipeline = async () => {
     const user = JSON.parse(localStorage.getItem('user') || 'null')
     const owner = user?.email || 'anonymous'
+    const token = localStorage.getItem('token')
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL
 
-    // read raw and migrate legacy array format if needed
-    let pipelinesObjRaw = localStorage.getItem('pipelines')
-    let pipelinesObj = JSON.parse(pipelinesObjRaw || 'null')
-    if (Array.isArray(pipelinesObj)) {
-      // migrate global list into current owner's list
-      pipelinesObj = { [owner]: pipelinesObj }
-    }
-    if (!pipelinesObj || typeof pipelinesObj !== 'object') pipelinesObj = {}
+    const fallbackLocalSave = () => {
+      let pipelinesObjRaw = localStorage.getItem('pipelines')
+      let pipelinesObj = JSON.parse(pipelinesObjRaw || 'null')
+      if (Array.isArray(pipelinesObj)) {
+        pipelinesObj = { [owner]: pipelinesObj }
+      }
+      if (!pipelinesObj || typeof pipelinesObj !== 'object') pipelinesObj = {}
 
-    const userList = pipelinesObj[owner] || []
-    const newPipeline = {
-      id: Date.now().toString(),
-      name: pipelineName || `Pipeline ${userList.length + 1}`,
-      description: pipelineDescription,
-      nodes,
-      edges,
-      savedAt: new Date().toISOString(),
+      const userList = pipelinesObj[owner] || []
+      const newPipeline = {
+        id: Date.now().toString(),
+        name: pipelineName || `Pipeline ${userList.length + 1}`,
+        description: pipelineDescription,
+        nodes,
+        edges,
+        savedAt: new Date().toISOString(),
+      }
+      pipelinesObj[owner] = [...userList, newPipeline]
+      localStorage.setItem('pipelines', JSON.stringify(pipelinesObj))
+      try {
+        window.dispatchEvent(new Event('pipelinesChanged'))
+      } catch (e) {}
     }
-    pipelinesObj[owner] = [...userList, newPipeline]
-    localStorage.setItem('pipelines', JSON.stringify(pipelinesObj))
-    // notify other pages and redirect to profile page after saving
+
+    // If we don't have a backend URL or token, keep the previous local behaviour
+    if (!apiUrl || !token || !user) {
+      fallbackLocalSave()
+      router.push('/profile')
+      return
+    }
+
     try {
-      window.dispatchEvent(new Event('pipelinesChanged'))
-    } catch (e) {}
-    router.push('/profile')
+      await axios.post(
+        `${apiUrl}/api/pipelines`,
+        {
+          name: pipelineName || 'Untitled Pipeline',
+          description: pipelineDescription,
+          nodes,
+          edges,
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      )
+      router.push('/profile')
+    } catch (err) {
+      console.error('Failed to save pipeline to backend, falling back to local store.', err)
+      fallbackLocalSave()
+      router.push('/profile')
+    }
   }
 
   return (

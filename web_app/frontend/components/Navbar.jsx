@@ -57,7 +57,7 @@ export default function Navbar() {
             <Link href="/configure" className="hover:text-secondary-pink transition-colors">
               Configure
             </Link>
-            <Link href="/jobs" className="hover:text-secondary-pink transition-colors">
+            <Link href="/jobs" className="hover:text-secondary-pink transition-colors" onClick={() => window.dispatchEvent(new Event('jobs:refresh'))}>
               Jobs
             </Link>
             <Link href="/community" className="hover:text-secondary-pink transition-colors">
