@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: cassie-pvc
+spec:
+  accessModes:
+    - ReadWriteMany  # Required for multiple pods to access data
+  resources:
+    requests:
+      storage: 2Gi
+  storageClassName: standard # Kind's default storage class
