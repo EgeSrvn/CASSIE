@@ -4,7 +4,7 @@ metadata:
   name: cassie-pvc
 spec:
   accessModes:
-    - ReadWriteMany  # Required for multiple pods to access data
+    - ReadWriteOnce 
   resources:
     requests:
       storage: 2Gi

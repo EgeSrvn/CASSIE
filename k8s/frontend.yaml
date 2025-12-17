@@ -21,13 +21,13 @@ spec:
           value: "http://localhost:3001" # Browser talks to localhost via port-forward
         ports:
         - containerPort: 3000
-                volumeMounts:
-                - mountPath: /app/public/workspace 
-                  name: shared-data
-              volumes:
-              - name: shared-data
-                persistentVolumeClaim:
-                  claimName: cassie-pvc
+        volumeMounts:
+        - mountPath: /app/public/workspace 
+          name: shared-data
+      volumes:
+      - name: shared-data
+        persistentVolumeClaim:
+          claimName: cassie-pvc
 ---
 apiVersion: v1
 kind: Service
