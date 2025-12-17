@@ -3,12 +3,14 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
+import axios from 'axios'
 
 export default function Register() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
   const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
   const router = useRouter()
 
   const handleSubmit = async (e) => {
@@ -20,11 +22,22 @@ export default function Register() {
       return
     }
 
-    localStorage.setItem('user', JSON.stringify({ email, password }))
-    localStorage.setItem('token', 'demo-token')
-    // notify other components that auth changed
-    window.dispatchEvent(new Event('authChanged'))
-    router.push('/')
+    try {
+      setLoading(true)
+      const { data } = await axios.post(
+        `${process.env.NEXT_PUBLIC_API_URL}/api/auth/register`,
+        { email, password },
+      )
+      localStorage.setItem('token', data.access_token)
+      localStorage.setItem('user', JSON.stringify(data.user))
+      window.dispatchEvent(new Event('authChanged'))
+      router.push('/')
+    } catch (err) {
+      console.error(err)
+      setError('Failed to register. Email may already be in use or backend may be unavailable.')
+    } finally {
+      setLoading(false)
+    }
   }
 
   return (
@@ -82,9 +95,10 @@ export default function Register() {
 
           <button
             type="submit"
-            className="w-full btn-primary"
+            className="w-full btn-primary disabled:opacity-50"
+            disabled={loading}
           >
-            Register
+            {loading ? 'Registering...' : 'Register'}
           </button>
         </form>
 
