@@ -118,12 +118,41 @@ export default function Community() {
     try {
       await axios.post(
         `${process.env.NEXT_PUBLIC_API_URL}/api/community/workflows/${workflowId}/vote`,
-        {},
+        { vote: 'up' },
         { headers: { Authorization: `Bearer ${token}` } }
       )
       // Optionally refresh from server; already updated optimistically
     } catch (error) {
       console.error('Failed to vote:', error)
+    }
+  }
+
+  const handleDownvote = async (workflowId) => {
+    // Optimistically update the local state for downvotes
+    setWorkflows(prev => {
+      const updated = prev.map(w => {
+        if (w._id === workflowId) {
+          const down = (w.downvotes || 0) + 1
+          const votes = (w.votes || 0) - 1
+          return { ...w, downvotes: down, votes }
+        }
+        return w
+      })
+      saveLocal(updated)
+      return updated
+    })
+
+    if (!process.env.NEXT_PUBLIC_API_URL) return
+
+    const token = localStorage.getItem('token')
+    try {
+      await axios.post(
+        `${process.env.NEXT_PUBLIC_API_URL}/api/community/workflows/${workflowId}/vote`,
+        { vote: 'down' },
+        { headers: { Authorization: `Bearer ${token}` } }
+      )
+    } catch (error) {
+      console.error('Failed to downvote:', error)
     }
   }
 
@@ -199,13 +228,23 @@ export default function Community() {
                 )}
               </div>
             )}
-            <div className="flex gap-2">
+            <div className="flex gap-2 items-center">
               <button
                 onClick={() => handleVote(workflow._id)}
-                className="flex-1 btn-secondary text-sm"
+                className="btn-secondary text-sm"
+                title="Upvote"
               >
-                ↑ Vote ({workflow.votes})
+                ↑ {workflow.upvotes || 0}
               </button>
+              <button
+                onClick={() => handleDownvote(workflow._id)}
+                className="btn-secondary text-sm"
+                title="Downvote"
+              >
+                ↓ {workflow.downvotes || 0}
+              </button>
+              <div className="ml-2 text-sm text-gray-600">Score: {workflow.votes || 0}</div>
+              <div className="flex-1" />
               <UseButton workflow={workflow} />
             </div>
           </div>

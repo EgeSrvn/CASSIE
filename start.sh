@@ -152,6 +152,9 @@ done
 echo -e "${GREEN}✓ Backend is ready${NC}"
 
 # Start frontend
+# Always remove any previous frontend container to ensure a fresh instance
+echo -e "${YELLOW}Removing previous frontend container if present...${NC}"
+docker rm -f cassie_frontend >/dev/null 2>&1 || true
 echo -e "${YELLOW}Starting Next.js frontend...${NC}"
 $COMPOSE_CMD -f $COMPOSE_FILE up -d frontend
 
@@ -185,6 +188,11 @@ echo ""
 redeploy_service() {
   svc="$1"
   echo -e "${YELLOW}Redeploying $svc...${NC}"
+  # If redeploying frontend, remove previous container to guarantee a clean start
+  if [ "$svc" = "frontend" ]; then
+    echo -e "${YELLOW}Removing previous frontend container before redeploy...${NC}"
+    docker rm -f cassie_frontend >/dev/null 2>&1 || true
+  fi
   if [ "$REBUILD" -eq 1 ]; then
     $COMPOSE_CMD -f $COMPOSE_FILE up -d --build "$svc"
   else

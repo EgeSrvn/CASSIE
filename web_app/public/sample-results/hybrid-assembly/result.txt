@@ -1,0 +1,7 @@
+Hybrid Assembly run - placeholder results
+Files:
+ - contigs.fasta
+ - fastqc_report.html
+ - quast_report.txt
+
+Replace these with your real pipeline outputs.

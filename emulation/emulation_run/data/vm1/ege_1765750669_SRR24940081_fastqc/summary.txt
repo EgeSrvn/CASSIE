@@ -1,0 +1,11 @@
+PASS	Basic Statistics	ege_1765750669_SRR24940081.fastq
+PASS	Per base sequence quality	ege_1765750669_SRR24940081.fastq
+WARN	Per tile sequence quality	ege_1765750669_SRR24940081.fastq
+PASS	Per sequence quality scores	ege_1765750669_SRR24940081.fastq
+FAIL	Per base sequence content	ege_1765750669_SRR24940081.fastq
+FAIL	Per sequence GC content	ege_1765750669_SRR24940081.fastq
+PASS	Per base N content	ege_1765750669_SRR24940081.fastq
+WARN	Sequence Length Distribution	ege_1765750669_SRR24940081.fastq
+WARN	Sequence Duplication Levels	ege_1765750669_SRR24940081.fastq
+PASS	Overrepresented sequences	ege_1765750669_SRR24940081.fastq
+PASS	Adapter Content	ege_1765750669_SRR24940081.fastq
