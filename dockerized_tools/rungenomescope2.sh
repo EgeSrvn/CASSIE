@@ -8,6 +8,7 @@ OUTROOT="$2"
 TOOL="genomescope2"
 WORKDIR="/data/${TOOL}_run"
 
+# Ensure out directory exists in current work directory (Nextflow work dir)
 mkdir -p "$WORKDIR"
 mkdir -p out
 
@@ -33,7 +34,5 @@ docker run --rm \
     '
   "
 
-# Follow EXACT FastQC finalization semantics
-rm -rf "$OUTROOT/$TOOL"
-mv "$WORKDIR" "$OUTROOT/$TOOL"
-cp -r "$OUTROOT/$TOOL" out/
+# Copy results directly to out/ in the work directory
+cp -r "$WORKDIR" out/
