@@ -7,7 +7,7 @@ from backend.api.database.db_init import get_db
 from backend.api.models.job_model import Job, JobCreate, JobRead
 from backend.api.routes.auth import get_current_user
 from backend.api.models.user_model import User
-
+from backend.api.services.k8s_service import create_nextflow_job
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
@@ -21,6 +21,7 @@ def list_jobs(current_user: User = Depends(get_current_user), db: Session = Depe
     .all()
   )
   return [JobRead.model_validate(j) for j in jobs]
+
 
 
 @router.post("", response_model=JobRead, status_code=status.HTTP_201_CREATED)
@@ -38,11 +39,34 @@ def create_job(
     estimated_price=payload.estimated_price,
     analyses=payload.analyses,
     files=payload.files,
-    status="pending",
+    status="submitted",  
   )
   db.add(job)
   db.commit()
   db.refresh(job)
+
+  nf_script = """
+  process SAY_HELLO {
+      container 'ubuntu:latest'
+      script:
+      \"\"\"
+      echo 'Hello Kubernetes from Job %s' > output.txt
+      \"\"\"
+  }
+  workflow { SAY_HELLO() }
+  """ % job.id
+
+  try:
+      driver_name = create_nextflow_job(job, nf_script)
+      job.notes = f"{job.notes or ''} | K8s Driver: {driver_name}"
+      db.commit()
+      
+  except Exception as e:
+      print(f"Error launching K8s job: {e}")
+      job.status = "failed"
+      job.notes = f"{job.notes or ''} | Launch Error: {str(e)}"
+      db.commit()
+
   return JobRead.model_validate(job)
 
 

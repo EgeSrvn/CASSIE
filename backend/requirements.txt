@@ -8,4 +8,4 @@ bcrypt==3.2.0  # pin to a bcrypt implementation compatible with passlib's expect
 pydantic==2.5.0
 pydantic[email]==2.5.0
 python-multipart==0.0.6
-
+kubernetes==28.1.0

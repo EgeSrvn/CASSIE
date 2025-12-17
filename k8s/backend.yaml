@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      serviceAccountName: nextflow-sa # Give backend access to K8s API
+      containers:
+      - name: backend
+        image: cassie-backend:latest
+        imagePullPolicy: IfNotPresent # Use local Kind image
+        env:
+        - name: DATABASE_URL
+          value: "postgresql+psycopg2://postgres:postgres@postgres:5432/cassie"
+        - name: FRONTEND_ORIGIN
+          value: "http://localhost:3000"
+        - name: KUBE_NAMESPACE
+          value: "default"
+        ports:
+        - containerPort: 3001
+        volumeMounts:
+        - mountPath: /workspace
+          name: shared-data
+      volumes:
+      - name: shared-data
+        persistentVolumeClaim:
+          claimName: cassie-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+spec:
+  selector:
+    app: backend
+  ports:
+    - protocol: TCP
+      port: 3001
+      targetPort: 3001
