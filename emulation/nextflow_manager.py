@@ -260,6 +260,10 @@ params.outdir = "${baseDir}/results"
     elif "input" in user_params:
         script += "    reads_ch = Channel.fromFilePairs(params.input, flat: true)\n"
         script += "    data_ch  = reads_ch\n"
+    elif "fasta" in user_params:
+        script += "    // Detected single 'fasta'\n"
+        script += "    reads_ch = Channel.fromPath(params.fasta)\n"
+        script += "    data_ch  = reads_ch\n"
     else:
         first_key = list(user_params.keys())[0]
         script += f"    reads_ch = Channel.fromPath(params.{first_key})\n"
