@@ -1,38 +1,68 @@
 #!/bin/bash
 set -euo pipefail
 
-# Interface MUST match runfastqc.sh
+if [ $# -lt 2 ]; then
+  echo "Usage: rungenomescope2 <reads_fastq(.gz)> <outdir>"
+  echo "  (paths must be visible in the tenant container, usually under /data)"
+  exit 1
+fi
+
 READS="$1"
-OUTROOT="$2"
+OUTDIR="$2"
 
-TOOL="genomescope2"
-WORKDIR="/data/${TOOL}_run"
+# Clean + create run-specific output directory
+rm -rf "$OUTDIR"
+mkdir -p "$OUTDIR"
 
-# Ensure out directory exists in current work directory (Nextflow work dir)
-mkdir -p "$WORKDIR"
-mkdir -p out
+# ---------------------------------------------------------
+# Resolve the current tenant container id/name (SELF),
+# so we can reuse all its mounts via --volumes-from.
+# ---------------------------------------------------------
+SELF="${HOSTNAME:-}"
 
+if ! docker inspect "$SELF" >/dev/null 2>&1; then
+  cg="$(tail -n 1 /proc/1/cgroup || true)"
+  cid="$(echo "$cg" | sed -n 's#.*[/:]\([0-9a-f]\{12,64\}\)$#\1#p')"
+  if [ -n "${cid:-}" ] && docker inspect "$cid" >/dev/null 2>&1; then
+    SELF="$cid"
+  fi
+fi
+
+if [ -z "$SELF" ]; then
+  echo "Error: could not resolve tenant container id/name."
+  exit 1
+fi
+
+# Sanity check: reads must exist in the tenant's filesystem
+if [ ! -f "$READS" ]; then
+  echo "Error: reads file not found at $READS"
+  exit 1
+fi
+
+# ---------------------------------------------------------
+# Run GenomeScope2 container sharing ALL volumes from the
+# tenant, so /data/... is identical inside the tool.
+# ---------------------------------------------------------
 docker run --rm \
-  -v /data:/data \
+  --volumes-from "$SELF" \
   genomescope2 \
   bash -lc "
     jellyfish count -C -m 21 -s 100M -t 4 \
-      <(zcat /data/$READS) \
-      -o $WORKDIR/reads.jf
+      <(zcat '$READS') \
+      -o '$OUTDIR/reads.jf'
 
-    jellyfish histo $WORKDIR/reads.jf > $WORKDIR/reads.histo
+    jellyfish histo '$OUTDIR/reads.jf' > '$OUTDIR/reads.histo'
 
     Rscript -e '
       library(genomescope2)
       genomescope2(
-        input=\"$WORKDIR/reads.histo\",
+        input=\"$OUTDIR/reads.histo\",
         k=21,
         ploidy=1,
         read_length=150,
-        output_dir=\"$WORKDIR\"
+        output_dir=\"$OUTDIR\"
       )
     '
   "
 
-# Copy results directly to out/ in the work directory
-cp -r "$WORKDIR" out/
+echo "GenomeScope2 finished. Results written to: $OUTDIR"

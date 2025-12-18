@@ -2,44 +2,54 @@
 set -euo pipefail
 
 if [ $# -lt 3 ]; then
-  echo "Usage: runquast <assembly> <reference_fasta> <outroot>"
-  echo "  (assembly and reference should be paths under /data, e.g. quast_in/XYZ/contigs.fasta)"
+  echo "Usage: runquast <assembly_fasta> <reference_fasta> <outdir>"
+  echo "  (all arguments should be absolute paths visible in the tenant container,"
+  echo "   typically under /data, e.g. /data/quast_in/<run>/contigs.fasta)"
   exit 1
 fi
 
-ASSEMBLY="$1"
+ASM="$1"
 REF="$2"
-OUTROOT="$3"
+OUTDIR="$3"
 
-# Absolute host path to outroot (e.g. /data/quast_out/<taskid>)
-OUTROOT_ABS="$(realpath "$OUTROOT")"
+# Make sure output dir exists inside the tenant container filesystem
+rm -rf "$OUTDIR"
+mkdir -p "$OUTDIR"
 
-# Keep your design: inputs must live under /data/...
-ASM_ABS="/data/${ASSEMBLY#/data/}"
-REF_ABS="/data/${REF#/data/}"
+# ---------------------------------------------------------
+# Resolve the current tenant container id/name (SELF),
+# same idea as for SPAdes: we want to reuse all mounts.
+# ---------------------------------------------------------
+SELF="${HOSTNAME:-}"
 
-if [ ! -f "$ASM_ABS" ]; then
-  echo "Error: assembly not found at $ASM_ABS"
+if ! docker inspect "$SELF" >/dev/null 2>&1; then
+  cg="$(tail -n 1 /proc/1/cgroup || true)"
+  cid="$(echo "$cg" | sed -n 's#.*[/:]\([0-9a-f]\{12,64\}\)$#\1#p')"
+  if [ -n "$cid" ] && docker inspect "$cid" >/dev/null 2>&1; then
+    SELF="$cid"
+  fi
+fi
+
+if [ -z "$SELF" ]; then
+  echo "Error: could not resolve tenant container id/name."
   exit 1
 fi
-if [ ! -f "$REF_ABS" ]; then
-  echo "Error: reference not found at $REF_ABS"
+
+# Basic sanity checks (inside the tenant container view)
+if [ ! -f "$ASM" ]; then
+  echo "Error: assembly not found at $ASM"
   exit 1
 fi
 
-# IMPORTANT FIX:
-# Write QUAST output directly into the per-task outroot so:
-# - no global /data/quast_out clobbering
-# - parallel tasks are safe
-QUAST_OUT="$OUTROOT_ABS"
-
-rm -rf "$QUAST_OUT"
-mkdir -p "$QUAST_OUT"
+if [ ! -f "$REF" ]; then
+  echo "Error: reference not found at $REF"
+  exit 1
+fi
 
 docker run --rm \
-  --volumes-from "$HOSTNAME" \
-  -v "$OUTROOT_ABS:$OUTROOT_ABS" \
+  --volumes-from "$SELF" \
   quast:latest \
-  sh -lc "quast.py '$ASM_ABS' -r '$REF_ABS' --output-dir '$QUAST_OUT'"
+  "$ASM" -r "$REF" --output-dir "$OUTDIR"
 
-echo "QUAST finished. Results written to: $QUAST_OUT"
+echo "QUAST finished. Results written to: $OUTDIR"
+

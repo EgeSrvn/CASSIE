@@ -102,6 +102,8 @@ process QUAST {
     set -euo pipefail
     mkdir -p out
 
+    # Stage inputs into /data so the QUAST container
+    # sees them via --volumes-from (same pattern as SPAdes)
     rm -rf "/data/quast_in/${workflow.runName}-${task.index}"
     mkdir -p "/data/quast_in/${workflow.runName}-${task.index}"
 
@@ -111,11 +113,12 @@ process QUAST {
     rm -rf "/data/quast_out/${workflow.runName}-${task.index}"
     mkdir -p "/data/quast_out/${workflow.runName}-${task.index}"
 
-    # Requires runquast.sh to use --volumes-from "$HOSTNAME"
-    runquast "quast_in/${workflow.runName}-${task.index}/contigs.fasta" \
-             "quast_in/${workflow.runName}-${task.index}/reference.fasta" \
+    # Call runquast with ABSOLUTE /data paths
+    runquast "/data/quast_in/${workflow.runName}-${task.index}/contigs.fasta" \
+             "/data/quast_in/${workflow.runName}-${task.index}/reference.fasta" \
              "/data/quast_out/${workflow.runName}-${task.index}"
 
+    # Bring results back into the Nextflow workdir
     cp -a "/data/quast_out/${workflow.runName}-${task.index}"/. out/
     ls -la out
     """
@@ -142,12 +145,23 @@ process GENOMESCOPE2 {
     set -euo pipefail
     mkdir -p out
 
+    # Stage input read into /data so the GenomeScope2 container
+    # sees it via --volumes-from (same pattern as FastQC/QUAST/SPAdes)
+    rm -rf "/data/genomescope2_in/${workflow.runName}-${task.index}"
+    mkdir -p "/data/genomescope2_in/${workflow.runName}-${task.index}"
+
+    cp "$read" "/data/genomescope2_in/${workflow.runName}-${task.index}/reads.fastq.gz"
+
     rm -rf "/data/genomescope2_out/${workflow.runName}-${task.index}"
     mkdir -p "/data/genomescope2_out/${workflow.runName}-${task.index}"
 
-    rungenomescope2 "$read" "/data/genomescope2_out/${workflow.runName}-${task.index}"
+    # Call rungenomescope2 with ABSOLUTE /data paths
+    rungenomescope2 "/data/genomescope2_in/${workflow.runName}-${task.index}/reads.fastq.gz" \
+                    "/data/genomescope2_out/${workflow.runName}-${task.index}"
 
+    # Bring results back into the Nextflow workdir
     cp -a "/data/genomescope2_out/${workflow.runName}-${task.index}"/. out/
+    ls -la out
     """
 }
 '''
