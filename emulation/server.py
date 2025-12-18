@@ -37,6 +37,7 @@ def send_prompt(conn, text):
     msg = text + END_MARKER
     conn.sendall(msg.encode())
 
+
 def migrate_tenants_from_db():
     """
     Load existing tenants from the database into the runtime TENANT_REGISTRY.
@@ -357,9 +358,9 @@ def handle_client(conn, addr):
             indices_str = conn.recv(1024).decode().strip()
             indices = [x.strip() for x in indices_str.split(",") if x.strip().isdigit()]
             
-            # 3. Input Data Path
-            send_prompt(conn, "Enter initial input data path (absolute path inside tenant): ")
-            input_path = conn.recv(1024).decode().strip()
+            # 3. Input Data Path (UPDATED)
+            send_prompt(conn, "Enter input parameters (e.g. -fasta file.fa -fastq fwd.fq -fastq rev.fq): ")
+            input_args = conn.recv(4096).decode().strip() # Increased buffer for long args
             
             send_prompt(conn, "\nSubmitting pipeline... (this may take a moment)\n")
             
@@ -367,8 +368,8 @@ def handle_client(conn, addr):
                 # Get the actual container object
                 cont = get_tenant_container(tenant_name, user_id)
                 
-                # Run
-                result = nextflow_manager.run_pipeline(cont, input_path, indices)
+                # Run (pass input_args string directly)
+                result = nextflow_manager.run_pipeline(cont, input_args, indices)
                 send_prompt(conn, f"\n{result}\n")
             except Exception as e:
                 send_prompt(conn, f"Pipeline execution error: {e}\n")

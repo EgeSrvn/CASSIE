@@ -12,6 +12,6 @@ RUN apt-get update && apt-get install -y \
 
 RUN R -e "install.packages('remotes', repos='https://cloud.r-project.org')"
 
-RUN R -e "remotes::install_github('tbenavi1/genomescope2', subdir='genomescope2')"
+RUN R -e "remotes::install_github('tbenavi1/genomescope2.0')"
 
 WORKDIR /data
