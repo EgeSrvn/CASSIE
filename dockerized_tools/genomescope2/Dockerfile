@@ -2,16 +2,37 @@ FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update && apt-get install -y \
+# Use bash for RUN
+SHELL ["/bin/bash", "-c"]
+
+# ----------------------------------------------------
+# System packages: R, git, jellyfish, **Python 3**
+# ----------------------------------------------------
+RUN apt-get update -y && apt-get install -y --no-install-recommends \
     r-base \
     r-base-dev \
-    jellyfish \
     git \
+    curl \
     ca-certificates \
+    jellyfish \
+    python3 \
+    python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
-RUN R -e "install.packages('remotes', repos='https://cloud.r-project.org')"
+# Hint for findpython: where Python 3 lives
+ENV PYTHON3=/usr/bin/python3
+ENV PYTHON=/usr/bin/python3
 
-RUN R -e "remotes::install_github('tbenavi1/genomescope2.0')"
+# ----------------------------------------------------
+# R dependencies required by GenomeScope2
+# ----------------------------------------------------
+RUN R -e "install.packages(c('argparse','minpack.lm'), repos='https://cloud.r-project.org')"
+
+# ----------------------------------------------------
+# Install GenomeScope2 from GitHub
+# ----------------------------------------------------
+RUN git clone --depth 1 https://github.com/tbenavi1/genomescope2.0.git /opt/genomescope2.0 \
+ && cd /opt/genomescope2.0 \
+ && Rscript install.R
 
 WORKDIR /data

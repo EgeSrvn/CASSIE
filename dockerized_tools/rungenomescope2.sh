@@ -1,23 +1,33 @@
 #!/bin/bash
 set -euo pipefail
 
-if [ $# -lt 2 ]; then
-  echo "Usage: rungenomescope2 <reads_fastq(.gz)> <outdir>"
-  echo "  (paths must be visible in the tenant container, usually under /data)"
+
+if [ $# -lt 2 ] || [ $# -gt 3 ]; then
+  echo "Usage: rungenomescope2 <r1.fastq[.gz]> [r2.fastq[.gz]] <outdir>"
+  echo "  (last argument is output directory; reads must be visible in the tenant, usually under /data)"
   exit 1
 fi
 
-READS="$1"
-OUTDIR="$2"
+# -------------------------------
+# Parse arguments
+# -------------------------------
+OUTDIR="${@: -1}"               # last arg
+READS=("${@:1:$#-1}")           # all but last
+
+# Resolve OUTDIR to absolute path
+if command -v realpath >/dev/null 2>&1; then
+  OUTDIR_ABS="$(realpath "$OUTDIR")"
+else
+  OUTDIR_ABS="$(cd "$(dirname "$OUTDIR")" && pwd)/$(basename "$OUTDIR")"
+fi
 
 # Clean + create run-specific output directory
-rm -rf "$OUTDIR"
-mkdir -p "$OUTDIR"
+rm -rf "$OUTDIR_ABS"
+mkdir -p "$OUTDIR_ABS"
 
-# ---------------------------------------------------------
-# Resolve the current tenant container id/name (SELF),
-# so we can reuse all its mounts via --volumes-from.
-# ---------------------------------------------------------
+# -------------------------------
+# Resolve tenant container id/name
+# -------------------------------
 SELF="${HOSTNAME:-}"
 
 if ! docker inspect "$SELF" >/dev/null 2>&1; then
@@ -33,36 +43,64 @@ if [ -z "$SELF" ]; then
   exit 1
 fi
 
-# Sanity check: reads must exist in the tenant's filesystem
-if [ ! -f "$READS" ]; then
-  echo "Error: reads file not found at $READS"
-  exit 1
-fi
+# -------------------------------
+# Check reads & ensure .gz versions
+# -------------------------------
+READS_GZ=()
 
-# ---------------------------------------------------------
-# Run GenomeScope2 container sharing ALL volumes from the
-# tenant, so /data/... is identical inside the tool.
-# ---------------------------------------------------------
+for READ in "${READS[@]}"; do
+  # Absolute path
+  if command -v realpath >/dev/null 2>&1; then
+    READ_ABS="$(realpath "$READ")"
+  else
+    READ_ABS="$(cd "$(dirname "$READ")" && pwd)/$(basename "$READ")"
+  fi
+
+  if [ ! -f "$READ_ABS" ]; then
+    echo "Error: reads file not found at $READ_ABS"
+    exit 1
+  fi
+
+  # If already .gz, keep it; otherwise gzip to <file>.gz (once)
+  if [[ "$READ_ABS" == *.gz ]]; then
+    READ_GZ="$READ_ABS"
+  else
+    READ_GZ="${READ_ABS}.gz"
+    if [ ! -f "$READ_GZ" ]; then
+      echo "Gzipping $READ_ABS -> $READ_GZ ..."
+      gzip -c "$READ_ABS" > "$READ_GZ"
+    fi
+  fi
+
+  READS_GZ+=("$READ_GZ")
+done
+
+# Build zcat input list for inside the genomescope2 container
+ZCAT_INPUTS=""
+for GZ in "${READS_GZ[@]}"; do
+  ZCAT_INPUTS+=" '$GZ'"
+done
+
 docker run --rm \
   --volumes-from "$SELF" \
   genomescope2 \
   bash -lc "
+    set -euo pipefail
+
+    # K-mer counting with Jellyfish from both mates (if provided)
     jellyfish count -C -m 21 -s 100M -t 4 \
-      <(zcat '$READS') \
-      -o '$OUTDIR/reads.jf'
+      <(zcat${ZCAT_INPUTS}) \
+      -o '$OUTDIR_ABS/reads.jf'
 
-    jellyfish histo '$OUTDIR/reads.jf' > '$OUTDIR/reads.histo'
+    jellyfish histo '$OUTDIR_ABS/reads.jf' > '$OUTDIR_ABS/reads.histo'
 
-    Rscript -e '
-      library(genomescope2)
-      genomescope2(
-        input=\"$OUTDIR/reads.histo\",
-        k=21,
-        ploidy=1,
-        read_length=150,
-        output_dir=\"$OUTDIR\"
-      )
-    '
+    # Run GenomeScope 2.0 using the command-line script
+    Rscript /opt/genomescope2.0/genomescope.R \
+      -i '$OUTDIR_ABS/reads.histo' \
+      -o '$OUTDIR_ABS' \
+      -k 21 \
+      -p 1
   "
 
-echo "GenomeScope2 finished. Results written to: $OUTDIR"
+echo "GenomeScope2 finished. Results written to: $OUTDIR_ABS"
+

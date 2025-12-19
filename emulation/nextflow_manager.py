@@ -135,7 +135,7 @@ process GENOMESCOPE2 {
     publishDir "${params.outdir}/GenomeScope2", mode: 'copy'
 
     input:
-    path read
+    tuple path(r1), path(r2)
 
     output:
     path "out/*"
@@ -145,19 +145,22 @@ process GENOMESCOPE2 {
     set -euo pipefail
     mkdir -p out
 
-    # Stage input read into /data so the GenomeScope2 container
-    # sees it via --volumes-from (same pattern as FastQC/QUAST/SPAdes)
+    # Stage paired reads into /data so the GenomeScope2 container
+    # sees them via --volumes-from (same pattern as SPAdes)
     rm -rf "/data/genomescope2_in/${workflow.runName}-${task.index}"
     mkdir -p "/data/genomescope2_in/${workflow.runName}-${task.index}"
 
-    cp "$read" "/data/genomescope2_in/${workflow.runName}-${task.index}/reads.fastq.gz"
+    cp "$r1" "/data/genomescope2_in/${workflow.runName}-${task.index}/r1.fastq"
+    cp "$r2" "/data/genomescope2_in/${workflow.runName}-${task.index}/r2.fastq"
 
     rm -rf "/data/genomescope2_out/${workflow.runName}-${task.index}"
     mkdir -p "/data/genomescope2_out/${workflow.runName}-${task.index}"
 
-    # Call rungenomescope2 with ABSOLUTE /data paths
-    rungenomescope2 "/data/genomescope2_in/${workflow.runName}-${task.index}/reads.fastq.gz" \
-                    "/data/genomescope2_out/${workflow.runName}-${task.index}"
+    # Call rungenomescope2 with ABSOLUTE /data paths for both mates
+    rungenomescope2 \
+        "/data/genomescope2_in/${workflow.runName}-${task.index}/r1.fastq" \
+        "/data/genomescope2_in/${workflow.runName}-${task.index}/r2.fastq" \
+        "/data/genomescope2_out/${workflow.runName}-${task.index}"
 
     # Bring results back into the Nextflow workdir
     cp -a "/data/genomescope2_out/${workflow.runName}-${task.index}"/. out/
@@ -272,8 +275,9 @@ params.outdir = "${baseDir}/results"
         script += "    reads_ch = reads_pair_ch\n"
         script += "    data_ch  = reads_pair_ch\n"
     elif "input" in user_params:
-        script += "    reads_ch = Channel.fromFilePairs(params.input, flat: true)\n"
-        script += "    data_ch  = reads_ch\n"
+        script += "    reads_pair_ch = Channel.fromFilePairs(params.input, flat: true)\n"
+        script += "    reads_ch = reads_pair_ch\n"
+        script += "    data_ch  = reads_pair_ch\n"
     elif "fasta" in user_params:
         script += "    // Detected single 'fasta'\n"
         script += "    reads_ch = Channel.fromPath(params.fasta)\n"
@@ -282,6 +286,9 @@ params.outdir = "${baseDir}/results"
         first_key = list(user_params.keys())[0]
         script += f"    reads_ch = Channel.fromPath(params.{first_key})\n"
         script += f"    data_ch  = reads_ch\n"
+
+    script += "    reads_pair_ch = reads_ch\n"
+
 
     script += "\n"
     script += "    data_ch = reads_ch\n"
@@ -295,9 +302,8 @@ params.outdir = "${baseDir}/results"
         if pid == "SPADES":
             script += "    spades_res = SPADES(data_ch)\n"
             script += "    assembly_ch = spades_res.assembly\n"
-            script += "    data_ch = spades_res.files\n"   # IMPORTANT: keep pipeline as a channel
+            script += "    data_ch = spades_res.files\n"
             script += "    assembly_ch_defined = true\n\n"
-
 
         elif pid == "QUAST":
             script += "    if( !assembly_ch_defined ) error 'QUAST requires an assembly. Select SPADES before QUAST.'\n"
@@ -305,11 +311,16 @@ params.outdir = "${baseDir}/results"
             script += "    quast_in_ch = assembly_ch.combine(ref_ch)\n"
             script += "    QUAST(quast_in_ch)\n\n"
 
+        elif pid == "GENOMESCOPE2":
+            # Run once per read pair (not per mate)
+            script += "    GENOMESCOPE2(reads_pair_ch)\n\n"
+
         else:
             if tool["type"] == "qc":
                 script += f"    {pid}(qc_reads_ch)\n\n"
             elif tool["type"] == "transform":
                 script += f"    data_ch = {pid}(data_ch)\n\n"
+
 
     script += "}\n"
     return script, None
