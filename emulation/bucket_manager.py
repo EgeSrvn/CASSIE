@@ -4,6 +4,8 @@ import os
 import time
 import tkinter as tk
 from tkinter import filedialog
+from botocore.config import Config
+from botocore.exceptions import ClientError, BotoCoreError, ConnectionClosedError
 # -------------------------------------------------------------------
 # 🔹 Global shared bucket
 # -------------------------------------------------------------------
@@ -82,28 +84,93 @@ def ensure_minio_container():
     if container.status != "running":
         print("[+] Starting MinIO container...")
         container.start()
-        time.sleep(3)
+        # Give MinIO time to initialize (it needs a few seconds after starting)
+        time.sleep(5)
 
-    print("[✓] MinIO ready at http://minio:9000")
+    print("[✓] MinIO container is running at http://minio:9000")
+    # Note: Actual readiness will be tested by init_s3_client() with retry logic
 
 
 # -------------------------------------------------------------------
 # 🔹 Initialize S3 client
 # -------------------------------------------------------------------
-def init_s3_client():
+def init_s3_client(endpoint_url=None):
     """
     Initialize and return an S3 client compatible with MinIO.
+    Includes retry logic and proper connection configuration.
+    
+    Tries endpoints in order:
+    1. 'http://minio:9000' (Docker network DNS - for code running inside Docker)
+    2. 'http://localhost:9000' (host port mapping - for code running on host)
+    
+    Args:
+        endpoint_url (str, optional): Override endpoint URL. If None, tries both endpoints.
 
     Returns:
         boto3.client: A configured S3 client for interacting with MinIO.
+    
+    Raises:
+        RuntimeError: If unable to connect to MinIO after trying all endpoints.
     """
     ensure_minio_container()
-    return boto3.client(
-        's3',
-        endpoint_url='http://localhost:9000',  # Local MinIO endpoint
-        aws_access_key_id='minioadmin',
-        aws_secret_access_key='minioadmin',
+    
+    # Configure boto3 with retry and timeout settings (same as backend)
+    config = Config(
+        signature_version='s3v4',
+        retries={'max_attempts': 2, 'mode': 'standard'},  # Reduced retries since we try multiple endpoints
+        connect_timeout=5,
+        read_timeout=5,
+        max_pool_connections=10
     )
+    
+    # Try endpoints in order if not explicitly provided
+    endpoints_to_try = []
+    if endpoint_url:
+        endpoints_to_try = [endpoint_url]
+    else:
+        # Determine which endpoints to try based on environment
+        # If running on host (backend), try localhost first
+        # If running in Docker, try minio DNS first
+        if os.path.exists('/.dockerenv'):
+            # Running inside Docker - try Docker network DNS first
+            endpoints_to_try = ['http://minio:9000', 'http://localhost:9000']
+        else:
+            # Running on host - try host port mapping first
+            endpoints_to_try = ['http://localhost:9000', 'http://127.0.0.1:9000']
+    
+    last_error = None
+    
+    for endpoint_url in endpoints_to_try:
+        client_kwargs = {
+            'service_name': 's3',
+            'endpoint_url': endpoint_url,
+            'aws_access_key_id': 'minioadmin',
+            'aws_secret_access_key': 'minioadmin',
+            'region_name': 'us-east-1',  # MinIO doesn't care about region, but boto3 requires it
+            'config': config,
+        }
+        
+        # Try to connect with this endpoint
+        try:
+            client = boto3.client(**client_kwargs)
+            # Test connection with a simple operation
+            client.list_buckets()
+            print(f"[✓] Connected to MinIO at {endpoint_url}")
+            return client
+        except (ClientError, BotoCoreError, ConnectionClosedError, Exception) as e:
+            last_error = e
+            error_type = type(e).__name__
+            error_msg = str(e)
+            print(f"[*] Failed to connect to MinIO at {endpoint_url}: {error_type}: {error_msg}")
+            # Continue to next endpoint
+            continue
+    
+    # If we get here, all endpoints failed
+    raise RuntimeError(
+        f"Unable to connect to MinIO after trying endpoints: {', '.join(endpoints_to_try)}. "
+        f"Last error: {type(last_error).__name__}: {str(last_error)}. "
+        f"Ensure MinIO container is running and accessible."
+    ) from last_error
 
 
 def create_user_bucket(username, s3=None):

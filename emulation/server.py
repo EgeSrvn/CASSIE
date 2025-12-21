@@ -2,6 +2,14 @@
 import socket
 import threading
 import select
+import sys
+from pathlib import Path
+
+# Add emulation directory to path so relative imports work when run as script
+emulation_dir = Path(__file__).resolve().parent
+if str(emulation_dir) not in sys.path:
+    sys.path.insert(0, str(emulation_dir))
+
 from tenant_commands import (
     add_tenant,
     remove_tenant,
@@ -12,15 +20,15 @@ from tenant_commands import (
     VM_LOAD,
 )
 from bucket_manager import ensure_global_bucket, GLOBAL_BUCKET_NAME, upload_bytes
-from db_manager import get_connection, initialize_database
+from db_manager import get_connection
 from docker_commands import ensure_network, ensure_vms, assign_tenant_to_vm, create_tenant_user, get_tenant_container
 import nextflow_manager
 
 HOST = "0.0.0.0"
 PORT = 5001
 
-# Initialize database and Docker network/VMs
-initialize_database()
+# Initialize Docker network/VMs
+# Note: Database is initialized by the backend, not here
 ensure_network()
 ensure_vms()
 ensure_global_bucket()  # make sure the shared MinIO bucket exists

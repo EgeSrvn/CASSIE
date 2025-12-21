@@ -327,6 +327,12 @@ params.outdir = "${baseDir}/results"
 
 
 def setup_nextflow(container):
+    # Ensure container is running before executing commands
+    container.reload()
+    if container.status != "running":
+        container.start()
+        time.sleep(2)  # Wait for container to be fully up
+    
     check = container.exec_run("which nextflow")
     if check.exit_code != 0:
         cmd = "curl -s https://get.nextflow.io | bash && mv nextflow /usr/local/bin/ && chmod +x /usr/local/bin/nextflow"
@@ -334,6 +340,12 @@ def setup_nextflow(container):
 
 
 def run_pipeline(tenant_container, input_args: str, tool_indices):
+    # Ensure container is running before executing commands
+    tenant_container.reload()
+    if tenant_container.status != "running":
+        tenant_container.start()
+        time.sleep(2)  # Wait for container to be fully up
+    
     setup_nextflow(tenant_container)
 
     nf_script, error = generate_nextflow_script(tool_indices, input_args)
@@ -364,7 +376,70 @@ def run_pipeline(tenant_container, input_args: str, tool_indices):
             f"Logs:\n{output_log}"
         )
 
-    return f"Pipeline failed.\n\nLogs:\n{output_log}"
+    # Pipeline failed - try to extract detailed error logs from Nextflow work directory
+    error_details = output_log
+    error_details += f"\n\n=== Work Directory: {work_dir} ===\n"
+    error_details += f"To manually check logs, run: docker exec {tenant_container.name} find {work_dir}/work -name '.command.*'\n\n"
+    
+    try:
+        # List all work subdirectories first
+        list_work_cmd = f"ls -la {work_dir}/work 2>/dev/null | head -20"
+        list_res = tenant_container.exec_run(["/bin/bash", "-lc", list_work_cmd], user="root")
+        if list_res.exit_code == 0 and list_res.output:
+            error_details += "=== Work Directory Contents ===\n"
+            error_details += list_res.output.decode(errors="replace")
+            error_details += "\n"
+        
+        # Find failed process work directories (Nextflow stores logs in work/*/ directories)
+        # Try to find any work subdirectory
+        find_work_cmd = f"find {work_dir}/work -type d -maxdepth 1 2>/dev/null | head -5"
+        work_res = tenant_container.exec_run(["/bin/bash", "-lc", find_work_cmd], user="root")
+        
+        if work_res.exit_code == 0 and work_res.output:
+            work_dirs = [d.strip() for d in work_res.output.decode(errors="replace").split('\n') if d.strip() and d.strip() != f"{work_dir}/work"]
+            
+            for work_subdir in work_dirs[:3]:  # Check first 3 work directories
+                if work_subdir:
+                    error_details += f"\n=== Checking {work_subdir} ===\n"
+                    # Look for .command.err and .command.log in this directory
+                    for log_name in ['.command.err', '.command.log', '.command.out', '.command.sh']:
+                        log_path = f"{work_subdir}/{log_name}"
+                        cat_cmd = f"test -f {log_path} && cat {log_path} 2>/dev/null || echo 'File not found'"
+                        cat_res = tenant_container.exec_run(["/bin/bash", "-lc", cat_cmd], user="root")
+                        if cat_res.exit_code == 0 and cat_res.output:
+                            log_content = cat_res.output.decode(errors="replace")
+                            if log_content.strip() and "File not found" not in log_content:
+                                error_details += f"\n--- {log_name} ---\n"
+                                # Limit to last 100 lines to avoid huge output
+                                if log_content.count('\n') > 100:
+                                    log_content = '\n'.join(log_content.split('\n')[-100:])
+                                    error_details += "... (showing last 100 lines) ...\n"
+                                error_details += log_content
+                                error_details += "\n"
+        
+        # Fallback: try to find any .command.err files recursively
+        if "=== .command.err" not in error_details and ".command.err" not in error_details:
+            find_err_cmd = f"find {work_dir}/work -name '.command.err' 2>/dev/null | head -3"
+            find_res = tenant_container.exec_run(["/bin/bash", "-lc", find_err_cmd], user="root")
+            if find_res.exit_code == 0 and find_res.output:
+                err_files = [f.strip() for f in find_res.output.decode(errors="replace").split('\n') if f.strip()]
+                for err_file in err_files:
+                    cat_res = tenant_container.exec_run(["/bin/bash", "-lc", f"cat {err_file} 2>/dev/null"], user="root")
+                    if cat_res.exit_code == 0 and cat_res.output:
+                        err_content = cat_res.output.decode(errors="replace")
+                        if err_content.strip():
+                            error_details += f"\n\n=== Error from {err_file} ===\n"
+                            if err_content.count('\n') > 100:
+                                err_content = '\n'.join(err_content.split('\n')[-100:])
+                                error_details += "... (showing last 100 lines) ...\n"
+                            error_details += err_content
+                            error_details += "\n"
+    except Exception as e:
+        error_details += f"\n\n(Note: Could not extract detailed logs: {e})\n"
+        import traceback
+        error_details += traceback.format_exc()
+
+    return f"Pipeline failed.\n\nLogs:\n{error_details}"
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
-from bucket_manager import create_user_bucket, delete_bucket, init_s3_client
-from db_manager import get_connection
-from docker_commands import (
+from .bucket_manager import create_user_bucket, delete_bucket, init_s3_client
+from .db_manager import get_connection
+from .docker_commands import (
     client,
     create_tenant_user, 
     assign_tenant_to_vm,
@@ -218,6 +218,17 @@ def add_tenant(tenant_name, vm_name=None, user_id=None):
     add_tenant_to_db(tenant_name, vm_name, user_id)
 
     print(f"[+] Tenant '{tenant_name}' for user_id={user_id} assigned to {vm_name} with bucket '{bucket_name}'.")
+    
+    # Write progress to VM container logs for Docker Desktop visibility
+    try:
+        from .docker_commands import client
+        vm_container = client.containers.get(vm_name)
+        vm_container.exec_run(
+            ["/bin/sh", "-c", f"echo '[TENANT] Tenant {tenant_name} assigned to {vm_name}, bucket: {bucket_name}' > /proc/1/fd/1"],
+            user="root"
+        )
+    except:
+        pass  # Non-critical
 
 
 def remove_tenant(tenant_name, user_id):

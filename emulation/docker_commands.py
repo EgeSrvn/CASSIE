@@ -128,13 +128,20 @@ def provision_vm(container, name, command_file="provisioning_commands.txt"):
     container.exec_run(["/bin/sh", "-c", f"sed -i 's/\\r$//' {dest_path}"], user="root")
     container.exec_run(["/bin/sh", "-c", f"chmod +x {dest_path}"], user="root")
 
-    print(f"[*] Executing provisioning script in '{name}' using bash...")
+    # Run provisioning script - output goes to Docker logs only (via log_to_container in script)
+    # We only log errors to backend, not the full output
     res = container.exec_run(["/bin/bash", "-eux", dest_path], user="root")
     output = getattr(res, "output", b"").decode(errors="replace")
-    print(output)
 
     if getattr(res, "exit_code", 0) != 0:
-        raise RuntimeError(f"Provisioning failed for '{name}'.")
+        # Only print error summary to backend logs
+        error_summary = output.split('\n')[-20:]  # Last 20 lines for context
+        print(f"[!] Provisioning failed for '{name}'. Exit code: {getattr(res, 'exit_code', 'unknown')}")
+        print(f"[!] Error details (see Docker logs for full output):")
+        for line in error_summary:
+            if line.strip():
+                print(f"    {line}")
+        raise RuntimeError(f"Provisioning failed for '{name}'. Check Docker logs for container '{name}' for full details.")
 
     # Hard check
     res = container.exec_run(["/bin/bash", "-c", "test -x /usr/local/bin/fetch"], user="root")
@@ -275,27 +282,35 @@ def create_tenant_container(vm_name, tenant_name, user_id=None, cpu_quota=None, 
         client.images.get(tenant_base_image)
         print(f"[*] Tenant base image '{tenant_base_image}' already exists.")
     except docker.errors.ImageNotFound:
-        if IS_LINUX:
-            threading.Thread(target=commit_vm_async, daemon=True).start()
-        else:
-            print(f"[+] Committing VM '{vm_name}' as base image '{tenant_base_image}'...")
-            vm_container = client.containers.get(vm_name)
-            client.api.commit(vm_container.id, tenant_base_image)
+        # Always use async commit to avoid timeout issues (committing can take a long time)
+        print(f"[+] Starting async commit of VM '{vm_name}' as base image '{tenant_base_image}'...")
+        print(f"[*] This may take several minutes depending on VM size...")
+        commit_thread = threading.Thread(target=commit_vm_async, daemon=True)
+        commit_thread.start()
 
     print(f"[*] Waiting for base image '{tenant_base_image}' to be ready...")
-    for i in range(60):
+    # Increase wait time to 5 minutes (300 seconds) to handle large VM commits
+    max_wait_seconds = 300
+    for i in range(max_wait_seconds):
         try:
             client.images.get(tenant_base_image)
+            print(f"[✓] Base image '{tenant_base_image}' is ready!")
             break
         except docker.errors.ImageNotFound:
-            if i % 5 == 0 and i > 0:
-                print(f"    ... waiting for image commit ({i}s)")
+            if i % 10 == 0 and i > 0:
+                print(f"    ... waiting for image commit ({i}s / {max_wait_seconds}s)")
             time.sleep(1)
     else:
-        raise RuntimeError(f"Tenant base image '{tenant_base_image}' not ready yet.")
+        raise RuntimeError(
+            f"Tenant base image '{tenant_base_image}' not ready after {max_wait_seconds} seconds. "
+            f"The commit may still be in progress. Check Docker Desktop for commit status."
+        )
 
     # --- CALCULATE HOST PATH FOR /DATA ---
     host_data_path = os.path.abspath(f"{DATA_BASE_PATH}/{vm_name}")
+    
+    # Get tools host path (same as in ensure_vms) - mount it so wrappers can access updated scripts
+    tools_host = (Path(__file__).resolve().parent / ".." / "dockerized_tools").resolve()
 
     cont = client.containers.run(
         image=tenant_base_image,
@@ -314,10 +329,22 @@ def create_tenant_container(vm_name, tenant_name, user_id=None, cpu_quota=None, 
             home_dir_host: {"bind": f"/home/{container_name}", "mode": "rw"},
             f"{DATA_BASE_PATH}/{vm_name}": {"bind": "/data", "mode": "rw"},
             "/var/run/docker.sock": {"bind": "/var/run/docker.sock", "mode": "rw"},
+            str(tools_host): {"bind": "/opt/dockerized_tools", "mode": "ro"},  # Mount tools so wrappers can access updated scripts
         },
     )
 
     print(f"[+] Tenant container '{container_name}' created on VM '{vm_name}'.")
+    
+    # Write progress to VM container logs so it's visible in Docker Desktop
+    try:
+        vm_container = client.containers.get(vm_name)
+        vm_container.exec_run(
+            ["/bin/sh", "-c", f"echo '[TENANT] Tenant container {container_name} created successfully' > /proc/1/fd/1"],
+            user="root"
+        )
+    except:
+        pass  # Non-critical
+    
     return cont
 
 
@@ -357,6 +384,17 @@ def create_tenant_user(vm_name, tenant_name, user_id=None, cpu_quota=None, mem_l
     sh(f"mkdir -p {home_dir}/fastqc_out && chown -R {username}:{username} {home_dir}/fastqc_out || true")
 
     print(f"[+] Tenant user '{username}' ready in container '{cont.name}' (created={user_created}).")
+    
+    # Write progress to VM container logs for Docker Desktop visibility
+    try:
+        vm_container = client.containers.get(vm_name)
+        vm_container.exec_run(
+            ["/bin/sh", "-c", f"echo '[TENANT] Tenant user {username} ready in container {cont.name}' > /proc/1/fd/1"],
+            user="root"
+        )
+    except:
+        pass  # Non-critical
+    
     return cont
 
 # -------------------------------------------------------------------

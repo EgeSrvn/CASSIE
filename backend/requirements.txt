@@ -1,11 +1,25 @@
-fastapi==0.104.1
-uvicorn[standard]==0.24.0
-sqlalchemy==2.0.23
-psycopg2-binary==2.9.9
-python-jose[cryptography]==3.3.0
-passlib[bcrypt]==1.7.4
-bcrypt==3.2.0  # pin to a bcrypt implementation compatible with passlib's expectations
-pydantic==2.5.0
-pydantic[email]==2.5.0
-python-multipart==0.0.6
+# CASSIE Backend Requirements
+# 
+# NOTE: This file is kept for backward compatibility.
+# For new installations, use the root requirements.txt:
+#   pip install -r requirements.txt
+#
+# This file will be maintained to match root requirements.txt
 
+# Database
+psycopg2-binary>=2.9.0
+
+# Docker (for container management)
+docker>=7.0.0
+
+# Configuration Management
+python-dotenv>=1.0.0
+
+# FastAPI and related (Phase 5)
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+pydantic>=2.0.0
+python-multipart>=0.0.6
+
+# MinIO/S3 (Phase 4)
+boto3>=1.28.0

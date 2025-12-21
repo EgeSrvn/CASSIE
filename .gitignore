@@ -213,3 +213,4 @@ data/*
 *.fasta
 /dataset/*
 emulation/emulation_run/*
+/frontend/node_modules/*

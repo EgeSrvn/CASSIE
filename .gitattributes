@@ -1,0 +1,77 @@
+# -----------------------------
+# Default: Normalize to LF
+# -----------------------------
+* text=auto eol=lf
+
+# -----------------------------
+# Nextflow
+# -----------------------------
+*.nf      text eol=lf
+*.config  text eol=lf
+
+# -----------------------------
+# Unix Shell Scripts
+# -----------------------------
+*.sh      text eol=lf
+*.bash    text eol=lf
+*.zsh     text eol=lf
+
+# -----------------------------
+# Python
+# -----------------------------
+*.py      text eol=lf
+
+# -----------------------------
+# Dockerfiles
+# -----------------------------
+Dockerfile text eol=lf
+*.dockerfile text eol=lf
+
+# -----------------------------
+# YAML / JSON / TOML
+# -----------------------------
+*.yml     text eol=lf
+*.yaml    text eol=lf
+*.json    text eol=lf
+*.toml    text eol=lf
+
+# -----------------------------
+# Compose & Kubernetes
+# -----------------------------
+docker-compose* text eol=lf
+*.helm    text eol=lf
+*.tpl     text eol=lf
+
+# -----------------------------
+# Markdown / Documentation
+# -----------------------------
+*.md      text eol=lf
+*.txt     text eol=lf
+*.rst     text eol=lf
+
+# -----------------------------
+# Windows Batch
+# -----------------------------
+*.bat     text eol=crlf
+*.cmd     text eol=crlf
+
+# -----------------------------
+# PowerShell
+# -----------------------------
+*.ps1     text eol=crlf
+
+# -----------------------------
+# Ignore binaries
+# -----------------------------
+*.png     -text
+*.jpg     -text
+*.jpeg    -text
+*.gif     -text
+*.ico     -text
+*.pdf     -text
+*.zip     -text
+*.gz      -text
+*.tar     -text
+*.jar     -text
+*.exe     -text
+*.dll     -text

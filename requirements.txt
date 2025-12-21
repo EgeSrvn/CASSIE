@@ -1,0 +1,92 @@
+# CASSIE Project - Global Python Requirements
+# Install with: pip install -r requirements.txt
+
+# ============================================================================
+# Core Dependencies (Currently Used)
+# ============================================================================
+
+# Database
+psycopg2-binary>=2.9.0
+
+# Docker (for container management and tool execution)
+docker>=7.0.0
+
+# Configuration Management
+python-dotenv>=1.0.0
+
+# ============================================================================
+# API Framework (For FastAPI - Phase 5)
+# ============================================================================
+
+# FastAPI web framework
+fastapi>=0.104.0
+
+# ASGI server for FastAPI
+uvicorn[standard]>=0.24.0
+
+# Data validation and settings management
+pydantic>=2.0.0
+pydantic[email]>=2.0.0
+
+
+# File upload support for FastAPI
+python-multipart>=0.0.6
+
+# Authentication & Security
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
+bcrypt>=4.0.0
+
+# ============================================================================
+# Storage (MinIO/S3 - Phase 4)
+# ============================================================================
+
+# AWS SDK for S3/MinIO operations
+boto3>=1.28.0
+
+# ============================================================================
+# Testing (Optional but Recommended)
+# ============================================================================
+
+# Testing framework
+pytest>=7.4.0
+
+# Pytest async support (for FastAPI async tests)
+pytest-asyncio>=0.21.0
+
+# HTTP testing for FastAPI
+httpx>=0.24.0
+
+# ============================================================================
+# Development Tools (Optional)
+# ============================================================================
+
+# Code formatting (optional)
+# black>=23.0.0
+
+# Linting (optional)
+# flake8>=6.0.0
+
+# Type checking (optional)
+# mypy>=1.5.0
+
+# ============================================================================
+# Notes
+# ============================================================================
+# 
+# Current Phase: Phase 2 (Backend Utilities)
+# - Currently using: psycopg2-binary, docker, python-dotenv
+# 
+# Future Phases:
+# - Phase 4: Will need boto3 for MinIO/S3 client
+# - Phase 5: Will need fastapi, uvicorn, pydantic, python-multipart
+# 
+# To install only current dependencies:
+#   pip install psycopg2-binary docker python-dotenv
+# 
+# To install all dependencies (including future):
+#   pip install -r requirements.txt
+# 
+# To install with testing:
+#   pip install -r requirements.txt pytest pytest-asyncio httpx
+
