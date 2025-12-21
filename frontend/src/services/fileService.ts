@@ -166,7 +166,8 @@ export const deleteFile = async (fileId: number): Promise<void> => {
 export const downloadJobOutputsZip = async (jobId: number): Promise<void> => {
   try {
     const response = await apiClient.get(`/api/storage/jobs/${jobId}/download-zip`, {
-      responseType: 'blob'
+      responseType: 'blob',
+      timeout: 300000 // 5 minutes timeout for large ZIP files
     })
     
     // response.data is already a Blob when responseType is 'blob'
@@ -174,6 +175,20 @@ export const downloadJobOutputsZip = async (jobId: number): Promise<void> => {
     
     if (!(blob instanceof Blob)) {
       throw new Error('Invalid response: expected blob')
+    }
+    
+    // Check if blob is actually an error response (JSON error in blob format)
+    if (blob.type === 'application/json' || blob.size < 100) {
+      const text = await blob.text()
+      try {
+        const errorData = JSON.parse(text)
+        throw new Error(errorData.message || 'Failed to download ZIP')
+      } catch {
+        // If not JSON, might be empty or error message
+        if (text.includes('error') || text.includes('Error')) {
+          throw new Error(text)
+        }
+      }
     }
     
     // Extract filename from Content-Disposition header if available
@@ -203,6 +218,8 @@ export const downloadJobOutputsZip = async (jobId: number): Promise<void> => {
     link.download = filename
     link.style.display = 'none'
     document.body.appendChild(link)
+    
+    // Trigger download
     link.click()
     
     // Clean up

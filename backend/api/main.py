@@ -10,6 +10,7 @@ Usage:
 
 import uuid
 import time
+import asyncio
 from contextlib import asynccontextmanager
 from typing import Dict, Any
 
@@ -88,26 +89,98 @@ async def lifespan(app: FastAPI):
                 f"This is usually safe to ignore."
             )
         
+        # Ensure tool images are built (required for VM provisioning)
+        try:
+            import sys
+            from pathlib import Path
+            
+            # Add project root to Python path (3 levels up from backend/api/main.py)
+            current_file = Path(__file__).resolve()
+            project_root = current_file.parent.parent.parent
+            project_root_str = str(project_root)
+            
+            # Add to path if not already there
+            if project_root_str not in sys.path:
+                sys.path.insert(0, project_root_str)
+            
+            # Now import from emulation package
+            from emulation.docker_commands import ensure_tool_images
+            logger.info("Ensuring tool Docker images are built...")
+            ensure_tool_images()
+            logger.info("Tool images ready")
+        except ImportError as e:
+            logger.warning(
+                f"Could not import emulation.docker_commands: {e}. "
+                f"Tool images may need to be built manually. "
+                f"This is usually safe to ignore if Docker is not available."
+            )
+        except Exception as e:
+            logger.warning(
+                f"Could not ensure tool images: {e}. "
+                f"Tool images may need to be built manually. "
+                f"Run: cd dockerized_tools && bash buildtools.sh"
+            )
+        
+        # Ensure VMs are set up (using emulation system's setup)
+        try:
+            import sys
+            from pathlib import Path
+            
+            # Add project root to Python path (3 levels up from backend/api/main.py)
+            current_file = Path(__file__).resolve()
+            project_root = current_file.parent.parent.parent
+            project_root_str = str(project_root)
+            
+            # Add to path if not already there
+            if project_root_str not in sys.path:
+                sys.path.insert(0, project_root_str)
+            
+            # Now import from emulation package
+            from emulation.docker_commands import ensure_vms
+            logger.info("Ensuring VM containers are set up...")
+            ensure_vms()
+            logger.info("VM containers ready")
+        except ImportError as e:
+            logger.warning(
+                f"Could not import emulation.docker_commands: {e}. "
+                f"VMs may need to be started manually. "
+                f"This is usually safe to ignore if Docker is not available."
+            )
+        except Exception as e:
+            logger.warning(
+                f"Could not ensure VM containers: {e}. "
+                f"VMs may need to be started manually. "
+                f"This is usually safe to ignore."
+            )
+        
         logger.info("CASSIE backend API started successfully")
         
     except Exception as e:
         logger.error(f"Failed to start application: {e}", exc_info=True)
         raise
     
-    yield
-    
-    # Shutdown
-    logger.info("Shutting down CASSIE backend API...")
-    
     try:
-        # Close database connection pool
-        reset_connection_pool()
-        logger.info("Database connections closed")
+        yield
+    except asyncio.CancelledError:
+        # Normal cancellation during shutdown - re-raise to allow proper cleanup
+        logger.info("Shutdown initiated")
+        raise
+    finally:
+        # Shutdown
+        try:
+            logger.info("Shutting down CASSIE backend API...")
+            
+            # Close database connection pool
+            reset_connection_pool()
+            logger.info("Database connections closed")
+            
+        except asyncio.CancelledError:
+            # Ignore cancellation during cleanup
+            pass
+        except Exception as e:
+            logger.error(f"Error during shutdown: {e}", exc_info=True)
         
-    except Exception as e:
-        logger.error(f"Error during shutdown: {e}", exc_info=True)
-    
-    logger.info("CASSIE backend API shutdown complete")
+        logger.info("CASSIE backend API shutdown complete")
 
 
 # Initialize FastAPI app

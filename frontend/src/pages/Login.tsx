@@ -18,21 +18,29 @@ export default function Login({ onLogin }: LoginProps) {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    e.stopPropagation()
     setError('')
     setLoading(true)
 
     try {
-      await login(formData)
-      onLogin()
-      // Trigger auth change event for Navigation component
-      window.dispatchEvent(new Event('auth-change'))
-      navigate('/dashboard')
+      const result = await login(formData)
+      // Ensure token is set before updating state
+      if (result && result.access_token) {
+        onLogin()
+        // Small delay to ensure token is saved before navigation
+        setTimeout(() => {
+          // Trigger auth change event for Navigation component
+          window.dispatchEvent(new Event('auth-change'))
+          navigate('/dashboard')
+        }, 50)
+      } else {
+        throw new Error('Login failed: No token received')
+      }
     } catch (err: any) {
       // Extract error message - could be from axios error or Error object
       const errorMessage = err.message || err.response?.data?.message || err.response?.data?.detail || 'Login failed. Please check your credentials.'
       setError(errorMessage)
       console.error('Login error:', err)
-    } finally {
       setLoading(false)
     }
   }

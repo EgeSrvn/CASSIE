@@ -19,21 +19,29 @@ export default function Register({ onRegister }: RegisterProps) {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    e.stopPropagation()
     setError('')
     setLoading(true)
 
     try {
-      await register(formData)
-      onRegister()
-      // Trigger auth change event for Navigation component
-      window.dispatchEvent(new Event('auth-change'))
-      navigate('/dashboard')
+      const result = await register(formData)
+      // Ensure token is set before updating state
+      if (result && result.access_token) {
+        onRegister()
+        // Small delay to ensure token is saved before navigation
+        setTimeout(() => {
+          // Trigger auth change event for Navigation component
+          window.dispatchEvent(new Event('auth-change'))
+          navigate('/dashboard')
+        }, 50)
+      } else {
+        throw new Error('Registration failed: No token received')
+      }
     } catch (err: any) {
       // Extract error message - could be from axios error or Error object
       const errorMessage = err.message || err.response?.data?.message || err.response?.data?.detail || 'Registration failed. Please try again.'
       setError(errorMessage)
       console.error('Registration error:', err)
-    } finally {
       setLoading(false)
     }
   }
@@ -80,7 +88,7 @@ export default function Register({ onRegister }: RegisterProps) {
               onChange={(e) => setFormData({ ...formData, password: e.target.value })}
               required
               disabled={loading}
-              minLength={6}
+              minLength={8}
             />
           </div>
           

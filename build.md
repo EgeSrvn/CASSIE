@@ -133,6 +133,7 @@ This builds:
 ```bash
 cd backend
 venv\Scripts\activate
+cd ..
 uvicorn backend.api.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
@@ -140,6 +141,7 @@ uvicorn backend.api.main:app --reload --host 0.0.0.0 --port 8000
 ```bash
 cd backend
 source venv/bin/activate
+cd ..
 uvicorn backend.api.main:app --reload --host 0.0.0.0 --port 8000
 ```
 

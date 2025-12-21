@@ -55,6 +55,8 @@ const NodeBox = ({ label, description, color, showTarget = true, showSource = tr
         type="source"
         position={Position.Right}
         className="pipeline-handle-source"
+        id="output"
+        isConnectable={true}
       />
     )}
   </div>
@@ -256,6 +258,7 @@ export default function PipelineBuilder() {
                   addNode('tool', 'Assembly (Spades)', [
                     'Input: paired/long reads',
                     'Output: assembled contigs/scaffolds (FASTA)',
+                    'Note: Outputs are collected automatically',
                   ])
                 }
                 className="btn-secondary"
@@ -333,6 +336,11 @@ export default function PipelineBuilder() {
             onConnect={onConnect}
             nodeTypes={nodeTypes}
             fitView
+            defaultEdgeOptions={{
+              type: 'smoothstep',
+              markerEnd: { type: MarkerType.ArrowClosed, color: '#2563eb' },
+              style: { stroke: '#2563eb' },
+            }}
           >
             <Background />
             <Controls />

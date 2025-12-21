@@ -154,6 +154,74 @@ def provision_vm(container, name, command_file="provisioning_commands.txt"):
         container.stop()
 
 # -------------------------------------------------------------------
+# 🔹 Tool Image Management
+# -------------------------------------------------------------------
+def ensure_tool_images():
+    """
+    Ensure all required tool Docker images are built.
+    Checks for required images and builds them if missing.
+    """
+    required_images = [
+        ("fastqc:0.12.1", "fastqc", "fastqc/Dockerfile"),
+        ("genomescope2", "genomescope2", "genomescope2/Dockerfile"),
+        ("spades", "spades", "spades/Dockerfile"),
+        ("quast", "quast", "quast/Dockerfile"),
+    ]
+    
+    tools_dir = (Path(__file__).resolve().parent / ".." / "dockerized_tools").resolve()
+    
+    missing_images = []
+    for image_tag, tool_name, dockerfile_path in required_images:
+        try:
+            client.images.get(image_tag)
+            print(f"[*] Tool image '{image_tag}' already exists.")
+        except docker.errors.ImageNotFound:
+            missing_images.append((image_tag, tool_name, dockerfile_path))
+            print(f"[!] Tool image '{image_tag}' is missing.")
+    
+    if not missing_images:
+        print("[✓] All required tool images are available.")
+        return
+    
+    print(f"[+] Building {len(missing_images)} missing tool image(s)...")
+    print("[*] This may take several minutes. Please wait...")
+    
+    for image_tag, tool_name, dockerfile_path in missing_images:
+        dockerfile_full_path = tools_dir / dockerfile_path
+        context_dir = tools_dir / tool_name
+        
+        if not dockerfile_full_path.exists():
+            print(f"[!] Dockerfile not found: {dockerfile_full_path}")
+            continue
+        
+        print(f"[+] Building {tool_name} image ({image_tag})...")
+        try:
+            # Build the image
+            image, logs = client.images.build(
+                path=str(context_dir),
+                dockerfile=str(dockerfile_full_path),
+                tag=image_tag,
+                rm=True,  # Remove intermediate containers
+                forcerm=True  # Always remove intermediate containers
+            )
+            print(f"[✓] Successfully built {tool_name} image ({image_tag})")
+        except docker.errors.BuildError as e:
+            print(f"[!] Failed to build {tool_name} image: {e}")
+            # Print last few lines of build log for debugging
+            if hasattr(e, 'build_log') and e.build_log:
+                print("[!] Build log (last 10 lines):")
+                for line in e.build_log[-10:]:
+                    if 'stream' in line:
+                        print(f"    {line.get('stream', '').strip()}")
+            raise
+        except Exception as e:
+            print(f"[!] Error building {tool_name} image: {e}")
+            raise
+    
+    print("[✓] All tool images are now available.")
+
+
+# -------------------------------------------------------------------
 # 🔹 VM Management
 # -------------------------------------------------------------------
 def ensure_vms():
@@ -161,7 +229,30 @@ def ensure_vms():
     for name in VM_NAMES:
         try:
             container = client.containers.get(name)
-            print(f"[*] Container '{name}' already exists (status: {container.status}). Skipping provisioning.")
+            print(f"[*] Container '{name}' already exists (status: {container.status}).")
+            
+            # Check if container has been provisioned by checking for provisioning marker
+            container.reload()
+            was_running = container.status == "running"
+            if not was_running:
+                container.start()
+                time.sleep(2)
+            
+            try:
+                res = container.exec_run(["/bin/bash", "-c", "test -x /usr/local/bin/fetch"], user="root")
+                if res.exit_code != 0:
+                    print(f"[!] Container '{name}' exists but is not provisioned. Provisioning now...")
+                    provision_vm(container, name)
+                else:
+                    print(f"[✓] Container '{name}' is already provisioned.")
+            except Exception as e:
+                print(f"[!] Error checking provisioning status for '{name}': {e}")
+                print(f"[!] Attempting to provision '{name}'...")
+                provision_vm(container, name)
+            finally:
+                if not was_running:
+                    container.stop()
+                    
         except docker.errors.NotFound:
             print(f"[+] Creating container '{name}'...")
             os.makedirs(f"{DATA_BASE_PATH}/{name}", exist_ok=True)

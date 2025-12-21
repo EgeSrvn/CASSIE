@@ -20,21 +20,24 @@ export default function Navigation({ onLogout }: NavigationProps) {
       const authenticated = !!token
       setIsAuthenticated(authenticated)
       
-      // Fetch user info if authenticated
+      // Fetch user info if authenticated (with delay to avoid race conditions after login)
       if (authenticated) {
-        getCurrentUser()
-          .then((userData) => {
-            setUser(userData)
-          })
-          .catch((err) => {
-            console.error('Failed to get user:', err)
-            // If getting user fails, might be invalid token
-            if (err.response?.status === 401) {
-              logout()
-              setIsAuthenticated(false)
-              setUser(null)
-            }
-          })
+        // Add a small delay to ensure token is properly set after login/register
+        setTimeout(() => {
+          getCurrentUser()
+            .then((userData) => {
+              setUser(userData)
+            })
+            .catch((err) => {
+              // Silently handle errors - don't log to console unless it's a real issue
+              // If getting user fails, might be invalid token
+              if (err.response?.status === 401) {
+                logout()
+                setIsAuthenticated(false)
+                setUser(null)
+              }
+            })
+        }, 100)
       } else {
         setUser(null)
       }
@@ -57,7 +60,7 @@ export default function Navigation({ onLogout }: NavigationProps) {
     window.addEventListener('auth-change', handleAuthChange)
     
     // Also check periodically in case of same-tab logout (but less frequently)
-    const interval = setInterval(checkAuth, 3000)
+    const interval = setInterval(checkAuth, 5000)
 
     return () => {
       window.removeEventListener('storage', handleStorageChange)

@@ -487,10 +487,12 @@ export default function JobDetails() {
                     <button
                       onClick={async () => {
                         try {
+                          console.log('Starting ZIP download for job', jobId)
                           await downloadJobOutputsZip(parseInt(jobId!))
+                          console.log('ZIP download completed successfully')
                         } catch (err) {
                           console.error('Failed to download ZIP:', err)
-                          alert('Failed to download ZIP archive')
+                          alert('Failed to download ZIP archive. Please check the browser console for details.')
                         }
                       }}
                       className="btn-primary"

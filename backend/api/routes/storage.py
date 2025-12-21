@@ -16,7 +16,7 @@ import time
 import zipfile
 import io
 from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, status, Query, BackgroundTasks
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse, Response
 from typing import Optional, List
 # Use real JWT auth (Task 5.4 - now fixed)
 from backend.api.routes.auth import get_current_user
@@ -625,18 +625,24 @@ async def download_job_outputs_zip(
         zip_buffer.seek(0)
         
         # Generate filename
+        import urllib.parse
         job_name_safe = "".join(c for c in job.name if c.isalnum() or c in (' ', '-', '_')).rstrip()
         zip_filename = f"job_{job_id}_{job_name_safe}_outputs.zip"
         
         # Get the ZIP data
         zip_data = zip_buffer.getvalue()
         
-        return StreamingResponse(
-            io.BytesIO(zip_data),
+        # URL-encode filename for Content-Disposition header (RFC 5987)
+        filename_encoded = urllib.parse.quote(zip_filename, safe='')
+        
+        # Use Response instead of StreamingResponse for better browser compatibility
+        return Response(
+            content=zip_data,
             media_type="application/zip",
             headers={
-                "Content-Disposition": f'attachment; filename="{zip_filename}"',
-                "Content-Length": str(len(zip_data))
+                "Content-Disposition": f'attachment; filename="{zip_filename}"; filename*=UTF-8\'\'{filename_encoded}',
+                "Content-Length": str(len(zip_data)),
+                "Content-Type": "application/zip"
             }
         )
         
