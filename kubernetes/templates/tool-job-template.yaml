@@ -1,0 +1,35 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: cassie-tool-job
+  namespace: default
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: tool
+          image: localhost:5000/replace-me:latest
+          imagePullPolicy: Always
+          command:
+            - bash
+            - -lc
+          args:
+            - >
+              runtool /data/input.dat /data/output
+          resources:
+            requests:
+              cpu: "2"
+              memory: "4Gi"
+            limits:
+              cpu: "4"
+              memory: "8Gi"
+          volumeMounts:
+            - name: shared-data
+              mountPath: /data
+      volumes:
+        - name: shared-data
+          hostPath:
+            path: /replace/with/cluster/visible/path
+            type: Directory

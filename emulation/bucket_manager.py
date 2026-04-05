@@ -2,8 +2,6 @@ import boto3
 import docker
 import os
 import time
-import tkinter as tk
-from tkinter import filedialog
 from botocore.config import Config
 from botocore.exceptions import ClientError, BotoCoreError, ConnectionClosedError
 # -------------------------------------------------------------------
@@ -240,6 +238,9 @@ def open_file_selector():
     Returns:
         str: The path of the selected file.
     """
+    import tkinter as tk
+    from tkinter import filedialog
+
     root = tk.Tk()
     root.withdraw()
     return filedialog.askopenfilename()

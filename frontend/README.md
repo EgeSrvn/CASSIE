@@ -1,43 +1,58 @@
-# CASSIE Frontend
+# Frontend
 
-React + TypeScript frontend for CASSIE platform.
+React + TypeScript + Vite UI for job creation, pipeline building, and execution monitoring.
 
-## Setup
+## Run Locally
 
-1. **Install dependencies:**
-   ```bash
-   cd frontend
-   npm install
-   ```
+```bash
+cd frontend
+npm install
+npm run dev
+```
 
-2. **Start development server:**
-   ```bash
-   npm run dev
-   ```
+The default dev URL is `http://localhost:3000`.
 
-The frontend will be available at http://localhost:3000
+## Build
 
-## Features
+```bash
+cd frontend
+npm run build
+```
 
-- ✅ User authentication (Login/Register)
-- ✅ Dashboard with job list
-- ✅ Create new jobs
-- ✅ Upload files
-- ✅ View job details
-- ✅ Real-time job status updates
-- ✅ Download files
+Notes:
 
-## API Connection
+- `tsc` currently type-checks cleanly in the repo.
+- In restricted sandbox environments, Vite or esbuild may fail to spawn worker processes even when the code is valid.
 
-The frontend connects to the backend API at `http://localhost:8000` by default.
+## Docker
 
-To change the API URL, set the `VITE_API_URL` environment variable or modify `vite.config.ts`.
+Build from the repository root:
 
-## Pages
+```bash
+docker build -f frontend/Dockerfile -t cassie-frontend .
+docker run --rm -p 3000:80 cassie-frontend
+```
 
-- `/login` - User login
-- `/register` - User registration
-- `/dashboard` - Job list and management
-- `/jobs/create` - Create new job
-- `/jobs/:jobId` - Job details and file management
+## Important Files
 
+- `src/pages/CreateJob.tsx`: job creation flow.
+- `src/pages/PipelineBuilder.tsx`: React Flow builder for custom pipelines.
+- `src/services/toolService.ts`: loads registry-backed tool metadata from the backend.
+- `src/services/apiClient.ts`: Axios client and auth handling.
+
+## Environment
+
+You can override the API base URL with:
+
+```bash
+VITE_API_URL=http://localhost:8000
+```
+
+## Tool Metadata Flow
+
+The UI expects tool definitions from the backend route:
+
+- `GET /api/tools`
+- `GET /api/tools/requirements`
+
+Those routes now read from the shared registry in [`tool_registry.py`](/Users/Eren/Desktop/CASSIE/tool_registry.py), which means new tools appear in the frontend without a separate hard-coded list.

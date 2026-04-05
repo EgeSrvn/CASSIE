@@ -5,45 +5,13 @@ Converts visual pipeline (nodes/edges) to tool_indices for Nextflow execution.
 """
 
 import logging
-from typing import List, Dict, Any, Optional, Set
+from typing import List, Dict, Any, Optional
 from collections import defaultdict, deque
 
 from backend.api.models.pipeline_model import PipelineInDB
-from emulation.nextflow_manager import AVAILABLE_TOOLS
+from tool_registry import get_tool_id_from_label, get_tool_index_by_id
 
 logger = logging.getLogger(__name__)
-
-
-# Mapping from node labels (as they appear in ReactFlow) to tool IDs
-NODE_LABEL_TO_TOOL_ID = {
-    "Read Quality (FastQC)": "FASTQC",
-    "Genomic Property Estimation (GenomeScope2)": "GENOMESCOPE2",
-    "Assembly (Spades)": "SPADES",
-    "Quality Assessment for Assembly (QUAST)": "QUAST",
-    # Also support shorter names
-    "FastQC": "FASTQC",
-    "GenomeScope2": "GENOMESCOPE2",
-    "SPAdes": "SPADES",
-    "Spades": "SPADES",
-    "QUAST": "QUAST",
-    "Quast": "QUAST",
-}
-
-
-def get_tool_index_by_id(tool_id: str) -> Optional[int]:
-    """
-    Get the index of a tool in AVAILABLE_TOOLS by its ID.
-    
-    Args:
-        tool_id: Tool ID (e.g., "FASTQC", "SPADES")
-        
-    Returns:
-        Optional[int]: Tool index if found, None otherwise
-    """
-    for idx, tool in enumerate(AVAILABLE_TOOLS):
-        if tool["id"] == tool_id:
-            return idx
-    return None
 
 
 def extract_tool_nodes(nodes: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
@@ -223,17 +191,7 @@ def convert_pipeline_to_tool_indices(pipeline: PipelineInDB) -> List[int]:
             node = tool_nodes[node_id]
             node_label = node.get("label", "")
             
-            # Try to map label to tool ID
-            tool_id = None
-            for label_pattern, tool_id_candidate in NODE_LABEL_TO_TOOL_ID.items():
-                if label_pattern.lower() in node_label.lower():
-                    tool_id = tool_id_candidate
-                    break
-            
-            if not tool_id:
-                # Try direct match on node label
-                tool_id = NODE_LABEL_TO_TOOL_ID.get(node_label)
-            
+            tool_id = get_tool_id_from_label(node_label)
             if not tool_id:
                 unmapped_nodes.append(node_label)
                 continue
@@ -262,4 +220,3 @@ def convert_pipeline_to_tool_indices(pipeline: PipelineInDB) -> List[int]:
     except Exception as e:
         logger.error(f"Error converting pipeline {pipeline.id} to tool_indices: {e}", exc_info=True)
         raise ValueError(f"Failed to convert pipeline to tool indices: {str(e)}")
-

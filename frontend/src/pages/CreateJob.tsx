@@ -3,9 +3,10 @@ import { useNavigate, useLocation } from 'react-router-dom'
 import { createJob, JobCreate, executeJob, getAvailableVMs, VM } from '../services/jobService'
 import { getAvailableTools, Tool, getToolRequirements, ToolRequirementInfo } from '../services/toolService'
 import { getPipelines, Pipeline, getPipelineRequirements, PipelineRequirements, PipelineRequirement } from '../services/pipelineService'
-import { getDataFileTree, uploadDataFile, DataFile } from '../services/dataFileService'
+import { getDataFileTree } from '../services/dataFileService'
 import { FolderTreeItem, FileItem } from '../services/folderService'
 import { getToken } from '../services/authService'
+import { PendingJobUploadFile, enqueuePendingJobUploads } from '../services/pendingJobUploadService'
 import Navigation from '../components/Navigation'
 import '../styles/globals.css'
 
@@ -27,9 +28,8 @@ export default function CreateJob() {
   const [error, setError] = useState<string>('')
   const [dataFileTree, setDataFileTree] = useState<FolderTreeItem[]>([])
   const [loadingDataTree, setLoadingDataTree] = useState(false)
-  const [selectedDataFiles, setSelectedDataFiles] = useState<Set<number>>(new Set())
-  const [uploadingFile, setUploadingFile] = useState(false)
-  const [uploadedFiles, setUploadedFiles] = useState<DataFile[]>([]) // Files uploaded during this session
+  const [pendingLocalFiles, setPendingLocalFiles] = useState<PendingJobUploadFile[]>([])
+  const [submitStatus, setSubmitStatus] = useState<string>('')
   const [availableVMs, setAvailableVMs] = useState<VM[]>([])
   const [loadingVMs, setLoadingVMs] = useState(false)
   const [selectedVM, setSelectedVM] = useState<string>('')
@@ -254,18 +254,6 @@ export default function CreateJob() {
     })
   }
 
-  const handleFileSelect = (fileId: number) => {
-    setSelectedDataFiles(prev => {
-      const newSet = new Set(prev)
-      if (newSet.has(fileId)) {
-        newSet.delete(fileId)
-      } else {
-        newSet.add(fileId)
-      }
-      return newSet
-    })
-  }
-
   // Helper function to flatten file tree into a list of files with folder paths
   const flattenFiles = (tree: FolderTreeItem[]): Array<FileItem & { folderPath?: string }> => {
     if (!tree || tree.length === 0) {
@@ -300,29 +288,59 @@ export default function CreateJob() {
     return files
   }
 
+  const inferFileFormat = (filename: string): string | null => {
+    const lower = filename.toLowerCase()
+    if (lower.endsWith('.fastq') || lower.endsWith('.fastq.gz') || lower.endsWith('.fq') || lower.endsWith('.fq.gz')) return 'fastq'
+    if (lower.endsWith('.fasta') || lower.endsWith('.fasta.gz') || lower.endsWith('.fa') || lower.endsWith('.fa.gz') || lower.endsWith('.fna') || lower.endsWith('.fna.gz')) return 'fasta'
+    if (lower.endsWith('.txt')) return 'txt'
+    if (lower.endsWith('.html')) return 'html'
+    return null
+  }
+
+  const getCombinedSelectableFiles = (): Array<FileItem & { folderPath?: string }> => {
+    const libraryFiles = flattenFiles(dataFileTree)
+    const pendingFilesAsItems: Array<FileItem & { folderPath?: string }> = pendingLocalFiles.map(file => ({
+      id: file.tempId,
+      filename: file.filename,
+      s3_key: `pending://${file.tempId}/${file.filename}`,
+      file_type: 'input',
+      file_format: file.file_format,
+      size_bytes: file.size_bytes,
+      checksum: '',
+      uploaded_at: null,
+      created_at: file.created_at,
+      folderPath: 'Selected Files',
+    }))
+
+    return [...pendingFilesAsItems, ...libraryFiles]
+  }
+
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file) return
+    const selectedFiles = Array.from(e.target.files || [])
+    if (selectedFiles.length === 0) return
 
     try {
-      setUploadingFile(true)
       setError('')
-      // Upload to root folder (null)
-      const uploadedFile = await uploadDataFile(file, null)
-      // Add to uploaded files list for this session
-      setUploadedFiles(prev => [...prev, uploadedFile])
-      // Refresh the data file tree to include the newly uploaded file
-      const tree = await getDataFileTree()
-      setDataFileTree(tree)
-      // Automatically select the newly uploaded file
-      if (uploadedFile && uploadedFile.id) {
-        setSelectedDataFiles(prev => new Set([...prev, uploadedFile.id]))
-      }
+      setPendingLocalFiles(prev => {
+        const existingKeys = new Set(prev.map(file => `${file.filename}:${file.size_bytes}:${file.file.lastModified}`))
+        const additions = selectedFiles
+          .filter(file => !existingKeys.has(`${file.name}:${file.size}:${file.lastModified}`))
+          .map((file, index) => ({
+            tempId: -(Date.now() + index + Math.floor(Math.random() * 1000)),
+            file,
+            filename: file.name,
+            size_bytes: file.size,
+            file_format: inferFileFormat(file.name),
+            uploaded_at: null,
+            created_at: new Date().toISOString(),
+            folderPath: 'Selected Files',
+          }))
+
+        return [...additions, ...prev]
+      })
       e.target.value = '' // Reset input
     } catch (err: any) {
-      setError(err.message || 'Failed to upload file')
-    } finally {
-      setUploadingFile(false)
+      setError(err.response?.data?.message || err.message || 'Failed to select file')
     }
   }
 
@@ -409,6 +427,7 @@ export default function CreateJob() {
 
     try {
       setCreating(true)
+      setSubmitStatus('Creating job...')
       
       // Create job with tool selection or pipeline and input files
       const jobData: JobCreate = {
@@ -416,9 +435,12 @@ export default function CreateJob() {
         vm_name: selectedVM || undefined
       }
       
-      // Only include input_file_ids if there are files
-      if (uploadedFileIds.length > 0) {
-        jobData.input_file_ids = uploadedFileIds
+      const existingLibraryFileIds = uploadedFileIds.filter(id => id > 0)
+      const pendingFileIds = Array.from(new Set(uploadedFileIds.filter(id => id < 0)))
+
+      // Only include already-uploaded library files at create time
+      if (existingLibraryFileIds.length > 0) {
+        jobData.input_file_ids = existingLibraryFileIds
       }
 
       if (selectionMode === 'pipeline') {
@@ -428,7 +450,6 @@ export default function CreateJob() {
           return
         }
         jobData.pipeline_id = selectedPipelineId
-        console.log('Creating job with pipeline_id:', selectedPipelineId, 'Type:', typeof selectedPipelineId)
       } else {
         if (selectedTools.length === 0) {
           setError('Please select at least one tool')
@@ -436,7 +457,6 @@ export default function CreateJob() {
           return
         }
         jobData.tool_indices = selectedTools
-        console.log('Creating job with tool_indices:', selectedTools)
       }
       
       // Remove undefined values to ensure clean JSON serialization
@@ -448,20 +468,22 @@ export default function CreateJob() {
           return v !== undefined
         })
       ) as JobCreate
-      
-      console.log('Job data being sent (cleaned):', JSON.stringify(cleanJobData, null, 2))
-      console.log('pipeline_id in cleanJobData:', cleanJobData.pipeline_id, 'Type:', typeof cleanJobData.pipeline_id)
-      console.log('Has pipeline_id property?', 'pipeline_id' in cleanJobData)
-      
+
       const job = await createJob(cleanJobData)
-      console.log('Job created, received:', job)
-      console.log('pipeline_id in response:', job.pipeline_id)
+
+      if (job && job.id && pendingFileIds.length > 0) {
+        const pendingFilesToUpload = pendingLocalFiles.filter(file => pendingFileIds.includes(file.tempId))
+        setSubmitStatus('Queueing selected files...')
+        await enqueuePendingJobUploads(job.id, pendingFilesToUpload)
+        navigate(`/jobs/${job.id}`)
+        return
+      }
       
       // Auto-execute the job after creation
       if (job && job.id) {
         try {
+          setSubmitStatus('Starting job...')
           await executeJob(job.id)
-          console.log('Job execution started automatically')
         } catch (executeErr: any) {
           console.error('Failed to auto-execute job:', executeErr)
           // Don't show error to user, just log it - job was created successfully
@@ -477,6 +499,7 @@ export default function CreateJob() {
       setError(err.message || err.response?.data?.message || 'Failed to create job')
     } finally {
       setCreating(false)
+      setSubmitStatus('')
     }
   }
 
@@ -492,6 +515,12 @@ export default function CreateJob() {
         {error && <div className="error-message">{error}</div>}
 
         <form onSubmit={handleSubmit}>
+          {submitStatus && (
+            <div style={{ marginBottom: '1rem', padding: '0.75rem 1rem', borderRadius: '6px', backgroundColor: '#eff6ff', color: '#1d4ed8' }}>
+              {submitStatus}
+            </div>
+          )}
+
           <div className="form-group">
             <label htmlFor="name">Job Name *</label>
             <input
@@ -643,11 +672,12 @@ export default function CreateJob() {
                   {/* File Upload Section for Pipeline */}
                   <div style={{ marginBottom: '1rem' }}>
                     <label className="btn-secondary" style={{ cursor: 'pointer', display: 'inline-block' }}>
-                      {uploadingFile ? 'Uploading...' : '📤 Upload New File'}
+                      Select New File(s)
                       <input
                         type="file"
                         onChange={handleFileUpload}
-                        disabled={uploadingFile}
+                        disabled={creating}
+                        multiple
                         style={{ display: 'none' }}
                         accept=".fastq,.fasta,.fq,.fa,.gz"
                       />
@@ -656,23 +686,7 @@ export default function CreateJob() {
                   {loadingDataTree ? (
                     <p style={{ color: '#666', fontStyle: 'italic' }}>Loading data library...</p>
                   ) : (() => {
-                    const allFiles = flattenFiles(dataFileTree)
-                    // Combine library files with uploaded files (convert DataFile to FileItem format)
-                    const uploadedFilesAsFileItems: Array<FileItem & { folderPath?: string }> = uploadedFiles.map(file => ({
-                      id: file.id,
-                      filename: file.filename,
-                      s3_key: file.s3_key,
-                      file_type: file.file_type,
-                      file_format: file.file_format,
-                      size_bytes: file.size_bytes,
-                      checksum: file.checksum,
-                      uploaded_at: file.uploaded_at,
-                      created_at: file.created_at,
-                      folderPath: undefined // Uploaded files are at root
-                    }))
-                    const combinedFiles = [...uploadedFilesAsFileItems, ...allFiles.filter(libFile => 
-                      !uploadedFiles.some(uploadedFile => uploadedFile.id === libFile.id)
-                    )]
+                    const combinedFiles = getCombinedSelectableFiles()
                     
                     return pipelineRequirements.input_requirements.map((req: PipelineRequirement) => {
                       const mappedFileId = fileMappings[req.type]
@@ -776,11 +790,12 @@ export default function CreateJob() {
                   {/* File Upload Section */}
                   <div style={{ marginBottom: '1.5rem' }}>
                     <label className="btn-secondary" style={{ cursor: 'pointer', display: 'inline-block' }}>
-                      {uploadingFile ? 'Uploading...' : '📤 Upload New File'}
+                      Select New File(s)
                       <input
                         type="file"
                         onChange={handleFileUpload}
-                        disabled={uploadingFile}
+                        disabled={creating}
+                        multiple
                         style={{ display: 'none' }}
                         accept=".fastq,.fasta,.fq,.fa,.gz"
                       />
@@ -790,24 +805,7 @@ export default function CreateJob() {
                   {loadingDataTree ? (
                     <p style={{ color: '#666', fontStyle: 'italic' }}>Loading data library...</p>
                   ) : (() => {
-                    const allFiles = flattenFiles(dataFileTree)
-                    // Combine library files with uploaded files (convert DataFile to FileItem format)
-                    const uploadedFilesAsFileItems: Array<FileItem & { folderPath?: string }> = uploadedFiles.map(file => ({
-                      id: file.id,
-                      filename: file.filename,
-                      s3_key: file.s3_key,
-                      file_type: file.file_type,
-                      file_format: file.file_format,
-                      size_bytes: file.size_bytes,
-                      checksum: file.checksum,
-                      uploaded_at: file.uploaded_at,
-                      created_at: file.created_at,
-                      folderPath: undefined // Uploaded files are at root
-                    }))
-                    // Combine files, avoiding duplicates (prioritize uploaded files)
-                    const combinedFiles = [...uploadedFilesAsFileItems, ...allFiles.filter(libFile => 
-                      !uploadedFiles.some(uploadedFile => uploadedFile.id === libFile.id)
-                    )]
+                    const combinedFiles = getCombinedSelectableFiles()
                     
                     return toolRequirements.map((toolReq) => {
                       const toolKey = toolReq.tool_index.toString()
@@ -888,7 +886,7 @@ export default function CreateJob() {
                                     }}>
                                       {compatibleFiles.map((file) => {
                                         const isSelected = mappedFileIds.includes(file.id)
-                                        const isUploadedFile = uploadedFiles.some(uploaded => uploaded.id === file.id)
+                                        const isPendingLocalFile = file.id < 0
                                         return (
                                           <button
                                             key={file.id}
@@ -898,8 +896,8 @@ export default function CreateJob() {
                                             style={{
                                               padding: '0.5rem 1rem',
                                               borderRadius: '4px',
-                                              border: `2px solid ${isSelected ? '#2563eb' : (isUploadedFile ? '#3b82f6' : '#e5e7eb')}`,
-                                              backgroundColor: isSelected ? '#eff6ff' : (isUploadedFile ? '#f0f9ff' : 'white'),
+                                              border: `2px solid ${isSelected ? '#2563eb' : (isPendingLocalFile ? '#3b82f6' : '#e5e7eb')}`,
+                                              backgroundColor: isSelected ? '#eff6ff' : (isPendingLocalFile ? '#f0f9ff' : 'white'),
                                               color: isSelected ? '#2563eb' : '#374151',
                                               cursor: creating ? 'not-allowed' : 'pointer',
                                               fontSize: '0.875rem',
@@ -913,7 +911,6 @@ export default function CreateJob() {
                                             title={file.folderPath ? `${file.folderPath}/${file.filename}` : file.filename}
                                           >
                                             {isSelected && <span>✓</span>}
-                                            {isUploadedFile && !isSelected && <span style={{ color: '#3b82f6' }}>📤</span>}
                                             <span>{file.filename}</span>
                                             {file.folderPath && (
                                               <span style={{ color: '#6b7280', fontSize: '0.75rem' }}>
@@ -956,7 +953,7 @@ export default function CreateJob() {
               className="btn-primary"
               disabled={creating}
             >
-              {creating ? 'Creating job...' : 'Create Job'}
+              {creating ? (submitStatus || 'Creating job...') : 'Create Job'}
             </button>
           </div>
         </form>
@@ -965,4 +962,3 @@ export default function CreateJob() {
     </div>
   )
 }
-

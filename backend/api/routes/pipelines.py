@@ -266,73 +266,6 @@ async def delete_pipeline_endpoint(
     )
 
 
-@router.get("/{pipeline_id}/requirements", response_model=dict)
-async def get_pipeline_requirements(
-    pipeline_id: int,
-    current_user: UserResponse = Depends(get_current_user)
-):
-    """
-    Get input requirements for a pipeline.
-    
-    Analyzes the pipeline graph to determine what input files are needed.
-    
-    Args:
-        pipeline_id: ID of the pipeline
-        current_user: Current authenticated user
-        
-    Returns:
-        JSONResponse: Pipeline requirements (input_requirements, tools, etc.)
-    """
-    try:
-        pipeline = get_pipeline_by_id(pipeline_id, current_user.id)
-        
-        if not pipeline:
-            error_data = not_found_response("Pipeline", pipeline_id)
-            return JSONResponse(content=error_data, status_code=status.HTTP_404_NOT_FOUND)
-        
-        requirements = analyze_pipeline_requirements(pipeline)
-        
-        return success_response(
-            data=requirements,
-            message="Pipeline requirements retrieved successfully"
-        )
-    except Exception as e:
-        logger.error(f"Error getting pipeline requirements: {e}", exc_info=True)
-        error_data = error_response(
-            error_code=ErrorCode.INTERNAL_ERROR,
-            message=f"Failed to get pipeline requirements: {str(e)}",
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
-        )
-        return JSONResponse(content=error_data, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
-@router.delete("/{pipeline_id}", response_model=dict)
-async def delete_pipeline_endpoint(
-    pipeline_id: int,
-    current_user: UserResponse = Depends(get_current_user)
-):
-    """
-    Delete a pipeline.
-    
-    Args:
-        pipeline_id: ID of the pipeline to delete
-        current_user: Current authenticated user
-        
-    Returns:
-        JSONResponse: Success message
-    """
-    deleted = delete_pipeline(pipeline_id, current_user.id)
-    
-    if not deleted:
-        error_data = not_found_response("Pipeline", pipeline_id)
-        return JSONResponse(content=error_data, status_code=status.HTTP_404_NOT_FOUND)
-    
-    return success_response(
-        data=None,
-        message="Pipeline deleted successfully"
-    )
-
-
 @router.post("/{pipeline_id}/share", response_model=dict)
 async def share_pipeline_endpoint(
     pipeline_id: int,
@@ -387,4 +320,3 @@ async def unshare_pipeline_endpoint(
         data=pipeline_response,
         message="Pipeline unshared successfully"
     )
-

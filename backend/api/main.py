@@ -57,101 +57,95 @@ async def lifespan(app: FastAPI):
         else:
             logger.info("Database health check passed")
         
-        # Ensure MinIO is set up (using emulation system's setup)
-        try:
-            import sys
-            from pathlib import Path
+        if config.api.enable_local_infra_bootstrap:
+            # Ensure MinIO is set up (using emulation system's setup)
+            try:
+                import sys
+                from pathlib import Path
+                
+                current_file = Path(__file__).resolve()
+                project_root = current_file.parent.parent.parent
+                project_root_str = str(project_root)
+                
+                if project_root_str not in sys.path:
+                    sys.path.insert(0, project_root_str)
+                
+                from emulation.bucket_manager import ensure_minio_container
+                logger.info("Ensuring MinIO container is set up...")
+                ensure_minio_container()
+                logger.info("MinIO container ready")
+            except ImportError as e:
+                logger.warning(
+                    f"Could not import emulation.bucket_manager: {e}. "
+                    f"MinIO may need to be started manually. "
+                    f"This is usually safe to ignore if tkinter is not available."
+                )
+            except Exception as e:
+                logger.warning(
+                    f"Could not ensure MinIO container: {e}. "
+                    f"MinIO may need to be started manually. "
+                    f"This is usually safe to ignore."
+                )
             
-            # Add project root to Python path (3 levels up from backend/api/main.py)
-            current_file = Path(__file__).resolve()
-            project_root = current_file.parent.parent.parent
-            project_root_str = str(project_root)
+            # Ensure tool images are built (required for VM provisioning)
+            try:
+                import sys
+                from pathlib import Path
+                
+                current_file = Path(__file__).resolve()
+                project_root = current_file.parent.parent.parent
+                project_root_str = str(project_root)
+                
+                if project_root_str not in sys.path:
+                    sys.path.insert(0, project_root_str)
+                
+                from emulation.docker_commands import ensure_tool_images
+                logger.info("Ensuring tool Docker images are built...")
+                ensure_tool_images()
+                logger.info("Tool images ready")
+            except ImportError as e:
+                logger.warning(
+                    f"Could not import emulation.docker_commands: {e}. "
+                    f"Tool images may need to be built manually. "
+                    f"This is usually safe to ignore if Docker is not available."
+                )
+            except Exception as e:
+                logger.warning(
+                    f"Could not ensure tool images: {e}. "
+                    f"Tool images may need to be built manually. "
+                    f"Run: cd dockerized_tools && bash buildtools.sh"
+                )
             
-            # Add to path if not already there
-            if project_root_str not in sys.path:
-                sys.path.insert(0, project_root_str)
-            
-            # Now import from emulation package
-            from emulation.bucket_manager import ensure_minio_container
-            logger.info("Ensuring MinIO container is set up...")
-            ensure_minio_container()
-            logger.info("MinIO container ready")
-        except ImportError as e:
-            logger.warning(
-                f"Could not import emulation.bucket_manager: {e}. "
-                f"MinIO may need to be started manually. "
-                f"This is usually safe to ignore if tkinter is not available."
-            )
-        except Exception as e:
-            logger.warning(
-                f"Could not ensure MinIO container: {e}. "
-                f"MinIO may need to be started manually. "
-                f"This is usually safe to ignore."
-            )
-        
-        # Ensure tool images are built (required for VM provisioning)
-        try:
-            import sys
-            from pathlib import Path
-            
-            # Add project root to Python path (3 levels up from backend/api/main.py)
-            current_file = Path(__file__).resolve()
-            project_root = current_file.parent.parent.parent
-            project_root_str = str(project_root)
-            
-            # Add to path if not already there
-            if project_root_str not in sys.path:
-                sys.path.insert(0, project_root_str)
-            
-            # Now import from emulation package
-            from emulation.docker_commands import ensure_tool_images
-            logger.info("Ensuring tool Docker images are built...")
-            ensure_tool_images()
-            logger.info("Tool images ready")
-        except ImportError as e:
-            logger.warning(
-                f"Could not import emulation.docker_commands: {e}. "
-                f"Tool images may need to be built manually. "
-                f"This is usually safe to ignore if Docker is not available."
-            )
-        except Exception as e:
-            logger.warning(
-                f"Could not ensure tool images: {e}. "
-                f"Tool images may need to be built manually. "
-                f"Run: cd dockerized_tools && bash buildtools.sh"
-            )
-        
-        # Ensure VMs are set up (using emulation system's setup)
-        try:
-            import sys
-            from pathlib import Path
-            
-            # Add project root to Python path (3 levels up from backend/api/main.py)
-            current_file = Path(__file__).resolve()
-            project_root = current_file.parent.parent.parent
-            project_root_str = str(project_root)
-            
-            # Add to path if not already there
-            if project_root_str not in sys.path:
-                sys.path.insert(0, project_root_str)
-            
-            # Now import from emulation package
-            from emulation.docker_commands import ensure_vms
-            logger.info("Ensuring VM containers are set up...")
-            ensure_vms()
-            logger.info("VM containers ready")
-        except ImportError as e:
-            logger.warning(
-                f"Could not import emulation.docker_commands: {e}. "
-                f"VMs may need to be started manually. "
-                f"This is usually safe to ignore if Docker is not available."
-            )
-        except Exception as e:
-            logger.warning(
-                f"Could not ensure VM containers: {e}. "
-                f"VMs may need to be started manually. "
-                f"This is usually safe to ignore."
-            )
+            # Ensure VMs are set up (using emulation system's setup)
+            try:
+                import sys
+                from pathlib import Path
+                
+                current_file = Path(__file__).resolve()
+                project_root = current_file.parent.parent.parent
+                project_root_str = str(project_root)
+                
+                if project_root_str not in sys.path:
+                    sys.path.insert(0, project_root_str)
+                
+                from emulation.docker_commands import ensure_vms
+                logger.info("Ensuring VM containers are set up...")
+                ensure_vms()
+                logger.info("VM containers ready")
+            except ImportError as e:
+                logger.warning(
+                    f"Could not import emulation.docker_commands: {e}. "
+                    f"VMs may need to be started manually. "
+                    f"This is usually safe to ignore if Docker is not available."
+                )
+            except Exception as e:
+                logger.warning(
+                    f"Could not ensure VM containers: {e}. "
+                    f"VMs may need to be started manually. "
+                    f"This is usually safe to ignore."
+                )
+        else:
+            logger.info("Skipping local infrastructure bootstrap because ENABLE_LOCAL_INFRA_BOOTSTRAP=false")
         
         logger.info("CASSIE backend API started successfully")
         

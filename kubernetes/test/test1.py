@@ -413,28 +413,28 @@ def run_tool_job_with_local_registry(
 
 
 
-# -------------------------
-# Example: FastQC
-# -------------------------
-# result = run_tool_job_with_local_registry(
-#     local_image="fastqc:0.12.1",
-#     remote_repo="fastqc",
-#     job_name="fastqc-job",
-#     command=["bash", "-lc"],
-#     args=["fastqc /data/ecoli_f.fastq -o /data"],
-#     host_dir=r"C:\Users\Eren\Desktop\CASSIE\kubernetes\test",
-#     container_mount_path="/data",
-#     expected_outputs=["ecoli_f_fastqc.html", "ecoli_f_fastqc.zip"],
-# )
-# print(result)
+if __name__ == "__main__":
+    # Example: FastQC
+    # result = run_tool_job_with_local_registry(
+    #     local_image="fastqc:0.12.1",
+    #     remote_repo="fastqc",
+    #     job_name="fastqc-job",
+    #     command=["bash", "-lc"],
+    #     args=["fastqc /data/ecoli_f.fastq -o /data"],
+    #     host_dir=r"C:\Users\Eren\Desktop\CASSIE\kubernetes\test",
+    #     container_mount_path="/data",
+    #     expected_outputs=["ecoli_f_fastqc.html", "ecoli_f_fastqc.zip"],
+    # )
+    # print(result)
 
-run_tool_job_with_local_registry(
-     local_image="spades:latest",
-     remote_repo="spades",
-     job_name="spades-job",
-     command=["bash", "-lc"],
-     args=["spades -1 /data/ecoli_f.fastq -2 /data/ecoli_r.fastq -o /data"],
-     host_dir=r"C:\Users\Eren\Desktop\CASSIE\kubernetes\test",
-     container_mount_path="/data",
-     expected_outputs=["spades_out/contigs.fasta", "spades_out/spades.log"],
- )
+    result = run_tool_job_with_local_registry(
+        local_image="spades:latest",
+        remote_repo="spades",
+        job_name="spades-job",
+        command=["bash", "-lc"],
+        args=["spades -1 /data/ecoli_f.fastq -2 /data/ecoli_r.fastq -o /data/spades_out"],
+        host_dir=r"C:\Users\Eren\Desktop\CASSIE\kubernetes\test",
+        container_mount_path="/data",
+        expected_outputs=["spades_out/contigs.fasta", "spades_out/spades.log"],
+    )
+    print(result)

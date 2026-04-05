@@ -5,35 +5,12 @@ Analyzes pipeline graphs to determine input requirements for job creation.
 """
 
 import logging
-from typing import List, Dict, Any, Set
-from collections import defaultdict
+from typing import List, Dict, Any
 
 from backend.api.models.pipeline_model import PipelineInDB
-from emulation.nextflow_manager import AVAILABLE_TOOLS
+from tool_registry import get_tool_id_from_label, get_tool_requirements
 
 logger = logging.getLogger(__name__)
-
-# Mapping from node labels to tool IDs
-NODE_LABEL_TO_TOOL_ID = {
-    "Read Quality (FastQC)": "FASTQC",
-    "Genomic Property Estimation (GenomeScope2)": "GENOMESCOPE2",
-    "Assembly (Spades)": "SPADES",
-    "Quality Assessment for Assembly (QUAST)": "QUAST",
-}
-
-# Tool input requirements
-TOOL_INPUT_REQUIREMENTS = {
-    "FASTQC": [{"type": "reads", "label": "Reads (FASTQ/FASTA)", "formats": ["fastq", "fasta"]}],
-    "GENOMESCOPE2": [{"type": "reads", "label": "Reads (FASTQ)", "formats": ["fastq"]}],
-    "SPADES": [
-        {"type": "forward_reads", "label": "Forward Reads (R1)", "formats": ["fastq"]},
-        {"type": "reverse_reads", "label": "Reverse Reads (R2)", "formats": ["fastq"]}
-    ],
-    "QUAST": [
-        {"type": "assembly", "label": "Assembly File (FASTA)", "formats": ["fasta"]},
-        {"type": "reference", "label": "Reference Genome (FASTA)", "formats": ["fasta"]}
-    ],
-}
 
 
 def extract_input_nodes(pipeline: PipelineInDB) -> List[Dict[str, Any]]:
@@ -116,13 +93,7 @@ def analyze_pipeline_requirements(pipeline: PipelineInDB) -> Dict[str, Any]:
             node_label = getattr(node_data, "label", None) if hasattr(node_data, "label") else str(node_data)
         
         if node_type == "tool":
-            # Map label to tool ID
-            tool_id = None
-            for label_pattern, tid in NODE_LABEL_TO_TOOL_ID.items():
-                if label_pattern.lower() in node_label.lower():
-                    tool_id = tid
-                    break
-            
+            tool_id = get_tool_id_from_label(node_label)
             if tool_id:
                 tools_in_pipeline.add(tool_id)
     
@@ -132,18 +103,20 @@ def analyze_pipeline_requirements(pipeline: PipelineInDB) -> Dict[str, Any]:
     
     # Check for SPAdes (needs R1 and R2)
     if "SPADES" in tools_in_pipeline:
-        input_requirements.extend(TOOL_INPUT_REQUIREMENTS["SPADES"])
+        input_requirements.extend(get_tool_requirements("SPADES"))
         required_types.update(["forward_reads", "reverse_reads"])
     
     # Check for QUAST (needs assembly and reference)
     if "QUAST" in tools_in_pipeline:
         # If SPAdes is also present, assembly comes from SPAdes output
         if "SPADES" not in tools_in_pipeline:
-            input_requirements.extend(TOOL_INPUT_REQUIREMENTS["QUAST"])
+            input_requirements.extend(get_tool_requirements("QUAST"))
             required_types.update(["assembly", "reference"])
         else:
             # Only need reference, assembly comes from SPAdes
-            input_requirements.append(TOOL_INPUT_REQUIREMENTS["QUAST"][1])  # reference only
+            quast_requirements = get_tool_requirements("QUAST")
+            if len(quast_requirements) > 1:
+                input_requirements.append(quast_requirements[1])  # reference only
             required_types.add("reference")
     
     # Check for FastQC or GenomeScope2 (need reads)
@@ -152,7 +125,9 @@ def analyze_pipeline_requirements(pipeline: PipelineInDB) -> Dict[str, Any]:
         if "SPADES" not in tools_in_pipeline:
             # Add generic reads requirement
             if "reads" not in required_types:
-                input_requirements.append(TOOL_INPUT_REQUIREMENTS["FASTQC"][0])
+                fastqc_requirements = get_tool_requirements("FASTQC")
+                if fastqc_requirements:
+                    input_requirements.append(fastqc_requirements[0])
                 required_types.add("reads")
     
     # Remove duplicates while preserving order
@@ -172,4 +147,3 @@ def analyze_pipeline_requirements(pipeline: PipelineInDB) -> Dict[str, Any]:
         "has_fastqc": "FASTQC" in tools_in_pipeline,
         "has_genomescope2": "GENOMESCOPE2" in tools_in_pipeline,
     }
-

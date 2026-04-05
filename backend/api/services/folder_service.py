@@ -296,6 +296,30 @@ def get_folder_tree(user_id: int) -> List[Dict[str, Any]]:
                 folder_id = row[1]
                 if folder_id in folders:
                     folders[folder_id]['files'].append(file_data)
+
+            # Get root-level files (files uploaded without a folder)
+            cur.execute("""
+                SELECT id, folder_id, filename, s3_key, file_type, file_format,
+                       size_bytes, checksum, uploaded_at, created_at
+                FROM files
+                WHERE folder_id IS NULL
+                  AND s3_key LIKE %s
+                ORDER BY filename
+            """, (f"data/{user_id}/%",))
+
+            root_files = []
+            for row in cur.fetchall():
+                root_files.append({
+                    'id': row[0],
+                    'filename': row[2],
+                    's3_key': row[3],
+                    'file_type': row[4],
+                    'file_format': row[5],
+                    'size_bytes': row[6],
+                    'checksum': row[7],
+                    'uploaded_at': row[8].isoformat() if row[8] else None,
+                    'created_at': row[9].isoformat() if row[9] else None
+                })
             
             # Build tree structure
             for folder_id, folder in folders.items():
@@ -304,7 +328,20 @@ def get_folder_tree(user_id: int) -> List[Dict[str, Any]]:
                     root_folders.append(folder)
                 elif parent_id in folders:
                     folders[parent_id]['children'].append(folder)
-            
+
+            if root_files:
+                root_folders.insert(0, {
+                    'id': 0,
+                    'user_id': user_id,
+                    'name': 'Root Files',
+                    'parent_folder_id': None,
+                    'path': 'root',
+                    'created_at': None,
+                    'updated_at': None,
+                    'children': [],
+                    'files': root_files
+                })
+
             return root_folders
             
         except Exception as e:
@@ -554,4 +591,3 @@ def delete_folder(folder_id: int, user_id: int) -> bool:
             raise
         finally:
             cur.close()
-

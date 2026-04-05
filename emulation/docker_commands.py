@@ -7,6 +7,8 @@ import platform
 import time
 import base64
 import threading
+import tarfile
+import tempfile
 
 
 # -------------------------------------------------------------------
@@ -32,6 +34,37 @@ TENANT_MAP_FILE = Path(DATA_BASE_PATH) / "tenant_map.json"
 TENANT_MAP_FILE.parent.mkdir(exist_ok=True, parents=True)
 
 client = docker.from_env()
+
+
+def sync_tool_scripts(container):
+    """Copy tool runner scripts into the container so wrappers resolve correctly."""
+    tools_host = (Path(__file__).resolve().parent / ".." / "dockerized_tools").resolve()
+    scripts = sorted(tools_host.glob("run*.sh"))
+    if not scripts:
+        print(f"[!] No tool runner scripts found in {tools_host}")
+        return
+
+    container.exec_run(["/bin/sh", "-c", "mkdir -p /opt/dockerized_tools"], user="root")
+
+    tar_fd, tar_path = tempfile.mkstemp(suffix=".tar")
+    os.close(tar_fd)
+    try:
+        with tarfile.open(tar_path, mode="w") as tar_handle:
+            for script in scripts:
+                tar_handle.add(str(script), arcname=script.name)
+
+        with open(tar_path, "rb") as tar_stream:
+            ok = container.put_archive("/opt/dockerized_tools", tar_stream)
+        if not ok:
+            raise RuntimeError(f"Failed to copy tool scripts into container '{container.name}'")
+
+        container.exec_run(["/bin/sh", "-c", "chmod +x /opt/dockerized_tools/run*.sh"], user="root")
+        print(f"[+] Synced {len(scripts)} tool runner script(s) into '{container.name}'.")
+    finally:
+        try:
+            os.unlink(tar_path)
+        except OSError:
+            pass
 
 # -------------------------------------------------------------------
 # 🔹 Helpers for resource division
@@ -249,9 +282,6 @@ def ensure_vms():
                 print(f"[!] Error checking provisioning status for '{name}': {e}")
                 print(f"[!] Attempting to provision '{name}'...")
                 provision_vm(container, name)
-            finally:
-                if not was_running:
-                    container.stop()
                     
         except docker.errors.NotFound:
             print(f"[+] Creating container '{name}'...")
@@ -342,6 +372,13 @@ def create_tenant_container(vm_name, tenant_name, user_id=None, cpu_quota=None, 
     container_name = f"tenant_{tenant_name}{suffix}"
     home_dir_host = os.path.join(DATA_BASE_PATH, container_name)
     os.makedirs(home_dir_host, exist_ok=True)
+
+    vm_container = client.containers.get(vm_name)
+    vm_container.reload()
+    if vm_container.status != "running":
+        print(f"[+] Starting VM '{vm_name}' for tenant container '{container_name}'...")
+        vm_container.start()
+        time.sleep(2)
 
     try:
         cont = client.containers.get(container_name)
@@ -450,8 +487,16 @@ def create_tenant_user(vm_name, tenant_name, user_id=None, cpu_quota=None, mem_l
         if cont.status != "running":
             cont.start()
             time.sleep(1)
+        cont.reload()
+        if cont.status != "running":
+            raise RuntimeError(f"Tenant container '{cont.name}' is not running (status={cont.status})")
+        sync_tool_scripts(cont)
     except Exception:
-        pass
+        try:
+            cont.remove(force=True)
+        except Exception:
+            pass
+        raise
 
     def sh(cmd: str):
         return cont.exec_run(["/bin/sh", "-c", cmd], user="root")

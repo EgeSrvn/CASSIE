@@ -1,5 +1,4 @@
 import { useNavigate } from 'react-router-dom'
-import { logout } from '../services/authService'
 import Navigation from '../components/Navigation'
 import '../styles/globals.css'
 

@@ -1,0 +1,107 @@
+services:
+  postgres:
+    image: postgres:15
+    container_name: cassie-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER:-admin}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-admin}
+      POSTGRES_DB: postgres
+    volumes:
+      - cassie_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-admin} -d postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - cassie_internal
+
+  minio:
+    image: minio/minio:RELEASE.2025-02-28T09-55-16Z
+    container_name: cassie-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    ports:
+      - "${MINIO_API_PORT:-9010}:9000"
+      - "${MINIO_CONSOLE_PORT:-9011}:9001"
+    volumes:
+      - cassie_minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - cassie_internal
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: cassie-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: ${DB_USER:-admin}
+      DB_PASSWORD: ${DB_PASSWORD:-admin}
+      DB_NAME: ${DB_NAME:-cassie_db}
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-http://localhost:9010}
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      MINIO_REGION: ${MINIO_REGION:-us-east-1}
+      MINIO_BUCKET_PREFIX: ${MINIO_BUCKET_PREFIX:-cassie}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-me-in-production}
+      EXECUTION_BACKEND: ${EXECUTION_BACKEND:-kubernetes}
+      KUBERNETES_NAMESPACE: ${KUBERNETES_NAMESPACE:-default}
+      KUBERNETES_IMAGE_PULL_POLICY: ${KUBERNETES_IMAGE_PULL_POLICY:-IfNotPresent}
+      KUBERNETES_JOB_TIMEOUT_SECONDS: ${KUBERNETES_JOB_TIMEOUT_SECONDS:-3600}
+      KUBERNETES_POLL_INTERVAL_SECONDS: ${KUBERNETES_POLL_INTERVAL_SECONDS:-5}
+      KUBERNETES_MINIO_ENDPOINT: ${KUBERNETES_MINIO_ENDPOINT:-http://host.docker.internal:9010}
+      KUBECONFIG: /root/.kube/config
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      NO_PROXY: ${KUBERNETES_NO_PROXY:-localhost,127.0.0.1,host.docker.internal,kubernetes.docker.internal}
+      http_proxy: ""
+      https_proxy: ""
+      no_proxy: ${KUBERNETES_NO_PROXY:-localhost,127.0.0.1,host.docker.internal,kubernetes.docker.internal}
+      ENABLE_LOCAL_INFRA_BOOTSTRAP: "false"
+    ports:
+      - "8000:8000"
+    volumes:
+      - ${DOCKER_SOCK_PATH:-/var/run/docker.sock}:/var/run/docker.sock
+      - ${KUBE_CONFIG_DIR}:/root/.kube:ro
+    networks:
+      - cassie_internal
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    container_name: cassie-frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_started
+    ports:
+      - "3000:80"
+    networks:
+      - cassie_internal
+
+volumes:
+  cassie_postgres_data:
+  cassie_minio_data:
+
+networks:
+  cassie_internal:

@@ -2,6 +2,7 @@ import apiClient from './apiClient'
 
 export interface Tool {
   id: number
+  tool_id?: string
   name: string
   description: string
   type: string
@@ -32,8 +33,33 @@ export const getAvailableTools = async (): Promise<Tool[]> => {
   return [
     {
       id: 0,
+      tool_id: 'FASTQC',
       name: 'FastQC',
       description: 'Quality control for raw sequence data',
+      type: 'qc',
+      enabled: true,
+    },
+    {
+      id: 1,
+      tool_id: 'SPADES',
+      name: 'SPAdes',
+      description: 'Genome assembler',
+      type: 'transform',
+      enabled: true,
+    },
+    {
+      id: 2,
+      tool_id: 'QUAST',
+      name: 'QUAST',
+      description: 'Assembly quality assessment',
+      type: 'qc',
+      enabled: true,
+    },
+    {
+      id: 3,
+      tool_id: 'GENOMESCOPE2',
+      name: 'GenomeScope2',
+      description: 'Reference-free profiling',
       type: 'qc',
       enabled: true,
     },
@@ -53,6 +79,7 @@ export interface ToolRequirementInfo {
   tool_id: string
   tool_name: string
   tool_type: string
+  description?: string
   requirements: ToolRequirement[]
 }
 
@@ -81,4 +108,3 @@ export const getToolRequirements = async (toolIndices: number[]): Promise<ToolRe
     return []
   }
 }
-

@@ -17,6 +17,7 @@ import os
 import hashlib
 import time
 from typing import Optional, List, Dict, Any
+from urllib.parse import urlparse, urlunparse
 from botocore.exceptions import ClientError, BotoCoreError
 from botocore.config import Config
 
@@ -79,13 +80,9 @@ class MinIOClient:
             'config': config,
         }
         
-        # For MinIO (local), use endpoint_url
-        # For AWS S3, endpoint_url should be None (or not set)
-        if minio_config.endpoint and ('localhost' in minio_config.endpoint or '127.0.0.1' in minio_config.endpoint):
-            client_kwargs['endpoint_url'] = minio_config.endpoint
-            self._logger.info(f"Initializing MinIO client with endpoint: {minio_config.endpoint}")
-        elif minio_config.endpoint:
-            # Custom endpoint (e.g., MinIO on remote server)
+        # Any configured endpoint is treated as an S3-compatible custom endpoint
+        # (MinIO locally, MinIO in Docker Compose, or a remote S3-compatible store).
+        if minio_config.endpoint:
             client_kwargs['endpoint_url'] = minio_config.endpoint
             self._logger.info(f"Initializing S3 client with custom endpoint: {minio_config.endpoint}")
         else:
@@ -132,6 +129,27 @@ class MinIOClient:
         """
         prefix = self._config.minio.bucket_prefix.rstrip('-')
         return f"{prefix}-user-{user_id}"
+
+    def _rewrite_url_base(self, url: str, endpoint: Optional[str]) -> str:
+        """
+        Replace scheme/netloc in a generated URL while preserving path/query.
+
+        This lets the backend talk to MinIO on an internal Docker hostname while
+        returning browser-usable URLs such as localhost:9010.
+        """
+        if not endpoint:
+            return url
+
+        parsed_url = urlparse(url)
+        parsed_endpoint = urlparse(endpoint)
+
+        if not parsed_endpoint.scheme or not parsed_endpoint.netloc:
+            return url
+
+        return urlunparse(parsed_url._replace(
+            scheme=parsed_endpoint.scheme,
+            netloc=parsed_endpoint.netloc,
+        ))
     
     def ensure_user_bucket(self, user_id: int, username: Optional[str] = None) -> str:
         """
@@ -166,10 +184,9 @@ class MinIOClient:
             # Create bucket
             minio_config = self._config.minio
             
-            # For MinIO, location constraint is not needed
-            # For AWS S3, we might need location constraint
-            if minio_config.endpoint and ('localhost' in minio_config.endpoint or '127.0.0.1' in minio_config.endpoint):
-                # MinIO - no location constraint
+            # When a custom endpoint is configured we are talking to an S3-compatible
+            # service such as MinIO, which does not need a location constraint.
+            if minio_config.endpoint:
                 self.s3_client.create_bucket(Bucket=bucket_name)
             else:
                 # AWS S3 - may need location constraint
@@ -439,6 +456,7 @@ class MinIOClient:
                 Params={'Bucket': bucket_name, 'Key': s3_key},
                 ExpiresIn=expiration
             )
+            url = self._rewrite_url_base(url, self._config.minio.public_endpoint)
             
             self._logger.debug(f"Generated presigned URL for '{s3_key}' (expires in {expiration}s)")
             return url

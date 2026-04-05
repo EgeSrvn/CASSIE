@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { getJob, Job, executeJob } from '../services/jobService'
+import { getJob, Job, JobExecution, executeJob, getJobExecutions } from '../services/jobService'
 import { getFiles, File, downloadFile, downloadJobOutputsZip, getFileViewUrl } from '../services/fileService'
 import { getPipelineRequirements, PipelineRequirements } from '../services/pipelineService'
+import { getJobUploadStatus, JobUploadStatus, subscribeToJobUploadStatus } from '../services/pendingJobUploadService'
 import Navigation from '../components/Navigation'
 import '../styles/globals.css'
 
@@ -13,6 +14,7 @@ export default function JobDetails() {
   const [files, setFiles] = useState<File[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string>('')
+  const [executions, setExecutions] = useState<JobExecution[]>([])
   const [outputFilesCollapsed, setOutputFilesCollapsed] = useState(false)
   const [executing, setExecuting] = useState(false)
   const [pipelineRequirements, setPipelineRequirements] = useState<PipelineRequirements | null>(null)
@@ -23,24 +25,30 @@ export default function JobDetails() {
   const [viewingFileUrl, setViewingFileUrl] = useState<string | null>(null)
   const viewingFileUrlRef = useRef<string | null>(null)
   const [htmlZoom, setHtmlZoom] = useState<number>(0.75)
+  const [now, setNow] = useState(() => Date.now())
+  const [jobUploadStatus, setJobUploadStatus] = useState<JobUploadStatus | null>(null)
 
   useEffect(() => {
     if (jobId) {
       loadJob()
       loadFiles()
+      loadExecutions()
     }
     // No auto-refresh - users can manually refresh if needed
   }, [jobId])
 
   // Load pipeline requirements if job has a pipeline_id
   useEffect(() => {
-    if (job && job.pipeline_id) {
-      console.log('Loading pipeline requirements for pipeline_id:', job.pipeline_id)
+    if (!job) {
+      setPipelineRequirements(null)
+      return
+    }
+
+    if (job.pipeline_id) {
       const loadRequirements = async () => {
         try {
           setLoadingRequirements(true)
           const requirements = await getPipelineRequirements(job.pipeline_id!)
-          console.log('Pipeline requirements loaded:', requirements)
           setPipelineRequirements(requirements)
         } catch (err) {
           console.error('Failed to load pipeline requirements:', err)
@@ -51,7 +59,6 @@ export default function JobDetails() {
       }
       loadRequirements()
     } else {
-      console.log('No pipeline_id found for job:', job?.id, 'pipeline_id:', job?.pipeline_id)
       setPipelineRequirements(null)
     }
   }, [job])
@@ -82,6 +89,57 @@ export default function JobDetails() {
       console.error('Failed to load files:', err)
     }
   }
+
+  const loadExecutions = async () => {
+    if (!jobId) return
+    try {
+      const executionData = await getJobExecutions(parseInt(jobId))
+      setExecutions(executionData)
+    } catch (err) {
+      console.error('Failed to load executions:', err)
+    }
+  }
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setNow(Date.now())
+    }, 1000)
+
+    return () => window.clearInterval(timer)
+  }, [])
+
+  useEffect(() => {
+    if (!jobId) return
+
+    const hasActiveExecution = job?.status === 'running' || executions.some(execution => execution.status === 'running')
+    const hasActiveUpload = !!jobUploadStatus
+    if (!hasActiveExecution && !hasActiveUpload) return
+
+    const poller = window.setInterval(() => {
+      loadJob()
+      loadFiles()
+      loadExecutions()
+    }, 5000)
+
+    return () => window.clearInterval(poller)
+  }, [jobId, job?.status, executions, jobUploadStatus])
+
+  useEffect(() => {
+    if (!jobId) return
+
+    const numericJobId = parseInt(jobId)
+    setJobUploadStatus(getJobUploadStatus(numericJobId))
+
+    return subscribeToJobUploadStatus((changedJobId, status) => {
+      if (changedJobId !== numericJobId) return
+      setJobUploadStatus(status)
+      if (!status) {
+        void loadJob()
+        void loadFiles()
+        void loadExecutions()
+      }
+    })
+  }, [jobId])
 
   // Compute files before early returns (will be empty arrays initially)
   const inputFiles = (files || []).filter(f => f && f.file_type === 'input')
@@ -154,6 +212,7 @@ export default function JobDetails() {
 
   const currentFamilyFiles = selectedOutputFamily && outputGroups[selectedOutputFamily] ? outputGroups[selectedOutputFamily] : []
   const viewableFiles = currentFamilyFiles.filter(isViewable)
+  const inputFilesPendingUpload = job?.status === 'pending' && !!jobUploadStatus
   
   // Update viewing file when index or family changes - MUST be before early returns
   useEffect(() => {
@@ -256,6 +315,49 @@ export default function JobDetails() {
     }
   }
 
+  const formatDuration = (start?: string | null, end?: string | null) => {
+    if (!start) return null
+
+    const startTime = new Date(start).getTime()
+    const endTime = end ? new Date(end).getTime() : now
+    if (Number.isNaN(startTime) || Number.isNaN(endTime)) return null
+
+    const totalSeconds = Math.max(0, Math.floor((endTime - startTime) / 1000))
+    const hours = Math.floor(totalSeconds / 3600)
+    const minutes = Math.floor((totalSeconds % 3600) / 60)
+    const seconds = totalSeconds % 60
+    return [hours, minutes, seconds].map(value => String(value).padStart(2, '0')).join(':')
+  }
+
+  const getCurrentStage = (execution: JobExecution) => {
+    const stages = execution.parameters_used?.stages || []
+    const runningStage = stages.find(stage => stage.status === 'running')
+    if (runningStage) return runningStage
+
+    if (execution.status === 'running') {
+      const pendingStage = stages.find(stage => stage.status === 'pending')
+      if (pendingStage) return pendingStage
+    }
+
+    const failedStage = stages.find(stage => stage.status === 'failed')
+    if (failedStage) return failedStage
+
+    const completedStages = stages.filter(stage => stage.status === 'completed')
+    return completedStages.length > 0 ? completedStages[completedStages.length - 1] : null
+  }
+
+  const getCurrentStageLabel = (execution: JobExecution) => {
+    const stage = getCurrentStage(execution)
+    if (!stage) return null
+
+    const toolName = stage.tool_name || stage.tool_id
+    if (stage.status === 'running') return `Current Tool: ${toolName}`
+    if (stage.status === 'pending') return `Next Tool: ${toolName}`
+    if (stage.status === 'failed') return `Failed Tool: ${toolName}`
+    if (stage.status === 'completed' && execution.status === 'completed') return `Last Completed Tool: ${toolName}`
+    return `Tool: ${toolName}`
+  }
+
   if (loading) {
     return (
       <div className="page-container">
@@ -284,6 +386,7 @@ export default function JobDetails() {
   // Check if required files are present
   const canExecute = (() => {
     if (job.status !== 'pending') return false
+    if (inputFilesPendingUpload) return false
     if (inputFiles.length === 0) return false
     
     // For pipeline-based jobs, check if all requirements are met
@@ -297,6 +400,9 @@ export default function JobDetails() {
 
   const getExecuteButtonMessage = () => {
     if (job.status !== 'pending') return null
+    if (inputFilesPendingUpload) {
+      return jobUploadStatus?.message || 'Selected files are still uploading for this job.'
+    }
     if (inputFiles.length === 0) {
       return 'This job has no input files configured. Files must be added during job creation.'
     }
@@ -316,7 +422,7 @@ export default function JobDetails() {
         <header className="page-header">
           <h1 className="page-title">Job Details: {job.name}</h1>
           <div className="header-actions">
-            <button onClick={() => { loadJob(); loadFiles(); }} className="btn-secondary">
+            <button onClick={() => { loadJob(); loadFiles(); loadExecutions(); }} className="btn-secondary">
               Refresh
             </button>
             <button onClick={() => navigate('/dashboard')} className="btn-secondary">
@@ -326,7 +432,6 @@ export default function JobDetails() {
         </header>
 
         {error && <div className="error-message">{error}</div>}
-
         <div className="job-details-container">
           <div className="detail-section">
             <h2>Job Information</h2>
@@ -336,6 +441,22 @@ export default function JobDetails() {
                 <span className={`status-badge ${getStatusColor(job.status)}`}>
                   {job.status}
                 </span>
+                {jobUploadStatus && (
+                  <span
+                    style={{
+                      display: 'inline-flex',
+                      marginLeft: '10px',
+                      padding: '0.25rem 0.75rem',
+                      borderRadius: '999px',
+                      backgroundColor: jobUploadStatus.stage === 'failed' ? '#fee2e2' : '#dbeafe',
+                      color: jobUploadStatus.stage === 'failed' ? '#b91c1c' : '#1d4ed8',
+                      fontSize: '0.875rem',
+                      fontWeight: 600
+                    }}
+                  >
+                    {jobUploadStatus.stage === 'starting' ? 'Starting job' : 'Uploading files'}
+                  </span>
+                )}
                 {job.status === 'pending' && (
                   <>
                     <button
@@ -347,6 +468,7 @@ export default function JobDetails() {
                           await executeJob(parseInt(jobId))
                           await loadJob()
                           await loadFiles() // Refresh files after execution
+                          await loadExecutions()
                           alert('Job execution started successfully!')
                         } catch (err: any) {
                           setError(err.message || 'Failed to execute job')
@@ -359,7 +481,7 @@ export default function JobDetails() {
                       style={{ marginLeft: '10px' }}
                       title={getExecuteButtonMessage() || undefined}
                     >
-                      {executing ? 'Executing...' : 'Execute Job'}
+                      {jobUploadStatus ? 'Preparing job...' : executing ? 'Executing...' : 'Execute Job'}
                     </button>
                     {!canExecute && getExecuteButtonMessage() && (
                       <span style={{ marginLeft: '10px', color: '#f59e0b', fontSize: '0.875rem' }}>
@@ -372,10 +494,136 @@ export default function JobDetails() {
               <div><strong>Workflow ID:</strong> {job.workflow_id}</div>
               <div><strong>Created:</strong> {new Date(job.created_at).toLocaleString()}</div>
               <div><strong>Updated:</strong> {new Date(job.updated_at).toLocaleString()}</div>
+              {jobUploadStatus && (
+                <div style={{ gridColumn: '1 / -1' }}>
+                  <strong>Setup Status:</strong> {jobUploadStatus.message}
+                  {jobUploadStatus.totalFiles > 0 && (
+                    <span style={{ marginLeft: '0.5rem', color: '#64748b' }}>
+                      ({jobUploadStatus.uploadedFiles}/{jobUploadStatus.totalFiles} uploaded
+                      {typeof jobUploadStatus.progress === 'number' ? `, ${jobUploadStatus.progress}% of current file` : ''})
+                    </span>
+                  )}
+                  {jobUploadStatus.error && (
+                    <span style={{ display: 'block', marginTop: '0.35rem', color: '#b91c1c' }}>
+                      {jobUploadStatus.error}
+                    </span>
+                  )}
+                </div>
+              )}
               {job.data_types && job.data_types.length > 0 && (
                 <div><strong>Data Types:</strong> {job.data_types.join(', ')}</div>
               )}
             </div>
+          </div>
+
+          <div className="detail-section">
+            <h2>Execution Tracking</h2>
+            {executions.length === 0 ? (
+              <div className="empty-state">
+                <p>No execution attempts recorded yet.</p>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                {executions.map((execution) => {
+                  const stages = execution.parameters_used?.stages || []
+                  const elapsed = formatDuration(execution.started_at, execution.completed_at)
+                  const currentStageLabel = getCurrentStageLabel(execution)
+
+                  return (
+                    <div
+                      key={execution.id}
+                      style={{
+                        padding: '1rem',
+                        border: '1px solid #e2e8f0',
+                        borderRadius: '8px',
+                        backgroundColor: '#fff'
+                      }}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '1rem', flexWrap: 'wrap', marginBottom: '0.75rem' }}>
+                        <div><strong>Execution #{execution.execution_number}</strong></div>
+                        <div>
+                          <strong>Status:</strong>{' '}
+                          <span className={`status-badge ${getStatusColor(execution.status)}`}>
+                            {execution.status}
+                          </span>
+                        </div>
+                        {elapsed && <div><strong>Elapsed:</strong> {elapsed}</div>}
+                      </div>
+
+                      {execution.started_at && (
+                        <div style={{ marginBottom: '0.5rem', color: '#475569', fontSize: '0.9rem' }}>
+                          Started: {new Date(execution.started_at).toLocaleString()}
+                          {execution.completed_at ? ` | Completed: ${new Date(execution.completed_at).toLocaleString()}` : ''}
+                        </div>
+                      )}
+
+                      {currentStageLabel && (
+                        <div
+                          style={{
+                            marginBottom: '0.75rem',
+                            padding: '0.75rem',
+                            borderRadius: '6px',
+                            backgroundColor: '#eff6ff',
+                            color: '#1e3a8a',
+                            border: '1px solid #bfdbfe',
+                            fontSize: '0.95rem'
+                          }}
+                        >
+                          <strong>Current Progress:</strong> {currentStageLabel}
+                        </div>
+                      )}
+
+                      {execution.error_message && (
+                        <div className="error-message" style={{ marginBottom: '0.75rem' }}>
+                          {execution.error_message}
+                        </div>
+                      )}
+
+                      {stages.length > 0 && (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                          {stages.map((stage) => (
+                            <div
+                              key={`${execution.id}-${stage.stage_number}-${stage.tool_id}`}
+                              style={{
+                                padding: '0.75rem',
+                                borderRadius: '6px',
+                                backgroundColor: '#f8fafc',
+                                border: '1px solid #e2e8f0'
+                              }}
+                            >
+                              <div style={{ display: 'flex', justifyContent: 'space-between', gap: '1rem', flexWrap: 'wrap' }}>
+                                <div>
+                                  <strong>Tool {stage.stage_number}:</strong> {stage.tool_name || stage.tool_id}
+                                </div>
+                                <div>
+                                  <span className={`status-badge ${getStatusColor(stage.status)}`}>
+                                    {stage.status}
+                                  </span>
+                                </div>
+                              </div>
+
+                              {stage.started_at && (
+                                <div style={{ marginTop: '0.5rem', fontSize: '0.9rem', color: '#64748b' }}>
+                                  Started: {new Date(stage.started_at).toLocaleString()}
+                                  {stage.completed_at ? ` | Completed: ${new Date(stage.completed_at).toLocaleString()}` : ''}
+                                  {formatDuration(stage.started_at, stage.completed_at) ? ` | Time: ${formatDuration(stage.started_at, stage.completed_at)}` : ''}
+                                </div>
+                              )}
+
+                              {stage.error && (
+                                <div className="error-message" style={{ marginTop: '0.75rem' }}>
+                                  {stage.error}
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            )}
           </div>
 
           <div className="detail-section">
@@ -439,10 +687,10 @@ export default function JobDetails() {
 
               {inputFiles.length === 0 ? (
                 <div className="empty-state">
-                  <p>No input files configured. Files should be added during job creation.</p>
+                  <p>{inputFilesPendingUpload ? 'Selected files are being uploaded to this job now.' : 'No input files configured. Files should be added during job creation.'}</p>
                   {job.status === 'pending' && (
                     <p style={{ marginTop: '0.5rem', color: '#666', fontSize: '0.875rem' }}>
-                      To modify files, please create a new job with the desired configuration.
+                      {inputFilesPendingUpload ? 'Execution will start automatically after the upload finishes.' : 'To modify files, please create a new job with the desired configuration.'}
                     </p>
                   )}
                 </div>

@@ -5,20 +5,21 @@ This module provides:
 - Get available tools list
 """
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse
-from typing import List, Dict, Any, Optional
-import sys
-from pathlib import Path
+from typing import Optional
 
-from backend.api.routes.auth import get_current_user
-from backend.api.models.user_model import UserResponse
 from backend.api.utils.response_builder import (
     success_response,
     error_response,
     ErrorCode
 )
 from backend.api.utils.logger import get_logger
+from tool_registry import (
+    get_tool_by_index,
+    get_tool_registry,
+    get_tool_requirements as get_registry_tool_requirements,
+)
 
 logger = get_logger(__name__)
 
@@ -26,9 +27,7 @@ router = APIRouter(prefix="/tools", tags=["tools"])
 
 
 @router.get("")
-async def get_available_tools(
-    current_user: UserResponse = Depends(get_current_user)
-):
+async def get_available_tools():
     """
     Get list of available bioinformatics tools.
     
@@ -36,18 +35,12 @@ async def get_available_tools(
         List of available tools with their metadata
     """
     try:
-        # Add project root to path so we can import emulation as a package
-        project_root = Path(__file__).parent.parent.parent.parent
-        if str(project_root) not in sys.path:
-            sys.path.insert(0, str(project_root))
-        
-        from emulation.nextflow_manager import AVAILABLE_TOOLS
-        
-        # Format tools for frontend
+        available_tools = get_tool_registry()
         tools_list = []
-        for idx, tool in enumerate(AVAILABLE_TOOLS):
+        for idx, tool in enumerate(available_tools):
             tools_list.append({
                 "id": idx,
+                "tool_id": tool["id"],
                 "name": tool["name"],
                 "description": tool.get("description", ""),
                 "type": tool.get("type", "unknown"),
@@ -59,22 +52,6 @@ async def get_available_tools(
             message="Available tools retrieved successfully"
         )
         
-    except ImportError as e:
-        logger.error(f"Could not import AVAILABLE_TOOLS from emulation: {e}", exc_info=True)
-        # Fallback to basic tool list
-        fallback_tools = [
-            {
-                "id": 0,
-                "name": "FastQC",
-                "description": "Quality control for raw sequence data",
-                "type": "qc",
-                "enabled": True
-            }
-        ]
-        return success_response(
-            data=fallback_tools,
-            message="Available tools retrieved (fallback mode)"
-        )
     except Exception as e:
         logger.error(f"Error getting available tools: {e}", exc_info=True)
         error_data = error_response(
@@ -87,8 +64,7 @@ async def get_available_tools(
 
 @router.get("/requirements")
 async def get_tool_requirements(
-    tool_indices: Optional[str] = Query(None, description="Comma-separated tool indices (e.g., '0,1,2')"),
-    current_user: UserResponse = Depends(get_current_user)
+    tool_indices: Optional[str] = Query(None, description="Comma-separated tool indices (e.g., '0,1,2')")
 ):
     """
     Get input requirements for specified tools.
@@ -101,9 +77,6 @@ async def get_tool_requirements(
         List of tool requirements with information about which inputs are intermediate
     """
     try:
-        from backend.api.services.pipeline_analyzer import TOOL_INPUT_REQUIREMENTS
-        from emulation.nextflow_manager import AVAILABLE_TOOLS
-        
         if not tool_indices:
             return success_response(
                 data=[],
@@ -123,21 +96,19 @@ async def get_tool_requirements(
         
         # Get tools and their requirements
         tool_requirements = []
-        tools_seen = set()
         has_spades = False
         
         for idx in indices:
-            if idx < 0 or idx >= len(AVAILABLE_TOOLS):
+            tool = get_tool_by_index(idx)
+            if not tool:
                 continue
-            
-            tool = AVAILABLE_TOOLS[idx]
+
             tool_id = tool["id"]
             tool_name = tool["name"]
             
             # Get input requirements for this tool
-            if tool_id in TOOL_INPUT_REQUIREMENTS:
-                requirements = TOOL_INPUT_REQUIREMENTS[tool_id]
-                
+            requirements = get_registry_tool_requirements(tool_id)
+            if requirements:
                 # Check if inputs are intermediate (from previous tools)
                 processed_requirements = []
                 for req in requirements:
@@ -157,6 +128,7 @@ async def get_tool_requirements(
                     "tool_id": tool_id,
                     "tool_name": tool_name,
                     "tool_type": tool.get("type", "unknown"),
+                    "description": tool.get("description", ""),
                     "requirements": processed_requirements
                 })
                 
@@ -176,4 +148,3 @@ async def get_tool_requirements(
             status_code=500
         )
         return JSONResponse(content=error_data, status_code=500)
-

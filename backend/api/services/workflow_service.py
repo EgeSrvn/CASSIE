@@ -3,24 +3,12 @@ Workflow service for creating workflows dynamically from tool selection.
 """
 
 import json
-import sys
-from pathlib import Path
 from typing import List, Optional
 from backend.api.database.db_init import get_db_connection
 from backend.api.utils.logger import get_logger
+from tool_registry import get_tool_by_index
 
 logger = get_logger(__name__)
-
-# Import emulator tools list
-try:
-    # Add project root to path so we can import emulation as a package
-    project_root = Path(__file__).parent.parent.parent.parent
-    if str(project_root) not in sys.path:
-        sys.path.insert(0, str(project_root))
-    from emulation.nextflow_manager import AVAILABLE_TOOLS
-except ImportError:
-    logger.warning("Could not import AVAILABLE_TOOLS from emulation")
-    AVAILABLE_TOOLS = []
 
 
 def order_tools_by_dependencies(
@@ -46,8 +34,8 @@ def order_tools_by_dependencies(
     # Map tool indices to IDs
     tool_map = {}
     for idx in tool_indices:
-        if 0 <= idx < len(AVAILABLE_TOOLS):
-            tool = AVAILABLE_TOOLS[idx]
+        tool = get_tool_by_index(idx)
+        if tool:
             tool_map[idx] = tool["id"]
 
     # If somehow none of the indices resolved to a known tool, just return original
@@ -134,9 +122,9 @@ def create_workflow_from_tools(
     tool_names = []
     tool_descriptions = []
     for idx in tool_indices:
-        if idx < 0 or idx >= len(AVAILABLE_TOOLS):
+        tool = get_tool_by_index(idx)
+        if not tool:
             raise ValueError(f"Invalid tool index: {idx}")
-        tool = AVAILABLE_TOOLS[idx]
         tool_names.append(tool["name"].lower())
         tool_descriptions.append(tool["description"])
     
@@ -156,7 +144,9 @@ def create_workflow_from_tools(
     # Create workflow steps
     workflow_steps = []
     for i, idx in enumerate(tool_indices):
-        tool = AVAILABLE_TOOLS[idx]
+        tool = get_tool_by_index(idx)
+        if not tool:
+            raise ValueError(f"Invalid tool index: {idx}")
         workflow_steps.append({
             "step": i + 1,
             "name": tool["name"],
@@ -288,4 +278,3 @@ def get_workflow_by_id(workflow_id: int, user_id: Optional[int] = None) -> Optio
             return None
         finally:
             cur.close()
-

@@ -213,6 +213,9 @@ def add_tenant(tenant_name, vm_name=None, user_id=None):
         TENANT_REGISTRY[key]["container"] = cont.name
     except Exception as e:
         print(f"[!] Warning: failed to create tenant container/user: {e}")
+        TENANT_REGISTRY.pop(key, None)
+        VM_LOAD[vm_name] = max(0, VM_LOAD.get(vm_name, 1) - 1)
+        raise
 
     # Insert into database
     add_tenant_to_db(tenant_name, vm_name, user_id)

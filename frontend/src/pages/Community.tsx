@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { getSharedPipelines, getPipeline, createPipeline, Pipeline, PipelineCreate } from '../services/pipelineService'
 import { getToken } from '../services/authService'
+import { STARTER_PIPELINE_TEMPLATES, StarterPipelineTemplate } from '../services/starterPipelines'
 import Navigation from '../components/Navigation'
 import '../styles/globals.css'
 
@@ -21,7 +22,6 @@ export default function Community() {
     try {
       setLoading(true)
       setError('')
-      // Get only shared pipelines (public endpoint, no auth required)
       const data = await getSharedPipelines()
       setPipelines(data)
     } catch (err: any) {
@@ -36,17 +36,19 @@ export default function Community() {
 
   const handleViewPipeline = (pipelineId: number) => {
     if (isAuthenticated) {
-      // Allow viewing shared pipelines (read-only view)
       navigate(`/pipelines/builder/${pipelineId}`)
     } else {
-      // Redirect to login if not authenticated
       navigate('/login')
     }
   }
 
+  const handleUseTemplate = (template: StarterPipelineTemplate) => {
+    navigate('/pipelines/builder', { state: { starterTemplate: template } })
+  }
+
   const handleSavePipeline = async (pipelineId: number, e: React.MouseEvent) => {
     e.stopPropagation()
-    
+
     if (!isAuthenticated) {
       navigate('/login')
       return
@@ -54,21 +56,18 @@ export default function Community() {
 
     try {
       setSavingPipelineId(pipelineId)
-      
-      // Fetch the shared pipeline details
+
       const sharedPipeline = await getPipeline(pipelineId)
-      
-      // Create a copy for the current user
       const pipelineData: PipelineCreate = {
         name: `${sharedPipeline.name} (Copy)`,
-        description: sharedPipeline.description ? `${sharedPipeline.description} (Copied from community)` : 'Copied from community',
+        description: sharedPipeline.description
+          ? `${sharedPipeline.description} (Copied from community)`
+          : 'Copied from community',
         nodes: sharedPipeline.nodes,
         edges: sharedPipeline.edges
       }
-      
+
       const newPipeline = await createPipeline(pipelineData)
-      
-      // Navigate to the user's pipelines page or show success message
       alert(`Pipeline "${newPipeline.name}" has been saved to your pipelines!`)
       navigate('/pipelines')
     } catch (err: any) {
@@ -107,44 +106,92 @@ export default function Community() {
 
         {pipelines.length === 0 && !error ? (
           <div className="empty-state">
-            <p>No shared pipelines available yet.</p>
-            {isAuthenticated ? (
-              <p style={{ marginTop: '1rem', color: 'var(--gray-600)' }}>
-                Share your pipelines from the Pipelines page to make them visible here.
-              </p>
-            ) : (
-              <p style={{ marginTop: '1rem', color: 'var(--gray-600)' }}>
-                Login to share your pipelines with the community.
-              </p>
-            )}
+            <p>No shared pipelines are published yet.</p>
+            <p style={{ marginTop: '1rem', color: 'var(--gray-600)' }}>
+              Starter templates are available below so the page stays useful even before the first community share.
+            </p>
+            <div className="pipeline-grid" style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))',
+              gap: '1.5rem',
+              marginTop: '2rem',
+              width: '100%'
+            }}>
+              {STARTER_PIPELINE_TEMPLATES.map((template) => (
+                <div key={template.id} className="card pipeline-card" style={{
+                  background: 'var(--bg-primary)',
+                  borderRadius: 'var(--radius-lg)',
+                  padding: 'var(--spacing-xl)',
+                  boxShadow: 'var(--shadow-md)',
+                  border: '1px solid var(--gray-200)'
+                }}>
+                  <h3 className="pipeline-card-title" style={{
+                    fontSize: '1.25rem',
+                    fontWeight: '600',
+                    color: 'var(--primary)',
+                    marginBottom: '0.75rem'
+                  }}>
+                    {template.name}
+                  </h3>
+                  <p className="pipeline-card-description" style={{
+                    color: 'var(--gray-600)',
+                    marginBottom: '1rem',
+                    lineHeight: '1.6'
+                  }}>
+                    {template.description}
+                  </p>
+                  <div style={{ display: 'flex', gap: '0.5rem' }}>
+                    <button
+                      onClick={() => handleUseTemplate(template)}
+                      className="btn-primary"
+                      style={{ padding: '0.5rem 1rem', fontSize: '0.875rem' }}
+                    >
+                      Open Template
+                    </button>
+                    {isAuthenticated && (
+                      <button
+                        onClick={() => handleUseTemplate(template)}
+                        className="btn-secondary"
+                        style={{ padding: '0.5rem 1rem', fontSize: '0.875rem' }}
+                      >
+                        Customize
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         ) : (
-          <div className="pipeline-grid" style={{ 
-            display: 'grid', 
-            gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', 
-            gap: '1.5rem' 
+          <div className="pipeline-grid" style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))',
+            gap: '1.5rem'
           }}>
             {pipelines.map((pipeline) => (
-              <div key={pipeline.id} className="card pipeline-card" style={{
-                background: 'var(--bg-primary)',
-                borderRadius: 'var(--radius-lg)',
-                padding: 'var(--spacing-xl)',
-                boxShadow: 'var(--shadow-md)',
-                border: '1px solid var(--gray-200)',
-                transition: 'all 0.3s ease',
-                cursor: 'pointer'
-              }}
-              onClick={() => handleViewPipeline(pipeline.id)}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.transform = 'translateY(-4px)'
-                e.currentTarget.style.boxShadow = 'var(--shadow-lg)'
-                e.currentTarget.style.borderColor = 'var(--primary-light)'
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.transform = 'translateY(0)'
-                e.currentTarget.style.boxShadow = 'var(--shadow-md)'
-                e.currentTarget.style.borderColor = 'var(--gray-200)'
-              }}
+              <div
+                key={pipeline.id}
+                className="card pipeline-card"
+                style={{
+                  background: 'var(--bg-primary)',
+                  borderRadius: 'var(--radius-lg)',
+                  padding: 'var(--spacing-xl)',
+                  boxShadow: 'var(--shadow-md)',
+                  border: '1px solid var(--gray-200)',
+                  transition: 'all 0.3s ease',
+                  cursor: 'pointer'
+                }}
+                onClick={() => handleViewPipeline(pipeline.id)}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.transform = 'translateY(-4px)'
+                  e.currentTarget.style.boxShadow = 'var(--shadow-lg)'
+                  e.currentTarget.style.borderColor = 'var(--primary-light)'
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.transform = 'translateY(0)'
+                  e.currentTarget.style.boxShadow = 'var(--shadow-md)'
+                  e.currentTarget.style.borderColor = 'var(--gray-200)'
+                }}
               >
                 <h3 className="pipeline-card-title" style={{
                   fontSize: '1.25rem',
@@ -184,8 +231,8 @@ export default function Community() {
                           onClick={(e) => handleSavePipeline(pipeline.id, e)}
                           disabled={savingPipelineId === pipeline.id}
                           className="btn-secondary"
-                          style={{ 
-                            padding: '0.5rem 1rem', 
+                          style={{
+                            padding: '0.5rem 1rem',
                             fontSize: '0.875rem',
                             opacity: savingPipelineId === pipeline.id ? 0.6 : 1
                           }}
@@ -225,4 +272,3 @@ export default function Community() {
     </div>
   )
 }
-

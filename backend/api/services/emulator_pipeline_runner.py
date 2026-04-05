@@ -9,6 +9,9 @@ import os
 import sys
 import json
 import asyncio
+import shutil
+import tarfile
+import tempfile
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 from datetime import datetime
@@ -35,6 +38,7 @@ from backend.api.models.job_model import (
     JobStatus
 )
 from backend.api.utils.logger import get_logger
+from tool_registry import get_tool_by_id, get_tool_registry
 
 logger = get_logger(__name__)
 
@@ -51,7 +55,35 @@ except ImportError as e:
     add_tenant = None
     get_tenant_container = None
     emulator_run_pipeline = None
+    get_tool_list = None
     ensure_vms = None
+    docker_client = None
+
+
+def _ensure_emulator_dependencies() -> None:
+    """Recover emulator imports lazily if startup-time imports failed."""
+    global add_tenant, get_tenant_container, emulator_run_pipeline, get_tool_list, ensure_vms, docker_client
+
+    if callable(add_tenant) and callable(get_tenant_container) and callable(emulator_run_pipeline) and callable(ensure_vms):
+        return
+
+    try:
+        from emulation.tenant_commands import add_tenant as add_tenant_fn, get_tenant_container as get_tenant_container_fn
+        from emulation.nextflow_manager import run_pipeline as emulator_run_pipeline_fn, get_tool_list as get_tool_list_fn
+        from emulation.docker_commands import ensure_vms as ensure_vms_fn, client as docker_client_obj
+
+        add_tenant = add_tenant_fn
+        get_tenant_container = get_tenant_container_fn
+        emulator_run_pipeline = emulator_run_pipeline_fn
+        get_tool_list = get_tool_list_fn
+        ensure_vms = ensure_vms_fn
+        docker_client = docker_client_obj
+        logger.info("Recovered emulator module imports lazily")
+    except ImportError as e:
+        logger.error(f"Lazy emulator import failed: {e}", exc_info=True)
+        raise RuntimeError(
+            "Emulator dependencies could not be imported. Check the emulation modules and Docker availability."
+        ) from e
 
 
 class EmulatorPipelineRunner:
@@ -67,6 +99,127 @@ class EmulatorPipelineRunner:
         self._logger = get_logger(__name__)
         # Don't ensure VMs here - it's blocking and will be done in background task
         # VMs will be ensured when first pipeline starts
+
+    def _copy_local_file_to_container(self, tenant_container, local_path: str, tenant_file_path: str) -> None:
+        """Copy a local file into a container without relying on the docker CLI."""
+        container_dir = os.path.dirname(tenant_file_path) or "/"
+        tenant_container.exec_run(['mkdir', '-p', container_dir], user='root')
+
+        tar_fd, tar_path = tempfile.mkstemp(suffix=".tar")
+        os.close(tar_fd)
+        try:
+            with tarfile.open(tar_path, mode="w") as tar_handle:
+                tar_handle.add(local_path, arcname=os.path.basename(tenant_file_path))
+
+            with open(tar_path, "rb") as tar_stream:
+                success = tenant_container.put_archive(container_dir, tar_stream)
+
+            if not success:
+                raise RuntimeError(f"Failed to copy {local_path} into container path {tenant_file_path}")
+        finally:
+            try:
+                os.unlink(tar_path)
+            except OSError:
+                pass
+
+    def _copy_file_from_container(self, tenant_container, container_file_path: str, local_file_path: str) -> None:
+        """Copy a single file from a container without relying on the docker CLI."""
+        stream, _ = tenant_container.get_archive(container_file_path)
+
+        tar_fd, tar_path = tempfile.mkstemp(suffix=".tar")
+        os.close(tar_fd)
+        extract_dir = tempfile.mkdtemp(prefix="cassie_extract_")
+        try:
+            with open(tar_path, "wb") as tar_stream:
+                for chunk in stream:
+                    tar_stream.write(chunk)
+
+            with tarfile.open(tar_path, mode="r") as tar_handle:
+                members = [member for member in tar_handle.getmembers() if member.isfile()]
+                if not members:
+                    raise RuntimeError(f"No file payload found in archive for {container_file_path}")
+
+                source = tar_handle.extractfile(members[0])
+                if source is None:
+                    raise RuntimeError(f"Could not extract {container_file_path} from container archive")
+
+                os.makedirs(os.path.dirname(local_file_path), exist_ok=True)
+                with source, open(local_file_path, "wb") as output_file:
+                    shutil.copyfileobj(source, output_file)
+        finally:
+            shutil.rmtree(extract_dir, ignore_errors=True)
+            try:
+                os.unlink(tar_path)
+            except OSError:
+                pass
+
+    def _resolve_workflow_tool_indices(self, workflow: Dict[str, Any]) -> List[int]:
+        """Resolve workflow tools from stable ids first, then legacy display names."""
+        resolved_indices: List[int] = []
+        available_tools = get_tool_registry()
+        by_id = {tool["id"]: idx for idx, tool in enumerate(available_tools)}
+        by_name = {tool["name"].lower(): idx for idx, tool in enumerate(available_tools)}
+
+        for step in workflow.get("workflow_steps", []) or []:
+            tool_id = step.get("tool")
+            if tool_id in by_id and by_id[tool_id] not in resolved_indices:
+                resolved_indices.append(by_id[tool_id])
+
+        if resolved_indices:
+            return resolved_indices
+
+        for item in workflow.get("tools_used", []) or []:
+            key = str(item).strip()
+            idx = by_id.get(key.upper())
+            if idx is None:
+                idx = by_name.get(key.lower())
+            if idx is not None and idx not in resolved_indices:
+                resolved_indices.append(idx)
+
+        return resolved_indices
+
+    def _ensure_tenant_container_running(self, container, tenant_name: str, user_id: int) -> None:
+        """Ensure the tenant container and its backing VM are both running."""
+        import time
+
+        container.reload()
+        if container.status == "running":
+            return
+
+        vm_name = None
+        try:
+            network_mode = (container.attrs or {}).get("HostConfig", {}).get("NetworkMode", "")
+            if isinstance(network_mode, str) and network_mode.startswith("container:"):
+                vm_name = network_mode.split(":", 1)[1]
+        except Exception:
+            vm_name = None
+
+        if not vm_name:
+            from backend.api.database.db_init import get_db_connection
+            with get_db_connection() as conn:
+                cur = conn.cursor()
+                cur.execute("SELECT vm_name FROM tenants WHERE name = %s AND user_id = %s", (tenant_name, user_id))
+                row = cur.fetchone()
+                cur.close()
+                if row:
+                    vm_name = row[0]
+
+        if vm_name:
+            from emulation.docker_commands import start_vm
+            start_vm(vm_name)
+            time.sleep(2)
+
+        container.start()
+        time.sleep(1)
+        container.reload()
+        if container.status != "running":
+            raise RuntimeError(f"Tenant container '{container.name}' is not running (status={container.status})")
+
+        try:
+            from emulation.docker_commands import sync_tool_scripts
+            sync_tool_scripts(container)
+        except Exception as e:
+            self._logger.warning(f"Could not sync tool scripts into tenant container {container.name}: {e}")
     
     async def start_pipeline(
         self,
@@ -193,6 +346,7 @@ class EmulatorPipelineRunner:
     ):
         """Setup pipeline (Docker, file downloads) and then run it - all in background."""
         try:
+            _ensure_emulator_dependencies()
             self._logger.info(f"Starting setup for job {job_id}, execution {execution_id}")
             
             # Run blocking operations in thread pool to avoid blocking the event loop
@@ -224,19 +378,12 @@ class EmulatorPipelineRunner:
             self._logger.info(f"Retrieved workflow {workflow_id}: {workflow.get('name', 'Unknown')}")
             self._logger.info(f"Workflow tools_used: {workflow.get('tools_used', [])}")
             
-            tool_indices = []
+            tool_indices = self._resolve_workflow_tool_indices(workflow)
             tools_used = workflow.get('tools_used', [])
-            if tools_used:
-                # Extract tool indices from tools_used list
-                from emulation.nextflow_manager import AVAILABLE_TOOLS
-                tool_map = {tool['name'].lower(): idx for idx, tool in enumerate(AVAILABLE_TOOLS)}
-                for tool_name in tools_used:
-                    tool_lower = tool_name.lower()
-                    if tool_lower in tool_map:
-                        tool_indices.append(tool_map[tool_lower])
-                        self._logger.info(f"Mapped tool '{tool_name}' to index {tool_map[tool_lower]}")
-                    else:
-                        self._logger.warning(f"Tool '{tool_name}' not found in AVAILABLE_TOOLS")
+            for idx in tool_indices:
+                tool = get_tool_by_id(get_tool_registry()[idx]["id"])
+                if tool:
+                    self._logger.info(f"Resolved workflow tool '{tool['id']}' to index {idx}")
             
             if not tool_indices:
                 raise ValueError(f"No valid tools found in workflow {workflow_id}. tools_used: {tools_used}")
@@ -257,10 +404,10 @@ class EmulatorPipelineRunner:
                         file_record = get_file_by_id(file_id, user_id=user_id)
                         if file_record:
                             filename_lower = file_record.filename.lower()
-                            if filename_lower.endswith(('.fasta', '.fa', '.fna')):
+                            if filename_lower.endswith(('.fasta', '.fa', '.fna', '.fasta.gz', '.fa.gz', '.fna.gz')):
                                 fasta_count += 1
                                 self._logger.info(f"Detected FASTA file: {file_record.filename}")
-                            elif filename_lower.endswith(('.fastq', '.fq')):
+                            elif filename_lower.endswith(('.fastq', '.fq', '.fastq.gz', '.fq.gz')):
                                 fastq_count += 1
                     except Exception as e:
                         self._logger.warning(f"Could not check file {file_id}: {e}")
@@ -360,6 +507,7 @@ class EmulatorPipelineRunner:
             user_id: User ID
             job_id: Optional job ID to get vm_name from job
         """
+        _ensure_emulator_dependencies()
         if get_tenant_container is None or add_tenant is None:
             error_msg = "Emulator modules not imported. Cannot create tenant. Check backend logs for import errors."
             self._logger.error(error_msg)
@@ -368,6 +516,7 @@ class EmulatorPipelineRunner:
         try:
             # Try to get existing tenant container first (most common case)
             container = get_tenant_container(tenant_name, user_id=user_id)
+            self._ensure_tenant_container_running(container, tenant_name, user_id)
             self._logger.info(f"Using existing tenant container: {container.name}")
             return container
         except Exception as e:
@@ -395,6 +544,7 @@ class EmulatorPipelineRunner:
                                 cpu_quota, mem_limit = None, None
                             # Recreate container
                             cont = create_tenant_user(vm_name, tenant_name, user_id, cpu_quota=cpu_quota, mem_limit=mem_limit)
+                            self._ensure_tenant_container_running(cont, tenant_name, user_id)
                             self._logger.info(f"[SUCCESS] Recreated tenant container: {cont.name}")
                             return cont
                         except Exception as recreate_error:
@@ -432,6 +582,7 @@ class EmulatorPipelineRunner:
                 
                 # Get the newly created container
                 container = get_tenant_container(tenant_name, user_id=user_id)
+                self._ensure_tenant_container_running(container, tenant_name, user_id)
                 self._logger.info(f"Tenant container created: {container.name}")
                 self._logger.info(f"Container status: {container.status}")
                 self._logger.info(f"="*60)
@@ -468,7 +619,6 @@ class EmulatorPipelineRunner:
             tenant_file_path = f"/data/input_{file_id}_{file_record.filename}"
             
             # Download from MinIO to local temp, then copy to container
-            import tempfile
             # Create temp file path but don't keep it open (Windows issue)
             tmp_file = tempfile.NamedTemporaryFile(delete=False)
             tmp_path = tmp_file.name
@@ -483,20 +633,8 @@ class EmulatorPipelineRunner:
                 )
                 self._logger.info(f"Downloaded to temp file: {tmp_path}")
                 
-                # Copy to container using docker cp (more efficient for large files on Windows)
-                # put_archive has issues with large files on Windows named pipes
                 self._logger.info(f"Copying file to tenant container at {tenant_file_path}...")
-                
-                import subprocess
-                # Use docker cp which handles large files better
-                result = subprocess.run(
-                    ['docker', 'cp', tmp_path, f'{tenant_container.id}:{tenant_file_path}'],
-                    capture_output=True,
-                    text=True,
-                    timeout=600  # 10 minute timeout for large files
-                )
-                if result.returncode != 0:
-                    raise RuntimeError(f"docker cp failed: {result.stderr}")
+                self._copy_local_file_to_container(tenant_container, tmp_path, tenant_file_path)
                 
                 self._logger.info(f"[{idx}/{len(input_files)}] File {file_id} successfully copied to container")
             finally:
@@ -514,8 +652,14 @@ class EmulatorPipelineRunner:
         
         # Format input path for Nextflow pipeline
         # Check file types to determine format
-        fastq_files = [p for p in input_paths if p.endswith('.fastq') or p.endswith('.fq')]
-        fasta_files = [p for p in input_paths if p.endswith('.fasta') or p.endswith('.fa') or p.endswith('.fna')]
+        fastq_files = [
+            p for p in input_paths
+            if p.endswith(('.fastq', '.fq', '.fastq.gz', '.fq.gz'))
+        ]
+        fasta_files = [
+            p for p in input_paths
+            if p.endswith(('.fasta', '.fa', '.fna', '.fasta.gz', '.fa.gz', '.fna.gz'))
+        ]
         
         # Format input arguments
         formatted_parts = []
@@ -586,6 +730,7 @@ class EmulatorPipelineRunner:
     ):
         """Run pipeline asynchronously and update status."""
         try:
+            _ensure_emulator_dependencies()
             self._logger.info(f"Starting pipeline execution in tenant container {tenant_container.name}")
             self._logger.info(f"  - Job ID: {job_id}, Execution ID: {execution_id}")
             self._logger.info(f"  - Input path: {input_path}")
@@ -897,8 +1042,6 @@ class EmulatorPipelineRunner:
             self._logger.info(f"  ... and {len(file_paths) - 5} more files")
         
         # Create temp directory for collecting files
-        import tempfile
-        import shutil
         temp_dir = tempfile.mkdtemp(prefix='cassie_outputs_')
         
         try:
@@ -919,31 +1062,15 @@ class EmulatorPipelineRunner:
                     os.makedirs(os.path.dirname(local_file_path), exist_ok=True)
                     
                     self._logger.info(f"Copying {container_file_path} to {local_file_path}...")
-                    import subprocess
-                    # Use docker cp - copy to temp_dir first, then rename if needed
-                    # docker cp requires the destination to be a directory or non-existent file
-                    result = subprocess.run(
-                        ['docker', 'cp', f'{tenant_container.id}:{container_file_path}', temp_dir],
-                        capture_output=True,
-                        text=True,
-                        timeout=300
-                    )
-                    
-                    if result.returncode != 0:
-                        self._logger.warning(f"Failed to copy {container_file_path}: {result.stderr}")
+                    try:
+                        self._copy_file_from_container(tenant_container, container_file_path, local_file_path)
+                    except Exception as copy_error:
+                        self._logger.warning(f"Failed to copy {container_file_path}: {copy_error}")
                         continue
-                    
-                    # docker cp copies to temp_dir with the original filename
-                    # Move/rename to our safe filename
-                    copied_file = os.path.join(temp_dir, os.path.basename(container_file_path))
-                    if os.path.exists(copied_file) and copied_file != local_file_path:
-                        if os.path.exists(local_file_path):
-                            os.remove(local_file_path)
-                        os.rename(copied_file, local_file_path)
                     
                     # Verify file exists and has content
                     if not os.path.exists(local_file_path):
-                        self._logger.warning(f"File {local_file_path} was not created after docker cp")
+                        self._logger.warning(f"File {local_file_path} was not created after container copy")
                         continue
                     
                     file_size = os.path.getsize(local_file_path)
@@ -1062,4 +1189,3 @@ def get_emulator_pipeline_runner() -> EmulatorPipelineRunner:
     if _emulator_runner_instance is None:
         _emulator_runner_instance = EmulatorPipelineRunner()
     return _emulator_runner_instance
-

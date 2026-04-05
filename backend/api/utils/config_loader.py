@@ -38,6 +38,7 @@ class MinIOConfig:
     
     def __init__(self):
         self.endpoint = os.getenv("MINIO_ENDPOINT", "http://127.0.0.1:9000")
+        self.public_endpoint = os.getenv("MINIO_PUBLIC_ENDPOINT", self.endpoint)
         self.access_key = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
         self.secret_key = os.getenv("MINIO_SECRET_KEY", "minioadmin")
         self.use_ssl = os.getenv("MINIO_USE_SSL", "false").lower() in ("true", "1", "yes")
@@ -53,6 +54,7 @@ class APIConfig:
         self.port = int(os.getenv("API_PORT", "8000"))
         self.prefix = os.getenv("API_PREFIX", "/api")
         self.debug = os.getenv("DEBUG", "false").lower() in ("true", "1", "yes")
+        self.enable_local_infra_bootstrap = os.getenv("ENABLE_LOCAL_INFRA_BOOTSTRAP", "true").lower() in ("true", "1", "yes")
         
         # Logging settings
         self.log_level = os.getenv("LOG_LEVEL", "INFO")
@@ -84,6 +86,25 @@ class DockerConfig:
         self.socket = os.getenv("DOCKER_SOCKET", "unix://var/run/docker.sock")
         self.network = os.getenv("DOCKER_NETWORK", "bridge")
         self.timeout = int(os.getenv("DOCKER_TIMEOUT", "300"))  # 5 minutes
+
+
+class ExecutionConfig:
+    """Execution backend selection."""
+
+    def __init__(self):
+        self.backend = os.getenv("EXECUTION_BACKEND", "auto").strip().lower()
+
+
+class KubernetesConfig:
+    """Configuration for Kubernetes-based pipeline execution."""
+
+    def __init__(self):
+        self.namespace = os.getenv("KUBERNETES_NAMESPACE", "default")
+        self.image_pull_policy = os.getenv("KUBERNETES_IMAGE_PULL_POLICY", "IfNotPresent")
+        self.job_timeout_seconds = int(os.getenv("KUBERNETES_JOB_TIMEOUT_SECONDS", "3600"))
+        self.poll_interval_seconds = int(os.getenv("KUBERNETES_POLL_INTERVAL_SECONDS", "5"))
+        self.minio_endpoint = os.getenv("KUBERNETES_MINIO_ENDPOINT", "")
+        self.aws_cli_image = os.getenv("KUBERNETES_AWSCLI_IMAGE", "amazon/aws-cli:2.17.40")
 
 
 class ToolsConfig:
@@ -119,6 +140,8 @@ class Config:
         self.api = APIConfig()
         self.nextflow = NextflowConfig()
         self.docker = DockerConfig()
+        self.execution = ExecutionConfig()
+        self.kubernetes = KubernetesConfig()
         self.tools = ToolsConfig()
     
     def _load_env_file(self):
@@ -160,6 +183,7 @@ class Config:
             },
             "minio": {
                 "endpoint": self.minio.endpoint,
+                "public_endpoint": self.minio.public_endpoint,
                 "access_key": self.minio.access_key,
                 "secret_key": "***",  # Mask secret key
                 "use_ssl": self.minio.use_ssl,
@@ -171,6 +195,7 @@ class Config:
                 "port": self.api.port,
                 "prefix": self.api.prefix,
                 "debug": self.api.debug,
+                "enable_local_infra_bootstrap": self.api.enable_local_infra_bootstrap,
                 "log_level": self.api.log_level,
                 "log_file": self.api.log_file,
                 "cors_origins": self.api.cors_origins,
@@ -186,6 +211,17 @@ class Config:
                 "socket": self.docker.socket,
                 "network": self.docker.network,
                 "timeout": self.docker.timeout,
+            },
+            "execution": {
+                "backend": self.execution.backend,
+            },
+            "kubernetes": {
+                "namespace": self.kubernetes.namespace,
+                "image_pull_policy": self.kubernetes.image_pull_policy,
+                "job_timeout_seconds": self.kubernetes.job_timeout_seconds,
+                "poll_interval_seconds": self.kubernetes.poll_interval_seconds,
+                "minio_endpoint": self.kubernetes.minio_endpoint,
+                "aws_cli_image": self.kubernetes.aws_cli_image,
             },
             "tools": {
                 "fastqc_image": self.tools.fastqc_image,

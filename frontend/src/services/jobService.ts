@@ -15,6 +15,43 @@ export interface Job {
   updated_at: string
 }
 
+export interface JobExecutionStage {
+  stage_number: number
+  tool_id: string
+  tool_name: string
+  kubernetes_job_name?: string
+  pod_name?: string
+  status: 'pending' | 'running' | 'completed' | 'failed' | string
+  started_at?: string
+  completed_at?: string
+  output_count?: number
+  error?: string
+}
+
+export interface JobExecution {
+  id: number
+  job_id: number
+  execution_number: number
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
+  nextflow_run_id?: string | null
+  work_dir?: string | null
+  output_dir?: string | null
+  process_id?: number | null
+  tool_versions?: Record<string, string> | null
+  parameters_used?: {
+    backend?: string
+    namespace?: string
+    workflow_id?: number
+    tool_sequence?: string[]
+    stages?: JobExecutionStage[]
+    [key: string]: unknown
+  } | null
+  error_message?: string | null
+  started_at?: string | null
+  completed_at?: string | null
+  created_at: string
+}
+
 export interface JobCreate {
   name: string
   workflow_id?: number // Optional, will be created dynamically from tools
@@ -74,6 +111,24 @@ export const getJob = async (jobId: number): Promise<Job> => {
     if (error.response?.data) {
       const errorData = error.response.data
       throw new Error(errorData.message || errorData.detail || errorData.error || 'Failed to get job')
+    }
+    throw error
+  }
+}
+
+export const getJobExecutions = async (jobId: number): Promise<JobExecution[]> => {
+  try {
+    const response = await apiClient.get<{ success: boolean; data: JobExecution[]; message?: string }>(
+      `/api/jobs/${jobId}/executions`
+    )
+    if (response.data && response.data.success) {
+      return response.data.data
+    }
+    throw new Error(response.data?.message || 'Failed to get job executions')
+  } catch (error: any) {
+    if (error.response?.data) {
+      const errorData = error.response.data
+      throw new Error(errorData.message || errorData.detail || errorData.error || 'Failed to get job executions')
     }
     throw error
   }
@@ -150,4 +205,3 @@ export const getAvailableVMs = async (): Promise<VM[]> => {
     throw error
   }
 }
-

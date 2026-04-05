@@ -11,6 +11,7 @@ import Pipelines from './pages/Pipelines'
 import PipelineBuilder from './pages/PipelineBuilder'
 import Community from './pages/Community'
 import { getToken } from './services/authService'
+import { startPendingJobUploadProcessor } from './services/pendingJobUploadService'
 
 function App() {
   const [isAuthenticated, setIsAuthenticated] = useState<boolean | null>(null)
@@ -39,6 +40,10 @@ function App() {
       window.removeEventListener('storage', handleStorageChange)
       window.removeEventListener('auth-change', handleAuthChange)
     }
+  }, [])
+
+  useEffect(() => {
+    void startPendingJobUploadProcessor()
   }, [])
 
   if (isAuthenticated === null) {
@@ -100,4 +105,3 @@ function App() {
 }
 
 export default App
-

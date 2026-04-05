@@ -92,7 +92,7 @@ export interface PipelineRequirements {
 }
 
 export const getPipelineRequirements = async (id: number): Promise<PipelineRequirements> => {
-  const response = await apiClient.get<{ success: boolean; data: PipelineRequirements }>(`/api/pipelines/${id}/requirements`)
+  const response = await apiClient.get<{ success: boolean; data: PipelineRequirements; message?: string }>(`/api/pipelines/${id}/requirements`)
   if (response.data.success) {
     return response.data.data
   }
@@ -122,4 +122,3 @@ export const unsharePipeline = async (id: number): Promise<Pipeline> => {
   }
   throw new Error(response.data.message || 'Failed to unshare pipeline')
 }
-

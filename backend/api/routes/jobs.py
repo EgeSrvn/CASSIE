@@ -12,6 +12,7 @@ This module provides:
 from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks, Request
 from fastapi.responses import JSONResponse
 from typing import Optional, List, Dict
+from copy import deepcopy
 from datetime import datetime
 from pydantic import BaseModel, Field
 import asyncio
@@ -24,7 +25,8 @@ from backend.api.models.job_model import (
     JobCreate,
     JobUpdate,
     JobResponse,
-    JobStatus
+    JobStatus,
+    JobExecutionResponse,
 )
 from backend.api.services.job_service import (
     create_job,
@@ -49,10 +51,50 @@ from backend.api.utils.validators import (
     validate_job_input
 )
 from backend.api.utils.logger import get_logger
+from tool_registry import get_tool_by_index, get_tool_registry
 
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
+
+
+def _sanitize_execution_message(message: Optional[str]) -> Optional[str]:
+    """Return a concise user-facing execution message without raw tool logs."""
+    if not message:
+        return message
+
+    text = str(message).strip()
+    if not text:
+        return None
+
+    first_line = next((line.strip() for line in text.splitlines() if line.strip()), "")
+    if not first_line:
+        return None
+
+    return first_line[:500] + ("..." if len(first_line) > 500 else "")
+
+
+def _sanitize_execution_parameters(parameters_used: Optional[Dict]) -> Optional[Dict]:
+    """Hide internal log previews while keeping stage progress metadata."""
+    if not isinstance(parameters_used, dict):
+        return parameters_used
+
+    sanitized = deepcopy(parameters_used)
+    stages = sanitized.get("stages")
+    if isinstance(stages, list):
+        cleaned_stages = []
+        for stage in stages:
+            if isinstance(stage, dict):
+                cleaned = dict(stage)
+                cleaned.pop("logs_preview", None)
+                if "error" in cleaned:
+                    cleaned["error"] = _sanitize_execution_message(cleaned.get("error"))
+                cleaned_stages.append(cleaned)
+            else:
+                cleaned_stages.append(stage)
+        sanitized["stages"] = cleaned_stages
+
+    return sanitized
 
 
 @router.get("/vms")
@@ -171,7 +213,6 @@ async def create_job_endpoint(
     
     if job_data.tool_indices:
         logger.info(f"Validating tool_indices: {job_data.tool_indices}")
-        # Validate tool indices (0-3 for now: FastQC, GenomeScope2, SPAdes, QUAST)
         if len(job_data.tool_indices) == 0:
             logger.warning("Tool indices validation failed: empty list")
             error_data = error_response(
@@ -180,15 +221,19 @@ async def create_job_endpoint(
                 status_code=status.HTTP_400_BAD_REQUEST
             )
             return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
-        for idx in job_data.tool_indices:
-            if idx < 0 or idx > 3:
-                logger.warning(f"Tool index validation failed: {idx} is out of range")
-                error_data = error_response(
-                    error_code=ErrorCode.VALIDATION_ERROR,
-                    message=f"Invalid tool index: {idx}. Valid indices are 0-3.",
-                    status_code=status.HTTP_400_BAD_REQUEST
-                )
-                return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+        invalid_indices = [idx for idx in job_data.tool_indices if get_tool_by_index(idx) is None]
+        if invalid_indices:
+            max_index = max(len(get_tool_registry()) - 1, 0)
+            logger.warning(f"Tool index validation failed: {invalid_indices} are out of range")
+            error_data = error_response(
+                error_code=ErrorCode.VALIDATION_ERROR,
+                message=(
+                    f"Invalid tool index or indices: {', '.join(str(idx) for idx in invalid_indices)}. "
+                    f"Valid indices are 0-{max_index}."
+                ),
+                status_code=status.HTTP_400_BAD_REQUEST
+            )
+            return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
     elif not job_data.workflow_id or job_data.workflow_id == 0:
         if not job_data.pipeline_id:
             logger.warning(f"Validation failed: Neither workflow_id ({job_data.workflow_id}), tool_indices ({job_data.tool_indices}), nor pipeline_id ({job_data.pipeline_id}) provided")
@@ -482,13 +527,13 @@ async def execute_job(
             )
             return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
         
-        # Start pipeline execution
-        from backend.api.services.emulator_pipeline_runner import get_emulator_pipeline_runner
-        
+        # Start pipeline execution using the configured backend
+        from backend.api.services.kubernetes_manager import get_pipeline_runner
+
         async def start_pipeline_task():
             try:
                 logger.info(f"Starting pipeline execution for job {job_id}")
-                runner = get_emulator_pipeline_runner()
+                runner = get_pipeline_runner()
                 execution = await runner.start_pipeline(
                     job_id=job_id,
                     user_id=current_user.id,
@@ -523,6 +568,61 @@ async def execute_job(
         error_data = error_response(
             error_code=ErrorCode.INTERNAL_ERROR,
             message="Failed to execute job",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@router.get("/{job_id}/executions", status_code=status.HTTP_200_OK)
+async def list_job_executions(
+    job_id: int,
+    current_user: UserResponse = Depends(get_current_user)
+):
+    """
+    List execution attempts for a job, including backend-specific tracking data.
+    """
+    try:
+        job = get_job_by_id(job_id, user_id=current_user.id)
+        if not job:
+            error_data = not_found_response("Job", job_id)
+            return JSONResponse(content=error_data, status_code=status.HTTP_404_NOT_FOUND)
+
+        from backend.api.services.job_execution_service import get_executions_by_job
+
+        executions = get_executions_by_job(job_id)
+        payload = [
+            JobExecutionResponse(
+                id=execution.id,
+                job_id=execution.job_id,
+                execution_number=execution.execution_number,
+                status=execution.status,
+                nextflow_run_id=execution.nextflow_run_id,
+                work_dir=execution.work_dir,
+                output_dir=execution.output_dir,
+                process_id=execution.process_id,
+                tool_versions=execution.tool_versions,
+                parameters_used=_sanitize_execution_parameters(execution.parameters_used),
+                error_message=_sanitize_execution_message(execution.error_message),
+                started_at=execution.started_at,
+                completed_at=execution.completed_at,
+                created_at=execution.created_at
+            ).model_dump(mode="json")
+            for execution in executions
+        ]
+
+        return JSONResponse(
+            content=success_response(
+                data=payload,
+                message="Job executions retrieved successfully",
+                status_code=status.HTTP_200_OK
+            ),
+            status_code=status.HTTP_200_OK
+        )
+    except Exception as e:
+        logger.error(f"Error listing executions for job {job_id}: {e}", exc_info=True)
+        error_data = error_response(
+            error_code=ErrorCode.INTERNAL_ERROR,
+            message="Failed to retrieve job executions",
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
         return JSONResponse(content=error_data, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)

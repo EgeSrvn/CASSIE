@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from backend.api.database.db_init import get_db_connection
 from backend.api.models.job_model import JobInDB, JobCreate, JobUpdate, JobResponse, JobStatus, CloudProvider
 from backend.api.utils.logger import get_logger
+from tool_registry import get_tool_by_index
 
 logger = get_logger(__name__)
 
@@ -31,6 +32,15 @@ def create_job(user_id: int, job_data: JobCreate) -> JobInDB:
     # Handle pipeline_id: convert to tool_indices
     logger.info(f"[JOB SERVICE] Creating job with pipeline_id={job_data.pipeline_id}, tool_indices={job_data.tool_indices}")
     tool_indices = job_data.tool_indices
+
+    def selected_tool_ids(indices: Optional[List[int]]) -> set[str]:
+        resolved_ids = set()
+        for index in indices or []:
+            tool = get_tool_by_index(index)
+            if tool:
+                resolved_ids.add(tool["id"])
+        return resolved_ids
+
     if job_data.pipeline_id:
         if tool_indices:
             raise ValueError("Cannot specify both pipeline_id and tool_indices. Use one or the other.")
@@ -86,19 +96,7 @@ def create_job(user_id: int, job_data: JobCreate) -> JobInDB:
             # Check if SPAdes is in tool_indices - if not, the FASTA might be an assembly
             has_spades = False
             if tool_indices:
-                try:
-                    import sys
-                    from pathlib import Path
-                    project_root = Path(__file__).parent.parent.parent.parent
-                    if str(project_root) not in sys.path:
-                        sys.path.insert(0, str(project_root))
-                    from emulation.nextflow_manager import AVAILABLE_TOOLS
-                    has_spades = any(
-                        idx < len(AVAILABLE_TOOLS) and AVAILABLE_TOOLS[idx]["id"] == "SPADES"
-                        for idx in tool_indices
-                    )
-                except ImportError:
-                    logger.warning("Could not import AVAILABLE_TOOLS to check for SPAdes")
+                has_spades = "SPADES" in selected_tool_ids(tool_indices)
             
             if has_spades:
                 # SPAdes will generate assembly, so this FASTA is the reference
@@ -122,19 +120,7 @@ def create_job(user_id: int, job_data: JobCreate) -> JobInDB:
         # Check if SPAdes is in tool_indices (to determine if FASTA is assembly or reference)
         has_spades = False
         if tool_indices:
-            try:
-                import sys
-                from pathlib import Path
-                project_root = Path(__file__).parent.parent.parent.parent
-                if str(project_root) not in sys.path:
-                    sys.path.insert(0, str(project_root))
-                from emulation.nextflow_manager import AVAILABLE_TOOLS
-                has_spades = any(
-                    idx < len(AVAILABLE_TOOLS) and AVAILABLE_TOOLS[idx]["id"] == "SPADES"
-                    for idx in tool_indices
-                )
-            except ImportError:
-                logger.warning("Could not import AVAILABLE_TOOLS to check for SPAdes")
+            has_spades = "SPADES" in selected_tool_ids(tool_indices)
         
         from backend.api.services.workflow_service import create_workflow_from_tools
         workflow_id = create_workflow_from_tools(
@@ -527,4 +513,3 @@ def count_jobs_by_user(user_id: int, status: Optional[JobStatus] = None) -> int:
             return cur.fetchone()[0]
         finally:
             cur.close()
-
