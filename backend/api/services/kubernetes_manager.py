@@ -212,12 +212,37 @@ class KubernetesPipelineRunner:
             update_job(job_id, user_id, JobUpdate(status=JobStatus.FAILED))
 
     def _ensure_cluster_available(self) -> None:
-        result = self._run_kubectl(["cluster-info"], timeout=20)
-        if result.returncode != 0:
-            raise RuntimeError(
-                "Kubernetes cluster is not reachable from the backend container. "
-                "Ensure Docker Desktop Kubernetes is enabled and kubeconfig is mounted."
-            )
+        timeout = max(5, self._config.kubernetes.cluster_check_timeout_seconds)
+        namespace = self._config.kubernetes.namespace
+        probes = [
+            ["get", "--raw=/readyz?verbose"],
+            ["get", "namespace", namespace],
+        ]
+
+        last_error = ""
+        for probe_args in probes:
+            try:
+                result = self._run_kubectl(
+                    [*probe_args, f"--request-timeout={timeout}s"],
+                    timeout=timeout + 5,
+                )
+            except subprocess.TimeoutExpired:
+                last_error = (
+                    f"kubectl {' '.join(probe_args)} timed out after {timeout} seconds"
+                )
+                continue
+
+            if result.returncode == 0:
+                return
+
+            stderr = result.stderr.strip()
+            stdout = result.stdout.strip()
+            last_error = stderr or stdout or f"kubectl {' '.join(probe_args)} failed"
+
+        raise RuntimeError(
+            "Kubernetes cluster is not reachable from the backend container. "
+            f"Last probe error: {last_error}"
+        )
 
     def _get_workflow(self, workflow_id: int, user_id: int) -> Dict[str, Any]:
         from backend.api.services.workflow_service import get_workflow_by_id
@@ -597,6 +622,24 @@ class KubernetesPipelineRunner:
                     None,
                 )
                 if tool_status:
+                    waiting = (tool_status.get("state") or {}).get("waiting")
+                    if waiting:
+                        reason = waiting.get("reason", "")
+                        message = waiting.get("message", "").strip()
+                        fatal_waiting_reasons = {
+                            "ErrImagePull",
+                            "ImagePullBackOff",
+                            "InvalidImageName",
+                            "CreateContainerConfigError",
+                            "CreateContainerError",
+                            "RunContainerError",
+                            "CrashLoopBackOff",
+                        }
+                        if reason in fatal_waiting_reasons:
+                            details = f"{reason}: {message}" if message else reason
+                            raise RuntimeError(
+                                f"Kubernetes Job {job_name} is blocked before start. {details}"
+                            )
                     terminated = (tool_status.get("state") or {}).get("terminated")
                     if terminated:
                         exit_code = int(terminated.get("exitCode", 1))
@@ -730,7 +773,8 @@ class KubernetesPipelineRunner:
         parsed = urlparse(endpoint)
         host = parsed.hostname or ""
         if host in {"127.0.0.1", "localhost"}:
-            netloc = parsed.netloc.replace(host, "host.docker.internal")
+            replacement_host = os.getenv("CASSIE_HOST_IP", "").strip() or "host.docker.internal"
+            netloc = parsed.netloc.replace(host, replacement_host)
             parsed = parsed._replace(netloc=netloc)
         return urlunparse(parsed)
 
@@ -787,6 +831,9 @@ def _kubectl_env() -> Dict[str, str]:
         item = item.strip()
         if item:
             no_proxy_hosts.add(item)
+    cassie_host_ip = env.get("CASSIE_HOST_IP", "").strip()
+    if cassie_host_ip:
+        no_proxy_hosts.add(cassie_host_ip)
 
     merged = ",".join(sorted(no_proxy_hosts))
     env["NO_PROXY"] = merged
@@ -796,16 +843,24 @@ def _kubectl_env() -> Dict[str, str]:
 
 def kubernetes_is_available() -> bool:
     """Return True when kubectl can reach a cluster."""
+    timeout = max(5, int(os.getenv("KUBERNETES_CLUSTER_CHECK_TIMEOUT_SECONDS", "60")))
+    probes = [
+        ["kubectl", "get", "--raw=/readyz?verbose", f"--request-timeout={timeout}s"],
+        ["kubectl", "get", "namespace", os.getenv("KUBERNETES_NAMESPACE", "default"), f"--request-timeout={timeout}s"],
+    ]
     try:
-        result = subprocess.run(
-            ["kubectl", "cluster-info"],
-            capture_output=True,
-            text=True,
-            timeout=15,
-            check=False,
-            env=_kubectl_env(),
-        )
-        return result.returncode == 0
+        for cmd in probes:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout + 5,
+                check=False,
+                env=_kubectl_env(),
+            )
+            if result.returncode == 0:
+                return True
+        return False
     except Exception:
         return False
 

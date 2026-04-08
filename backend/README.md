@@ -6,17 +6,17 @@ This folder contains the FastAPI API, job orchestration logic, and the registry-
 
 ```bash
 python -m venv backend/venv
-backend\venv\Scripts\activate
+source backend/venv/bin/activate
 pip install -r requirements.txt
 uvicorn backend.api.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 ## One-Command Docker Startup
 
-From the repo root on Windows PowerShell:
+From the repo root on Linux:
 
-```powershell
-.\scripts\start-cassie.ps1
+```bash
+./scripts/start-cassie.sh
 ```
 
 That script:
@@ -60,7 +60,7 @@ KUBERNETES_NAMESPACE=default
 KUBERNETES_IMAGE_PULL_POLICY=IfNotPresent
 KUBERNETES_JOB_TIMEOUT_SECONDS=3600
 KUBERNETES_POLL_INTERVAL_SECONDS=5
-KUBERNETES_MINIO_ENDPOINT=http://host.docker.internal:9000
+KUBERNETES_MINIO_ENDPOINT=http://<linux-host-ip>:9010
 ```
 
 ## Key Directories

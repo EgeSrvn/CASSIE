@@ -18,13 +18,13 @@ Relevant environment variables:
 - `KUBERNETES_IMAGE_PULL_POLICY=IfNotPresent`
 - `KUBERNETES_JOB_TIMEOUT_SECONDS=3600`
 - `KUBERNETES_POLL_INTERVAL_SECONDS=5`
-- `KUBERNETES_MINIO_ENDPOINT=http://host.docker.internal:9000`
+- `KUBERNETES_MINIO_ENDPOINT=http://<linux-host-ip>:9010`
 
 Recommended local setup:
 
-1. Enable Kubernetes in Docker Desktop.
-2. Make sure `kubectl config use-context docker-desktop` points to the Docker Desktop cluster.
-3. Run [`scripts/start-cassie.ps1`](/C:/Users/Eren/Desktop/CASSIE/scripts/start-cassie.ps1) once to build the tool images and start the stack.
+1. Make sure `kubectl` points at the cluster you want CASSIE to use.
+2. Ensure your kubeconfig is available under `~/.kube/config` or set `KUBE_CONFIG_DIR` explicitly.
+3. Run [`scripts/start-cassie.sh`](/home/ege/Desktop/CS491/CASSIE/scripts/start-cassie.sh) once to build the tool images and start the stack.
 4. Set `EXECUTION_BACKEND=kubernetes` or leave `auto` to prefer Kubernetes when available.
 
 ## Tracking Pipeline Runs
@@ -37,8 +37,7 @@ You can track CASSIE pipeline stages in three ways:
    Open the Kubernetes view and watch the namespace where CASSIE submits Jobs.
 3. In the terminal:
 
-```powershell
-kubectl config use-context docker-desktop
+```bash
 kubectl get jobs -n default
 kubectl get pods -n default
 kubectl logs job/<cassie-job-name> -n default
@@ -53,7 +52,7 @@ CASSIE labels Jobs with:
 
 Example:
 
-```powershell
+```bash
 kubectl get jobs -n default -l cassie/job-id=12
 kubectl get pods -n default -l cassie/job-id=12
 ```

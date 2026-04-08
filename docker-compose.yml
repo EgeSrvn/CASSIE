@@ -69,6 +69,7 @@ services:
       KUBERNETES_JOB_TIMEOUT_SECONDS: ${KUBERNETES_JOB_TIMEOUT_SECONDS:-3600}
       KUBERNETES_POLL_INTERVAL_SECONDS: ${KUBERNETES_POLL_INTERVAL_SECONDS:-5}
       KUBERNETES_MINIO_ENDPOINT: ${KUBERNETES_MINIO_ENDPOINT:-http://host.docker.internal:9010}
+      CASSIE_HOST_IP: ${CASSIE_HOST_IP:-}
       KUBECONFIG: /root/.kube/config
       HTTP_PROXY: ""
       HTTPS_PROXY: ""
@@ -81,7 +82,9 @@ services:
       - "8000:8000"
     volumes:
       - ${DOCKER_SOCK_PATH:-/var/run/docker.sock}:/var/run/docker.sock
-      - ${KUBE_CONFIG_DIR}:/root/.kube:ro
+      - ${KUBE_CONFIG_DIR:-${HOME}/.kube}:/root/.kube:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - cassie_internal
 
