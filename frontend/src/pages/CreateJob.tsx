@@ -297,6 +297,26 @@ export default function CreateJob() {
     return null
   }
 
+  const isMappedFileId = (fileId: unknown): fileId is number => (
+    typeof fileId === 'number' && Number.isFinite(fileId)
+  )
+
+  const getPipelineRequirementKey = (req: PipelineRequirement) => `${req.type}:${req.label}`
+
+  const getPipelineRequirementTools = (req: PipelineRequirement): string[] => {
+    if (req.used_by && req.used_by.length > 0) return req.used_by
+
+    if (req.type === 'forward_reads' || req.type === 'reverse_reads') return ['SPAdes']
+    if (req.type === 'assembly' || req.type === 'reference') return ['QUAST']
+    if (req.type === 'reads') {
+      const tools: string[] = []
+      if (pipelineRequirements?.has_fastqc) tools.push('FastQC')
+      if (pipelineRequirements?.has_genomescope2) tools.push('GenomeScope2')
+      return tools.length > 0 ? tools : ['Read-based tools']
+    }
+    return ['Selected pipeline']
+  }
+
   const getCombinedSelectableFiles = (): Array<FileItem & { folderPath?: string }> => {
     const libraryFiles = flattenFiles(dataFileTree)
     const pendingFilesAsItems: Array<FileItem & { folderPath?: string }> = pendingLocalFiles.map(file => ({
@@ -396,13 +416,13 @@ export default function CreateJob() {
     if (selectionMode === 'pipeline' && pipelineRequirements) {
       // Use mapped files from requirements
       uploadedFileIds = pipelineRequirements.input_requirements
-        .map(req => fileMappings[req.type])
-        .filter(id => id > 0)
+        .map(req => fileMappings[getPipelineRequirementKey(req)])
+        .filter(isMappedFileId)
       
       // Validate that all pipeline requirements are mapped
       if (pipelineRequirements.input_requirements.length > 0) {
         const missingRequirements = pipelineRequirements.input_requirements.filter(
-          req => !fileMappings[req.type] || fileMappings[req.type] <= 0
+          req => !isMappedFileId(fileMappings[getPipelineRequirementKey(req)])
         )
         if (missingRequirements.length > 0) {
           setError(`Please map files for all required inputs: ${missingRequirements.map(r => r.label).join(', ')}`)
@@ -689,7 +709,9 @@ export default function CreateJob() {
                     const combinedFiles = getCombinedSelectableFiles()
                     
                     return pipelineRequirements.input_requirements.map((req: PipelineRequirement) => {
-                      const mappedFileId = fileMappings[req.type]
+                      const requirementKey = getPipelineRequirementKey(req)
+                      const mappedFileId = fileMappings[requirementKey]
+                      const toolNames = getPipelineRequirementTools(req)
                       // Filter files that match the requirement format
                       const compatibleFiles = combinedFiles.filter(file => 
                         req.formats.some(format => 
@@ -699,13 +721,16 @@ export default function CreateJob() {
                       )
                       
                       return (
-                        <div key={req.type} style={{ marginBottom: '1.5rem' }}>
+                        <div key={requirementKey} style={{ marginBottom: '1.5rem' }}>
                           <div style={{ marginBottom: '0.75rem' }}>
                             <strong>{req.label}</strong>
                             <span style={{ marginLeft: '0.5rem', color: '#666', fontSize: '0.875rem' }}>
                               ({req.formats.join(', ').toUpperCase()})
                             </span>
-                            {mappedFileId && (
+                            <span style={{ marginLeft: '0.5rem', color: '#475569', fontSize: '0.875rem' }}>
+                              Used by: {toolNames.join(', ')}
+                            </span>
+                            {isMappedFileId(mappedFileId) && (
                               <span style={{ marginLeft: '0.5rem', color: '#16a34a', fontSize: '0.875rem', fontWeight: '500' }}>
                                 ✓ File selected
                               </span>
@@ -731,7 +756,7 @@ export default function CreateJob() {
                                   <button
                                     key={file.id}
                                     type="button"
-                                    onClick={() => handleFileMapping(req.type, file.id)}
+                                    onClick={() => handleFileMapping(requirementKey, file.id)}
                                     disabled={creating}
                                     style={{
                                       padding: '0.5rem 1rem',

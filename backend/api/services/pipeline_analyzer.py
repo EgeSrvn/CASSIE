@@ -137,7 +137,22 @@ def analyze_pipeline_requirements(pipeline: PipelineInDB) -> Dict[str, Any]:
         req_key = (req["type"], req["label"])
         if req_key not in seen:
             seen.add(req_key)
-            unique_requirements.append(req)
+            req_copy = dict(req)
+            req_type = req_copy.get("type")
+            if req_type in {"forward_reads", "reverse_reads"}:
+                req_copy["used_by"] = ["SPAdes"]
+            elif req_type in {"assembly", "reference"}:
+                req_copy["used_by"] = ["QUAST"]
+            elif req_type == "reads":
+                used_by = []
+                if "FASTQC" in tools_in_pipeline:
+                    used_by.append("FastQC")
+                if "GENOMESCOPE2" in tools_in_pipeline:
+                    used_by.append("GenomeScope2")
+                req_copy["used_by"] = used_by or ["Read-based tools"]
+            else:
+                req_copy["used_by"] = ["Selected pipeline"]
+            unique_requirements.append(req_copy)
     
     return {
         "input_requirements": unique_requirements,

@@ -3,7 +3,12 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { getJob, Job, JobExecution, executeJob, getJobExecutions } from '../services/jobService'
 import { getFiles, File, downloadFile, downloadJobOutputsZip, getFileViewUrl } from '../services/fileService'
 import { getPipelineRequirements, PipelineRequirements } from '../services/pipelineService'
-import { getJobUploadStatus, JobUploadStatus, subscribeToJobUploadStatus } from '../services/pendingJobUploadService'
+import {
+  getJobUploadStatus,
+  JobUploadStatus,
+  startPendingJobUploadProcessor,
+  subscribeToJobUploadStatus
+} from '../services/pendingJobUploadService'
 import Navigation from '../components/Navigation'
 import '../styles/globals.css'
 
@@ -129,6 +134,7 @@ export default function JobDetails() {
 
     const numericJobId = parseInt(jobId)
     setJobUploadStatus(getJobUploadStatus(numericJobId))
+    void startPendingJobUploadProcessor()
 
     return subscribeToJobUploadStatus((changedJobId, status) => {
       if (changedJobId !== numericJobId) return
@@ -358,6 +364,19 @@ export default function JobDetails() {
     return `Tool: ${toolName}`
   }
 
+  const getPipelineRequirementTools = (req: { type: string; used_by?: string[] }): string[] => {
+    if (req.used_by && req.used_by.length > 0) return req.used_by
+    if (req.type === 'forward_reads' || req.type === 'reverse_reads') return ['SPAdes']
+    if (req.type === 'assembly' || req.type === 'reference') return ['QUAST']
+    if (req.type === 'reads') {
+      const tools: string[] = []
+      if (pipelineRequirements?.has_fastqc) tools.push('FastQC')
+      if (pipelineRequirements?.has_genomescope2) tools.push('GenomeScope2')
+      return tools.length > 0 ? tools : ['Read-based tools']
+    }
+    return ['Selected pipeline']
+  }
+
   if (loading) {
     return (
       <div className="page-container">
@@ -454,36 +473,40 @@ export default function JobDetails() {
                       fontWeight: 600
                     }}
                   >
-                    {jobUploadStatus.stage === 'starting' ? 'Starting job' : 'Uploading files'}
+                    {jobUploadStatus.stage === 'starting'
+                      ? 'Starting job'
+                      : `Uploading files (${jobUploadStatus.uploadedFiles}/${jobUploadStatus.totalFiles})`}
                   </span>
                 )}
                 {job.status === 'pending' && (
                   <>
-                    <button
-                      onClick={async () => {
-                        if (!jobId) return
-                        try {
-                          setExecuting(true)
-                          setError('')
-                          await executeJob(parseInt(jobId))
-                          await loadJob()
-                          await loadFiles() // Refresh files after execution
-                          await loadExecutions()
-                          alert('Job execution started successfully!')
-                        } catch (err: any) {
-                          setError(err.message || 'Failed to execute job')
-                        } finally {
-                          setExecuting(false)
-                        }
-                      }}
-                      disabled={executing || !canExecute}
-                      className="btn-primary"
-                      style={{ marginLeft: '10px' }}
-                      title={getExecuteButtonMessage() || undefined}
-                    >
-                      {jobUploadStatus ? 'Preparing job...' : executing ? 'Executing...' : 'Execute Job'}
-                    </button>
-                    {!canExecute && getExecuteButtonMessage() && (
+                    {!jobUploadStatus && (
+                      <button
+                        onClick={async () => {
+                          if (!jobId) return
+                          try {
+                            setExecuting(true)
+                            setError('')
+                            await executeJob(parseInt(jobId))
+                            await loadJob()
+                            await loadFiles() // Refresh files after execution
+                            await loadExecutions()
+                            alert('Job execution started successfully!')
+                          } catch (err: any) {
+                            setError(err.message || 'Failed to execute job')
+                          } finally {
+                            setExecuting(false)
+                          }
+                        }}
+                        disabled={executing || !canExecute}
+                        className="btn-primary"
+                        style={{ marginLeft: '10px' }}
+                        title={getExecuteButtonMessage() || undefined}
+                      >
+                        {executing ? 'Executing...' : 'Execute Job'}
+                      </button>
+                    )}
+                    {!jobUploadStatus && !canExecute && getExecuteButtonMessage() && (
                       <span style={{ marginLeft: '10px', color: '#f59e0b', fontSize: '0.875rem' }}>
                         {getExecuteButtonMessage()}
                       </span>
@@ -494,20 +517,9 @@ export default function JobDetails() {
               <div><strong>Workflow ID:</strong> {job.workflow_id}</div>
               <div><strong>Created:</strong> {new Date(job.created_at).toLocaleString()}</div>
               <div><strong>Updated:</strong> {new Date(job.updated_at).toLocaleString()}</div>
-              {jobUploadStatus && (
-                <div style={{ gridColumn: '1 / -1' }}>
-                  <strong>Setup Status:</strong> {jobUploadStatus.message}
-                  {jobUploadStatus.totalFiles > 0 && (
-                    <span style={{ marginLeft: '0.5rem', color: '#64748b' }}>
-                      ({jobUploadStatus.uploadedFiles}/{jobUploadStatus.totalFiles} uploaded
-                      {typeof jobUploadStatus.progress === 'number' ? `, ${jobUploadStatus.progress}% of current file` : ''})
-                    </span>
-                  )}
-                  {jobUploadStatus.error && (
-                    <span style={{ display: 'block', marginTop: '0.35rem', color: '#b91c1c' }}>
-                      {jobUploadStatus.error}
-                    </span>
-                  )}
+              {jobUploadStatus?.error && (
+                <div style={{ gridColumn: '1 / -1', color: '#b91c1c' }}>
+                  <strong>Upload error:</strong> {jobUploadStatus.error}
                 </div>
               )}
               {job.data_types && job.data_types.length > 0 && (
@@ -662,6 +674,9 @@ export default function JobDetails() {
                                 <strong>{req.label}</strong>
                                 <span style={{ marginLeft: '0.5rem', color: '#64748b', fontSize: '0.875rem' }}>
                                   ({req.formats.join(', ').toUpperCase()})
+                                </span>
+                                <span style={{ marginLeft: '0.5rem', color: '#475569', fontSize: '0.875rem' }}>
+                                  Used by: {getPipelineRequirementTools(req).join(', ')}
                                 </span>
                                 {isSatisfied && (
                                   <span style={{ marginLeft: '0.5rem', color: '#16a34a', fontSize: '0.875rem' }}>✓ Satisfied</span>

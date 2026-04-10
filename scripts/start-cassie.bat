@@ -2,6 +2,7 @@
 setlocal
 
 set "SCRIPT_DIR=%~dp0"
+echo Starting CASSIE with Minikube as the Kubernetes cluster...
 powershell -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%start-cassie.ps1"
 
 if errorlevel 1 (

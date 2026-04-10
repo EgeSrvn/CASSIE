@@ -1,5 +1,6 @@
 import { executeJob } from './jobService'
 import { uploadFile } from './fileService'
+import apiClient from './apiClient'
 
 export type PendingJobUploadFile = {
   tempId: number
@@ -28,10 +29,12 @@ export type JobUploadStatus = {
 
 type StoredUploadRecord = {
   id: string
+  schemaVersion?: number
   jobId: number
   tempId: number
   filename: string
   size_bytes: number
+  lastModified?: number
   file_format: string | null
   created_at: string
   queueOrder: number
@@ -42,6 +45,7 @@ const DB_NAME = 'cassie-pending-job-uploads'
 const DB_VERSION = 1
 const STORE_NAME = 'upload_files'
 const STATUS_STORAGE_KEY = 'cassie-pending-job-upload-status'
+const UPLOAD_RECORD_SCHEMA_VERSION = 2
 
 const listeners = new Set<(jobId: number, status: JobUploadStatus | null) => void>()
 let uploadProcessorStarted = false
@@ -181,6 +185,78 @@ const deleteUploadRecord = async (recordId: string) => {
   })
 }
 
+const deleteUploadRecordsForJob = async (jobId: number) => {
+  const records = await getUploadRecordsForJob(jobId)
+  await Promise.all(records.map(record => deleteUploadRecord(record.id)))
+}
+
+export const clearPendingJobUploads = async (jobId: number) => {
+  await deleteUploadRecordsForJob(jobId)
+  setJobUploadStatus(jobId, null)
+}
+
+const getFileFingerprint = (file: PendingJobUploadFile): string => (
+  `${file.filename}:${file.size_bytes}:${file.file.lastModified}`
+)
+
+const getRecordFingerprint = (record: StoredUploadRecord): string => (
+  `${record.filename}:${record.size_bytes}:${record.lastModified || 0}`
+)
+
+const removeDuplicateUploadRecords = async (records: StoredUploadRecord[]): Promise<StoredUploadRecord[]> => {
+  const seen = new Set<string>()
+  const uniqueRecords: StoredUploadRecord[] = []
+
+  for (const record of records) {
+    const fingerprint = getRecordFingerprint(record)
+    if (seen.has(fingerprint)) {
+      await deleteUploadRecord(record.id)
+      continue
+    }
+
+    seen.add(fingerprint)
+    uniqueRecords.push(record)
+  }
+
+  return uniqueRecords
+}
+
+const isDeletedJobUploadError = (error: any): boolean => {
+  const message = getUploadErrorMessage(error).toLowerCase()
+  return getUploadErrorStatus(error) === 404 && (
+    message.includes('job') ||
+    message.includes('not found')
+  )
+}
+
+const getUploadErrorStatus = (error: any): number | undefined => {
+  return error?.status || error?.response?.status
+}
+
+const getUploadErrorMessage = (error: any): string => {
+  const responseData = error?.response?.data
+  return String(
+    error?.message ||
+    responseData?.message ||
+    responseData?.detail ||
+    responseData?.error?.message ||
+    responseData?.error ||
+    ''
+  )
+}
+
+const queuedJobStillExists = async (jobId: number): Promise<boolean> => {
+  try {
+    await apiClient.get(`/api/jobs/${jobId}`)
+    return true
+  } catch (error: any) {
+    if (getUploadErrorStatus(error) === 404) {
+      return false
+    }
+    throw error
+  }
+}
+
 const buildUploadStatus = (
   jobId: number,
   stage: JobUploadStage,
@@ -201,7 +277,12 @@ const buildUploadStatus = (
 const resetInterruptedUploadsToQueued = async () => {
   const statuses = readStatusMap()
   const allRecords = await getAllUploadRecords()
-  const jobsWithQueuedFiles = new Set(allRecords.map(record => record.jobId))
+  const currentRecords = allRecords.filter(record => record.schemaVersion === UPLOAD_RECORD_SCHEMA_VERSION)
+  const legacyRecords = allRecords.filter(record => record.schemaVersion !== UPLOAD_RECORD_SCHEMA_VERSION)
+
+  await Promise.all(legacyRecords.map(record => deleteUploadRecord(record.id)))
+
+  const jobsWithQueuedFiles = new Set(currentRecords.map(record => record.jobId))
 
   Object.values(statuses).forEach(status => {
     if (!jobsWithQueuedFiles.has(status.jobId)) {
@@ -210,7 +291,7 @@ const resetInterruptedUploadsToQueued = async () => {
     }
 
     if (status.stage === 'uploading' || status.stage === 'starting') {
-      const remainingFiles = allRecords.filter(record => record.jobId === status.jobId)
+      const remainingFiles = currentRecords.filter(record => record.jobId === status.jobId)
       const totalFiles = Math.max(status.totalFiles, remainingFiles.length + status.uploadedFiles)
       setJobUploadStatus(
         status.jobId,
@@ -237,10 +318,41 @@ const processUploadQueue = async () => {
 
       const nextRecord = allRecords[0]
       const jobId = nextRecord.jobId
-      const jobRecords = allRecords.filter(record => record.jobId === jobId).sort((a, b) => a.queueOrder - b.queueOrder)
+      const rawJobRecords = allRecords.filter(record => record.jobId === jobId).sort((a, b) => a.queueOrder - b.queueOrder)
+      const jobRecords = await removeDuplicateUploadRecords(rawJobRecords)
+      if (jobRecords.length === 0) {
+        setJobUploadStatus(jobId, null)
+        continue
+      }
       const currentStatus = getJobUploadStatus(jobId)
       const totalFiles = currentStatus?.totalFiles || jobRecords.length
       let uploadedFiles = currentStatus?.uploadedFiles || 0
+
+      try {
+        const jobExists = await queuedJobStillExists(jobId)
+        if (!jobExists) {
+          await deleteUploadRecordsForJob(jobId)
+          setJobUploadStatus(jobId, null)
+          continue
+        }
+      } catch (error: any) {
+        setJobUploadStatus(
+          jobId,
+          buildUploadStatus(
+            jobId,
+            'failed',
+            'Could not verify job before upload',
+            totalFiles,
+            uploadedFiles,
+            {
+              error: getUploadErrorMessage(error) || 'Failed to verify job before upload',
+            }
+          )
+        )
+        return
+      }
+
+      let shouldContinueQueue = false
 
       for (const record of jobRecords) {
         const filePosition = uploadedFiles + 1
@@ -292,6 +404,13 @@ const processUploadQueue = async () => {
           await deleteUploadRecord(record.id)
           uploadedFiles += 1
         } catch (error: any) {
+          if (isDeletedJobUploadError(error)) {
+            await deleteUploadRecordsForJob(jobId)
+            setJobUploadStatus(jobId, null)
+            shouldContinueQueue = true
+            break
+          }
+
           setJobUploadStatus(
             jobId,
             buildUploadStatus(
@@ -308,6 +427,10 @@ const processUploadQueue = async () => {
           )
           return
         }
+      }
+
+      if (shouldContinueQueue) {
+        continue
       }
 
       setJobUploadStatus(
@@ -347,26 +470,40 @@ const processUploadQueue = async () => {
 }
 
 export const startPendingJobUploadProcessor = async () => {
-  if (uploadProcessorStarted || !isBrowser()) return
-  uploadProcessorStarted = true
-  await resetInterruptedUploadsToQueued()
+  if (!isBrowser()) return
+
+  if (!uploadProcessorStarted) {
+    uploadProcessorStarted = true
+    await resetInterruptedUploadsToQueued()
+  }
+
   void processUploadQueue()
 }
 
 export const enqueuePendingJobUploads = async (jobId: number, files: PendingJobUploadFile[]) => {
-  const existingRecords = await getUploadRecordsForJob(jobId)
-  const baseOrder = existingRecords.length > 0
-    ? Math.max(...existingRecords.map(record => record.queueOrder)) + 1
-    : Date.now()
+  const uniqueFiles = files.filter((file, index, allFiles) => {
+    const key = getFileFingerprint(file)
+    return allFiles.findIndex(candidate => (
+      getFileFingerprint(candidate) === key
+    )) === index
+  })
 
-  for (let index = 0; index < files.length; index++) {
-    const file = files[index]
+  // Job IDs can restart when the local database is reset, while IndexedDB survives.
+  // Clear stale browser-side records for this job ID before enqueueing the current selection.
+  await deleteUploadRecordsForJob(jobId)
+
+  const baseOrder = Date.now()
+
+  for (let index = 0; index < uniqueFiles.length; index++) {
+    const file = uniqueFiles[index]
     await putUploadRecord({
-      id: `${jobId}:${file.tempId}`,
+      id: `${jobId}:${encodeURIComponent(getFileFingerprint(file))}`,
+      schemaVersion: UPLOAD_RECORD_SCHEMA_VERSION,
       jobId,
       tempId: file.tempId,
       filename: file.filename,
       size_bytes: file.size_bytes,
+      lastModified: file.file.lastModified,
       file_format: file.file_format,
       created_at: file.created_at,
       queueOrder: baseOrder + index,
@@ -379,12 +516,11 @@ export const enqueuePendingJobUploads = async (jobId: number, files: PendingJobU
     buildUploadStatus(
       jobId,
       'queued',
-      `Waiting to upload ${files.length} selected file${files.length !== 1 ? 's' : ''}...`,
-      files.length,
+      `Waiting to upload ${uniqueFiles.length} selected file${uniqueFiles.length !== 1 ? 's' : ''}...`,
+      uniqueFiles.length,
       0
     )
   )
 
   await startPendingJobUploadProcessor()
-  void processUploadQueue()
 }

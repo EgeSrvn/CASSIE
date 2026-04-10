@@ -27,8 +27,8 @@ TOOL_REGISTRY: List[Dict[str, Any]] = [
         "input_requirements": [
             {
                 "type": "reads",
-                "label": "Reads (FASTQ/FASTA)",
-                "formats": ["fastq", "fasta"],
+                "label": "Reads (FASTQ)",
+                "formats": ["fastq"],
             }
         ],
         "docker": {

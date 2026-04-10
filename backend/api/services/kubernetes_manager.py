@@ -47,6 +47,7 @@ class KubernetesPipelineRunner:
     def __init__(self):
         self._config = get_config()
         self._logger = get_logger(__name__)
+        self._resource_cache: Optional[Tuple[float, Dict[str, int]]] = None
 
     async def start_pipeline(
         self,
@@ -167,11 +168,12 @@ class KubernetesPipelineRunner:
                         ),
                     )
                 except Exception as exc:
+                    public_error = self._public_failure_message(str(exc), tool_name=tool.get("name"))
                     stage_info["status"] = "failed"
                     stage_info["completed_at"] = datetime.now().isoformat()
-                    stage_info["error"] = str(exc)
+                    stage_info["error"] = public_error
                     self._persist_execution_state(execution_id, parameters_used, tool_versions=tool_versions)
-                    raise
+                    raise RuntimeError(public_error) from exc
 
                 stage_info["status"] = "completed"
                 stage_info["completed_at"] = datetime.now().isoformat()
@@ -194,6 +196,7 @@ class KubernetesPipelineRunner:
 
             update_job(job_id, user_id, JobUpdate(status=JobStatus.COMPLETED))
         except Exception as exc:
+            public_error = self._public_failure_message(str(exc))
             self._logger.error(
                 f"Kubernetes pipeline execution failed for job {job_id}, execution {execution_id}: {exc}",
                 exc_info=True,
@@ -202,7 +205,7 @@ class KubernetesPipelineRunner:
                 execution_id,
                 JobExecutionUpdate(
                     status=ExecutionStatus.FAILED,
-                    error_message=str(exc),
+                    error_message=public_error,
                     completed_at=datetime.now(),
                     parameters_used=parameters_used,
                 ),
@@ -210,6 +213,99 @@ class KubernetesPipelineRunner:
             from backend.api.models.job_model import JobUpdate
 
             update_job(job_id, user_id, JobUpdate(status=JobStatus.FAILED))
+
+    def _public_failure_message(self, raw_error: str, tool_name: Optional[str] = None) -> str:
+        """Convert raw Kubernetes/tool output into a short user-facing cause."""
+        error_text = raw_error or ""
+        normalized = error_text.lower()
+        prefix = f"{tool_name} failed: " if tool_name else "Pipeline failed: "
+        detail = self._extract_failure_detail(error_text)
+
+        storage_markers = (
+            "no space left on device",
+            "ephemeral-storage",
+            "ephemeral local storage",
+            "diskpressure",
+            "disk pressure",
+            "evicted",
+            "emptydir",
+            "exceeded its local ephemeral storage limit",
+            "insufficient ephemeral-storage",
+        )
+        if any(marker in normalized for marker in storage_markers):
+            return (
+                f"{prefix}temporary workspace storage was exhausted. "
+                "Increase the Kubernetes/Minikube disk space or raise CASSIE_TOOL_STORAGE_MIB "
+                "or the tool-specific *_STORAGE_MIB value, then retry the job."
+                f"{detail}"
+            )
+
+        memory_markers = (
+            "oomkilled",
+            "out of memory",
+            "cannot allocate memory",
+            "memory limit",
+            "exit code 137",
+            "err code: -9",
+            "exit status 137",
+            "killed",
+        )
+        if any(marker in normalized for marker in memory_markers):
+            return (
+                f"{prefix}memory was exhausted inside the Kubernetes pod. "
+                "CASSIE will use the low-resource tool profile when possible, but this dataset may need "
+                "more Minikube/Docker memory for the selected tool."
+                f"{detail}"
+            )
+
+        image_markers = ("imagepullbackoff", "errimagepull", "invalidimagename")
+        if any(marker in normalized for marker in image_markers):
+            return (
+                f"{prefix}the Kubernetes pod could not start because the tool image was not available. "
+                "Run the CASSIE start script again so tool images are built and loaded into Minikube."
+                f"{detail}"
+            )
+
+        cluster_markers = ("cluster is not reachable", "connection refused", "unable to connect to the server")
+        if any(marker in normalized for marker in cluster_markers):
+            return (
+                f"{prefix}the backend could not reach the Kubernetes cluster. "
+                "Start CASSIE with the start script so Minikube and the backend kubeconfig are prepared."
+                f"{detail}"
+            )
+
+        first_line = self._first_meaningful_line(error_text)
+        if first_line:
+            return f"{prefix}{first_line}"
+        return f"{prefix}an unknown error occurred."
+
+    def _extract_failure_detail(self, raw_error: str) -> str:
+        line = self._first_meaningful_line(raw_error)
+        if not line:
+            return ""
+        return f" Detail: {line}"
+
+    def _first_meaningful_line(self, raw_error: str) -> str:
+        skip_fragments = (
+            "traceback",
+            "file \"",
+            "runtimeerror:",
+            "kubernetes job cassie-",
+            "started:",
+            "completed:",
+            "current progress:",
+        )
+        for raw_line in raw_error.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            lower = line.lower()
+            if any(fragment in lower for fragment in skip_fragments):
+                continue
+            if len(line) > 240:
+                line = f"{line[:237]}..."
+            return line
+        return ""
 
     def _ensure_cluster_available(self) -> None:
         timeout = max(5, self._config.kubernetes.cluster_check_timeout_seconds)
@@ -289,6 +385,7 @@ class KubernetesPipelineRunner:
                 {
                     "filename": file_record.filename,
                     "s3_key": file_record.s3_key,
+                    "size_bytes": file_record.size_bytes or 0,
                     "source": "job-input",
                     "producer_tool_id": None,
                 }
@@ -368,7 +465,8 @@ class KubernetesPipelineRunner:
         minio_client = get_minio_client()
         bucket_name = minio_client.ensure_user_bucket(user_id=user_id)
         download_script = self._build_init_download_script(bucket_name, current_inputs)
-        tool_script = self._build_tool_script(tool, current_inputs)
+        tool_plan = self._plan_tool_resources(tool["id"], current_inputs)
+        tool_script = self._build_tool_script(tool, current_inputs, tool_plan)
 
         labels = {
             "app.kubernetes.io/name": "cassie-pipeline",
@@ -393,7 +491,12 @@ class KubernetesPipelineRunner:
                     "metadata": {"labels": labels},
                     "spec": {
                         "restartPolicy": "Never",
-                        "volumes": [{"name": "workspace", "emptyDir": {}}],
+                        "volumes": [
+                            {
+                                "name": "workspace",
+                                "emptyDir": {"sizeLimit": f'{tool_plan["storage_limit_mib"]}Mi'},
+                            }
+                        ],
                         "initContainers": [
                             {
                                 "name": "fetch-inputs",
@@ -410,6 +513,18 @@ class KubernetesPipelineRunner:
                                         "value": self._cluster_visible_minio_endpoint(config.minio.endpoint),
                                     },
                                 ],
+                                "resources": {
+                                    "requests": {
+                                        "cpu": "50m",
+                                        "memory": "128Mi",
+                                        "ephemeral-storage": f'{tool_plan["init_storage_request_mib"]}Mi',
+                                    },
+                                    "limits": {
+                                        "cpu": "500m",
+                                        "memory": "512Mi",
+                                        "ephemeral-storage": f'{tool_plan["storage_limit_mib"]}Mi',
+                                    },
+                                },
                                 "volumeMounts": [{"name": "workspace", "mountPath": "/workspace"}],
                             }
                         ],
@@ -420,6 +535,7 @@ class KubernetesPipelineRunner:
                                 "imagePullPolicy": config.kubernetes.image_pull_policy,
                                 "command": ["bash", "-lc"],
                                 "args": [tool_script],
+                                "resources": tool_plan["resources"],
                                 "volumeMounts": [{"name": "workspace", "mountPath": "/workspace"}],
                             },
                             {
@@ -428,6 +544,18 @@ class KubernetesPipelineRunner:
                                 "imagePullPolicy": "IfNotPresent",
                                 "command": ["sh", "-lc"],
                                 "args": ["while true; do sleep 30; done"],
+                                "resources": {
+                                    "requests": {
+                                        "cpu": "10m",
+                                        "memory": "32Mi",
+                                        "ephemeral-storage": "64Mi",
+                                    },
+                                    "limits": {
+                                        "cpu": "100m",
+                                        "memory": "128Mi",
+                                        "ephemeral-storage": "512Mi",
+                                    },
+                                },
                                 "volumeMounts": [{"name": "workspace", "mountPath": "/workspace"}],
                             },
                         ],
@@ -449,21 +577,34 @@ class KubernetesPipelineRunner:
             )
         return "\n".join(lines)
 
-    def _build_tool_script(self, tool: Dict[str, Any], current_inputs: List[Dict[str, Any]]) -> str:
+    def _build_tool_script(
+        self,
+        tool: Dict[str, Any],
+        current_inputs: List[Dict[str, Any]],
+        tool_plan: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        tool_plan = tool_plan or self._plan_tool_resources(tool["id"], current_inputs)
         classified = self._classify_inputs(current_inputs)
         input_dir = "/workspace/input"
         output_dir = "/workspace/output"
+        profile_note = (
+            f'echo "CASSIE resource profile: {tool_plan["profile"]}; '
+            f'threads={tool_plan["threads"]}; memory={tool_plan["memory_gb"]}G; '
+            f'storage={tool_plan["storage_limit_mib"]}Mi; '
+            f'available={tool_plan["available_cpu_millis"]}m CPU/{tool_plan["available_memory_mib"]}Mi memory"'
+        )
 
         if tool["id"] == "FASTQC":
-            reads = classified["reads_like"]
+            reads = classified["fastq"]
             if not reads:
-                raise ValueError("FastQC requires at least one FASTQ/FASTA input file")
+                raise ValueError("FastQC requires at least one FASTQ input file. FASTA files are not supported by FastQC.")
             input_file = os.path.basename(reads[0]["filename"])
             return "\n".join(
                 [
                     "set -euo pipefail",
+                    profile_note,
                     f"mkdir -p {output_dir}",
-                    f'fastqc -o {output_dir} "{input_dir}/{input_file}"',
+                    f'fastqc --threads {tool_plan["threads"]} -o {output_dir} "{input_dir}/{input_file}"',
                 ]
             )
 
@@ -473,23 +614,40 @@ class KubernetesPipelineRunner:
                 raise ValueError("SPAdes requires paired-end reads (at least two FASTQ files)")
             r1 = os.path.basename(fastq_reads[0]["filename"])
             r2 = os.path.basename(fastq_reads[1]["filename"])
+            threads = tool_plan["threads"]
+            memory_gb = tool_plan["memory_gb"]
+            low_resource = bool(tool_plan["low_resource"])
+            low_resource_flag = " --only-assembler" if low_resource else ""
+            kmers = str(tool_plan.get("kmers", "") or "").strip()
+            kmers_flag = f" -k {kmers}" if kmers and re.fullmatch(r"\d+(,\d+)*", kmers) else ""
             return "\n".join(
                 [
                     "set -euo pipefail",
+                    profile_note,
+                    "export TMPDIR=/workspace/tmp",
+                    "mkdir -p /workspace/tmp",
                     f"mkdir -p {output_dir}/spades_out",
-                    f'spades.py -1 "{input_dir}/{r1}" -2 "{input_dir}/{r2}" -o "{output_dir}/spades_out"',
+                    (
+                        f'spades.py --threads {threads} --memory {memory_gb}{low_resource_flag}{kmers_flag} '
+                        f'--tmp-dir /workspace/tmp '
+                        f'-1 "{input_dir}/{r1}" -2 "{input_dir}/{r2}" '
+                        f'-o "{output_dir}/spades_out"'
+                    ),
                 ]
             )
 
         if tool["id"] == "QUAST":
             assembly, reference = self._resolve_quast_inputs(classified["fasta"])
+            threads = tool_plan["threads"]
+            memory_flag = " --memory-efficient" if tool_plan["low_resource"] else ""
             return "\n".join(
                 [
                     "set -euo pipefail",
+                    profile_note,
                     f"mkdir -p {output_dir}/quast_out",
                     f'quast.py "{input_dir}/{os.path.basename(assembly["filename"])}" '
                     f'-r "{input_dir}/{os.path.basename(reference["filename"])}" '
-                    f'-o "{output_dir}/quast_out"',
+                    f'-t {threads}{memory_flag} -o "{output_dir}/quast_out"',
                 ]
             )
 
@@ -497,32 +655,412 @@ class KubernetesPipelineRunner:
             fastq_reads = self._select_fastq_inputs(classified["fastq"], required=2)
             if not fastq_reads:
                 raise ValueError("GenomeScope2 requires FASTQ reads")
+            threads = tool_plan["threads"]
             inputs = [os.path.basename(item["filename"]) for item in fastq_reads[:2]]
-            gzip_commands: List[str] = []
-            zcat_inputs: List[str] = []
-            for index, input_name in enumerate(inputs, start=1):
+            stream_commands: List[str] = []
+            for input_name in inputs:
                 src = f"{input_dir}/{input_name}"
-                gz = f"{input_dir}/reads_{index}.fastq.gz"
-                if input_name.endswith(".gz"):
-                    gzip_commands.append(f'cp "{src}" "{gz}"')
+                if input_name.lower().endswith(".gz"):
+                    stream_commands.append(f'zcat "{src}"')
                 else:
-                    gzip_commands.append(f'gzip -c "{src}" > "{gz}"')
-                zcat_inputs.append(gz)
+                    stream_commands.append(f'cat "{src}"')
 
-            zcat_expr = " ".join(f'"{path}"' for path in zcat_inputs)
+            stream_expr = "; ".join(stream_commands)
+            jellyfish_size = tool_plan.get("jellyfish_size", "50M")
             gs_out = f"{output_dir}/genomescope2_out"
             return "\n".join(
                 [
                     "set -euo pipefail",
+                    profile_note,
                     f"mkdir -p {gs_out}",
-                    *gzip_commands,
-                    f'jellyfish count -C -m 21 -s 100M -t 4 <(zcat {zcat_expr}) -o "{gs_out}/reads.jf"',
+                    (
+                        f'jellyfish count -C -m 21 -s {jellyfish_size} -t {threads} '
+                        f'<({stream_expr}) -o "{gs_out}/reads.jf"'
+                    ),
                     f'jellyfish histo "{gs_out}/reads.jf" > "{gs_out}/reads.histo"',
                     f'Rscript /opt/genomescope2.0/genomescope.R -i "{gs_out}/reads.histo" -o "{gs_out}" -k 21 -p 1',
                 ]
             )
 
         raise ValueError(f"Kubernetes runner does not yet support tool {tool['id']}")
+
+    def _tool_threads(self, tool_id: str, default: int) -> int:
+        raw_value = os.getenv(f"{tool_id}_THREADS", os.getenv("CASSIE_TOOL_THREADS", str(default))).strip()
+        try:
+            return max(1, int(raw_value))
+        except ValueError:
+            return default
+
+    def _tool_memory_gb(self, tool_id: str, default: int) -> int:
+        raw_value = os.getenv(f"{tool_id}_MEMORY_GB", os.getenv("CASSIE_TOOL_MEMORY_GB", str(default))).strip()
+        try:
+            return max(1, int(raw_value))
+        except ValueError:
+            return default
+
+    def _tool_flag(self, env_name: str, default: bool) -> bool:
+        raw_value = os.getenv(env_name)
+        if raw_value is None:
+            return default
+        return raw_value.strip().lower() in {"1", "true", "yes", "on"}
+
+    def _plan_tool_resources(
+        self,
+        tool_id: str,
+        current_inputs: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        """Choose the strongest safe tool profile for the current cluster."""
+        capacity = self._detect_effective_cluster_capacity()
+        cpu_millis = max(250, capacity["cpu_millis"])
+        memory_mib = max(768, capacity["memory_mib"])
+        tool_memory_budget_mib = max(512, min(int(memory_mib * 0.88), memory_mib - 256) - 128)
+        whole_cpus = max(1, cpu_millis // 1000)
+        resource_mode = os.getenv("CASSIE_RESOURCE_MODE", "adaptive").strip().lower()
+        input_size_mib = self._estimate_input_size_mib(current_inputs or [])
+
+        if tool_id == "SPADES":
+            forced_low_resource = self._env_bool_or_none("SPADES_LOW_RESOURCE")
+            if resource_mode == "conservative":
+                low_resource = True
+            elif resource_mode == "full":
+                low_resource = False
+            elif forced_low_resource is not None:
+                low_resource = forced_low_resource
+            else:
+                low_resource = memory_mib < 6144 or whole_cpus < 4
+
+            default_threads = 1 if low_resource else min(4, whole_cpus)
+            default_memory_gb = 2 if low_resource else min(12, max(4, (tool_memory_budget_mib - 512) // 1024))
+            default_kmers = "21" if low_resource else ""
+            profile = "low-resource" if low_resource else "full"
+            memory_limit = min(tool_memory_budget_mib, max(1024, default_memory_gb * 1024 + 512))
+
+            if self._tool_flag("SPADES_REQUIRE_FULL", default=False) and low_resource:
+                raise RuntimeError(
+                    "SPAdes full correction mode does not fit the currently detected Kubernetes resources "
+                    f"({cpu_millis}m CPU, {memory_mib}Mi memory). Increase Minikube/Docker resources or "
+                    "unset SPADES_REQUIRE_FULL to allow low-resource assembly mode."
+                )
+
+            threads = self._tool_threads(tool_id, default_threads)
+            memory_gb = min(self._tool_memory_gb(tool_id, default_memory_gb), max(1, memory_limit // 1024))
+            kmers = self._env_value_or_default("SPADES_KMERS", default_kmers)
+
+            return self._resource_plan(
+                tool_id=tool_id,
+                profile=profile,
+                threads=threads,
+                memory_gb=memory_gb,
+                memory_limit_mib=memory_limit,
+                cpu_limit_millis=min(max(1000, threads * 1000), max(1000, cpu_millis)),
+                low_resource=low_resource,
+                kmers=kmers,
+                input_size_mib=input_size_mib,
+                capacity=capacity,
+            )
+
+        if tool_id == "GENOMESCOPE2":
+            default_threads = min(2, whole_cpus) if memory_mib >= 4096 else 1
+            memory_limit = min(tool_memory_budget_mib, 2048 if memory_mib >= 3072 else 1536)
+            return self._resource_plan(
+                tool_id=tool_id,
+                profile="adaptive",
+                threads=self._tool_threads(tool_id, default_threads),
+                memory_gb=max(1, memory_limit // 1024),
+                memory_limit_mib=memory_limit,
+                cpu_limit_millis=min(max(1000, default_threads * 1000), max(1000, cpu_millis)),
+                low_resource=memory_mib < 4096,
+                kmers="",
+                input_size_mib=input_size_mib,
+                capacity=capacity,
+                extra={"jellyfish_size": self._genomescope_hash_size(memory_limit)},
+            )
+
+        if tool_id == "QUAST":
+            default_threads = min(2, whole_cpus) if memory_mib >= 4096 else 1
+            memory_limit = min(tool_memory_budget_mib, 2048 if memory_mib >= 4096 else 1500)
+            return self._resource_plan(
+                tool_id=tool_id,
+                profile="adaptive",
+                threads=self._tool_threads(tool_id, default_threads),
+                memory_gb=max(1, memory_limit // 1024),
+                memory_limit_mib=memory_limit,
+                cpu_limit_millis=min(max(1000, default_threads * 1000), max(1000, cpu_millis)),
+                low_resource=memory_mib < 4096,
+                kmers="",
+                input_size_mib=input_size_mib,
+                capacity=capacity,
+            )
+
+        default_threads = min(2, whole_cpus) if memory_mib >= 4096 else 1
+        memory_limit = min(tool_memory_budget_mib, 1024)
+        return self._resource_plan(
+            tool_id=tool_id,
+            profile="adaptive",
+            threads=self._tool_threads(tool_id, default_threads),
+            memory_gb=max(1, memory_limit // 1024),
+            memory_limit_mib=memory_limit,
+            cpu_limit_millis=min(max(1000, default_threads * 1000), max(1000, cpu_millis)),
+            low_resource=False,
+            kmers="",
+            input_size_mib=input_size_mib,
+            capacity=capacity,
+        )
+
+    def _resource_plan(
+        self,
+        tool_id: str,
+        profile: str,
+        threads: int,
+        memory_gb: int,
+        memory_limit_mib: int,
+        cpu_limit_millis: int,
+        low_resource: bool,
+        kmers: str,
+        input_size_mib: int,
+        capacity: Dict[str, int],
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        prefix = tool_id.upper()
+        storage_limit_mib = self._tool_storage_limit_mib(
+            tool_id=tool_id,
+            input_size_mib=input_size_mib,
+            low_resource=low_resource,
+            capacity=capacity,
+        )
+        storage_request_mib = min(
+            storage_limit_mib,
+            max(256, input_size_mib + (512 if tool_id == "SPADES" else 256)),
+        )
+        init_storage_request_mib = min(storage_limit_mib, max(128, input_size_mib + 128))
+        cpu_request = self._env_value_or_default(
+            f"{prefix}_CPU_REQUEST",
+            "100m" if tool_id in {"FASTQC", "QUAST"} else "250m",
+        )
+        memory_request = self._env_value_or_default(
+            f"{prefix}_MEMORY_REQUEST",
+            "256Mi" if tool_id in {"FASTQC", "QUAST"} else "512Mi",
+        )
+        cpu_limit = self._env_value_or_default(f"{prefix}_CPU_LIMIT", self._format_cpu_quantity(cpu_limit_millis))
+        memory_limit = self._env_value_or_default(f"{prefix}_MEMORY_LIMIT", f"{memory_limit_mib}Mi")
+        storage_limit = self._env_value_or_default(f"{prefix}_STORAGE_LIMIT", f"{storage_limit_mib}Mi")
+
+        plan = {
+            "profile": profile,
+            "threads": max(1, threads),
+            "memory_gb": max(1, memory_gb),
+            "low_resource": low_resource,
+            "kmers": kmers,
+            "input_size_mib": input_size_mib,
+            "storage_limit_mib": storage_limit_mib,
+            "storage_request_mib": storage_request_mib,
+            "init_storage_request_mib": init_storage_request_mib,
+            "storage_constrained": storage_limit_mib < self._estimated_required_storage_mib(
+                tool_id, input_size_mib, low_resource
+            ),
+            "available_cpu_millis": capacity["cpu_millis"],
+            "available_memory_mib": capacity["memory_mib"],
+            "available_storage_mib": capacity.get("storage_mib", 0),
+            "resources": {
+                "requests": {
+                    "cpu": cpu_request,
+                    "memory": memory_request,
+                    "ephemeral-storage": f"{storage_request_mib}Mi",
+                },
+                "limits": {
+                    "cpu": cpu_limit,
+                    "memory": memory_limit,
+                    "ephemeral-storage": storage_limit,
+                },
+            },
+        }
+        if extra:
+            plan.update(extra)
+        return plan
+
+    def _estimate_input_size_mib(self, current_inputs: List[Dict[str, Any]]) -> int:
+        total_bytes = 0
+        for artifact in current_inputs:
+            try:
+                total_bytes += int(artifact.get("size_bytes") or 0)
+            except (TypeError, ValueError):
+                continue
+        if total_bytes <= 0:
+            return 0
+        return max(1, (total_bytes + (1024 * 1024) - 1) // (1024 * 1024))
+
+    def _estimated_required_storage_mib(self, tool_id: str, input_size_mib: int, low_resource: bool) -> int:
+        padded_input = max(256, input_size_mib)
+        if tool_id == "SPADES":
+            multiplier = 3 if low_resource else 5
+            return max(4096, padded_input * multiplier + 2048)
+        if tool_id == "GENOMESCOPE2":
+            return max(2048, padded_input + 2048)
+        if tool_id == "QUAST":
+            return max(1536, padded_input * 2 + 1024)
+        return max(1024, padded_input + 1024)
+
+    def _tool_storage_limit_mib(
+        self,
+        tool_id: str,
+        input_size_mib: int,
+        low_resource: bool,
+        capacity: Dict[str, int],
+    ) -> int:
+        prefix = tool_id.upper()
+        explicit_limit = self._env_int(f"{prefix}_STORAGE_MIB") or self._env_int("CASSIE_TOOL_STORAGE_MIB")
+        if explicit_limit > 0:
+            return explicit_limit
+
+        required_mib = self._estimated_required_storage_mib(tool_id, input_size_mib, low_resource)
+        cluster_storage_mib = capacity.get("storage_mib", 0)
+        if cluster_storage_mib <= 0:
+            return max(required_mib, 4096)
+
+        reserve_mib = self._env_int("CASSIE_CLUSTER_STORAGE_RESERVE_MIB") or 2048
+        max_workspace_mib = max(1024, cluster_storage_mib - reserve_mib)
+        return min(max_workspace_mib, max(required_mib, 1024))
+
+    def _genomescope_hash_size(self, memory_limit_mib: int) -> str:
+        if memory_limit_mib >= 4096:
+            return "100M"
+        if memory_limit_mib >= 2048:
+            return "50M"
+        return "25M"
+
+    def _detect_effective_cluster_capacity(self) -> Dict[str, int]:
+        now = time.time()
+        if self._resource_cache and now - self._resource_cache[0] < 60:
+            return dict(self._resource_cache[1])
+
+        capacity = {"cpu_millis": 1000, "memory_mib": 2048, "storage_mib": 0}
+        result = self._run_kubectl(["get", "nodes", "-o", "json"], timeout=30)
+        if result.returncode == 0:
+            payload = json.loads(result.stdout)
+            cpu_millis = 0
+            memory_mib = 0
+            storage_mib = 0
+            for node in payload.get("items", []):
+                allocatable = node.get("status", {}).get("allocatable", {})
+                cpu_millis += self._parse_cpu_quantity(str(allocatable.get("cpu", "")))
+                memory_mib += self._parse_memory_quantity_mib(str(allocatable.get("memory", "")))
+                storage_mib += self._parse_memory_quantity_mib(str(allocatable.get("ephemeral-storage", "")))
+            if cpu_millis > 0:
+                capacity["cpu_millis"] = cpu_millis
+            if memory_mib > 0:
+                capacity["memory_mib"] = memory_mib
+            if storage_mib > 0:
+                capacity["storage_mib"] = storage_mib
+
+        docker_capacity = self._detect_minikube_docker_capacity()
+        if docker_capacity.get("cpu_millis", 0) > 0:
+            capacity["cpu_millis"] = min(capacity["cpu_millis"], docker_capacity["cpu_millis"])
+        if docker_capacity.get("memory_mib", 0) > 0:
+            capacity["memory_mib"] = min(capacity["memory_mib"], docker_capacity["memory_mib"])
+
+        override_cpu_millis = self._env_int("CASSIE_CLUSTER_CPU_MILLIS")
+        override_memory_mib = self._env_int("CASSIE_CLUSTER_MEMORY_MIB")
+        override_storage_mib = self._env_int("CASSIE_CLUSTER_STORAGE_MIB")
+        if override_cpu_millis > 0:
+            capacity["cpu_millis"] = min(capacity["cpu_millis"], override_cpu_millis)
+        if override_memory_mib > 0:
+            capacity["memory_mib"] = min(capacity["memory_mib"], override_memory_mib)
+        if override_storage_mib > 0:
+            capacity["storage_mib"] = min(capacity["storage_mib"] or override_storage_mib, override_storage_mib)
+
+        self._resource_cache = (now, dict(capacity))
+        return capacity
+
+    def _detect_minikube_docker_capacity(self) -> Dict[str, int]:
+        if not shutil.which("docker"):
+            return {}
+
+        try:
+            result = subprocess.run(
+                ["docker", "inspect", "minikube", "--format", "{{.HostConfig.Memory}} {{.HostConfig.NanoCpus}}"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+        except Exception:
+            return {}
+
+        if result.returncode != 0:
+            return {}
+
+        parts = result.stdout.strip().split()
+        if len(parts) != 2:
+            return {}
+
+        memory_bytes = int(parts[0]) if parts[0].isdigit() else 0
+        nano_cpus = int(parts[1]) if parts[1].isdigit() else 0
+        detected: Dict[str, int] = {}
+        if memory_bytes > 0:
+            detected["memory_mib"] = max(1, memory_bytes // (1024 * 1024))
+        if nano_cpus > 0:
+            detected["cpu_millis"] = max(1, nano_cpus // 1_000_000)
+        return detected
+
+    def _env_bool_or_none(self, env_name: str) -> Optional[bool]:
+        raw_value = os.getenv(env_name)
+        if raw_value is None:
+            return None
+        normalized = raw_value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+        return None
+
+    def _env_value_or_default(self, env_name: str, default: str) -> str:
+        raw_value = os.getenv(env_name)
+        if raw_value is None:
+            return default
+        value = raw_value.strip()
+        if not value or value.lower() == "auto":
+            return default
+        return value
+
+    def _env_int(self, env_name: str) -> int:
+        raw_value = os.getenv(env_name, "").strip()
+        if not raw_value:
+            return 0
+        try:
+            return max(0, int(raw_value))
+        except ValueError:
+            return 0
+
+    def _parse_cpu_quantity(self, quantity: str) -> int:
+        value = quantity.strip()
+        if not value:
+            return 0
+        if value.endswith("m"):
+            return int(float(value[:-1]))
+        return int(float(value) * 1000)
+
+    def _parse_memory_quantity_mib(self, quantity: str) -> int:
+        value = quantity.strip()
+        if not value:
+            return 0
+        units = {
+            "Ki": 1 / 1024,
+            "Mi": 1,
+            "Gi": 1024,
+            "Ti": 1024 * 1024,
+            "K": 1000 / (1024 * 1024),
+            "M": 1000 * 1000 / (1024 * 1024),
+            "G": 1000 * 1000 * 1000 / (1024 * 1024),
+        }
+        for suffix, multiplier in units.items():
+            if value.endswith(suffix):
+                return int(float(value[: -len(suffix)]) * multiplier)
+        return int(float(value) / (1024 * 1024))
+
+    def _format_cpu_quantity(self, cpu_millis: int) -> str:
+        if cpu_millis >= 1000 and cpu_millis % 1000 == 0:
+            return str(cpu_millis // 1000)
+        return f"{cpu_millis}m"
 
     def _classify_inputs(self, current_inputs: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
         fastq_exts = (".fastq", ".fq", ".fastq.gz", ".fq.gz")
@@ -616,6 +1154,52 @@ class KubernetesPipelineRunner:
                     )
 
                 pod_payload = json.loads(pod_result.stdout)
+                pod_status = pod_payload.get("status", {}) or {}
+                if pod_status.get("phase") == "Failed":
+                    reason = str(pod_status.get("reason") or "").strip()
+                    message = str(pod_status.get("message") or "").strip()
+                    logs = self._get_stage_failure_logs(job_name)
+                    details = " ".join(part for part in (reason, message, logs[-2000:] if logs else "") if part)
+                    raise RuntimeError(
+                        f"Kubernetes Job {job_name} failed. {details or 'The pod entered Failed phase.'}"
+                    )
+
+                init_container_statuses = pod_payload.get("status", {}).get("initContainerStatuses", []) or []
+                for init_status in init_container_statuses:
+                    init_name = init_status.get("name", "init")
+                    waiting = (init_status.get("state") or {}).get("waiting")
+                    if waiting:
+                        reason = waiting.get("reason", "")
+                        message = waiting.get("message", "").strip()
+                        fatal_waiting_reasons = {
+                            "ErrImagePull",
+                            "ImagePullBackOff",
+                            "InvalidImageName",
+                            "CreateContainerConfigError",
+                            "CreateContainerError",
+                            "RunContainerError",
+                            "CrashLoopBackOff",
+                        }
+                        if reason in fatal_waiting_reasons:
+                            details = f"{reason}: {message}" if message else reason
+                            logs = self._get_pod_container_logs(pod_name, init_name)
+                            raise RuntimeError(
+                                f"Kubernetes Job {job_name} init container {init_name} is blocked. "
+                                f"{details}\n{logs[-4000:] if logs else 'No logs captured.'}"
+                            )
+
+                    terminated = (init_status.get("state") or {}).get("terminated")
+                    if terminated:
+                        exit_code = int(terminated.get("exitCode", 1))
+                        if exit_code != 0:
+                            reason = terminated.get("reason", "")
+                            logs = self._get_pod_container_logs(pod_name, init_name)
+                            raise RuntimeError(
+                                f"Kubernetes Job {job_name} init container {init_name} failed "
+                                f"with exit code {exit_code}{f' ({reason})' if reason else ''}.\n"
+                                f"{logs[-4000:] if logs else 'No logs captured.'}"
+                            )
+
                 container_statuses = pod_payload.get("status", {}).get("containerStatuses", []) or []
                 tool_status = next(
                     (status for status in container_statuses if status.get("name") == "tool"),
@@ -661,7 +1245,7 @@ class KubernetesPipelineRunner:
             payload = json.loads(status_result.stdout)
             status = payload.get("status", {})
             if status.get("failed", 0) >= 1:
-                logs = self._get_job_logs(job_name)
+                logs = self._get_stage_failure_logs(job_name)
                 raise RuntimeError(
                     f"Kubernetes Job {job_name} failed.\n{logs[-4000:] if logs else 'No logs captured.'}"
                 )
@@ -764,6 +1348,32 @@ class KubernetesPipelineRunner:
         if result.returncode != 0:
             return result.stderr.strip()
         return result.stdout
+
+    def _get_pod_container_logs(self, pod_name: str, container_name: str) -> str:
+        namespace = self._config.kubernetes.namespace
+        result = self._run_kubectl(["logs", pod_name, "-n", namespace, "-c", container_name], timeout=60)
+        if result.returncode != 0:
+            return result.stderr.strip()
+        return result.stdout
+
+    def _get_stage_failure_logs(self, job_name: str) -> str:
+        pod_name = self._get_job_pod_name(job_name)
+        if not pod_name:
+            return self._get_job_logs(job_name)
+
+        namespace = self._config.kubernetes.namespace
+        pod_result = self._run_kubectl(["get", "pod", pod_name, "-n", namespace, "-o", "json"], timeout=20)
+        if pod_result.returncode != 0:
+            return pod_result.stderr.strip()
+
+        pod_payload = json.loads(pod_result.stdout)
+        for status in pod_payload.get("status", {}).get("initContainerStatuses", []) or []:
+            terminated = (status.get("state") or {}).get("terminated")
+            waiting = (status.get("state") or {}).get("waiting")
+            if terminated or waiting:
+                return self._get_pod_container_logs(pod_name, status.get("name", "fetch-inputs"))
+
+        return self._get_job_logs(job_name)
 
     def _cluster_visible_minio_endpoint(self, endpoint: str) -> str:
         override = self._config.kubernetes.minio_endpoint.strip()

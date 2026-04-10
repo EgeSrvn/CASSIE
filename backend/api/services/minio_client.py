@@ -423,6 +423,54 @@ class MinIOClient:
             error_msg = f"Failed to delete file '{s3_key}': {e}"
             self._logger.error(error_msg)
             raise RuntimeError(error_msg)
+
+    def delete_prefix(
+        self,
+        user_id: int,
+        prefix: str,
+        username: Optional[str] = None,
+    ) -> int:
+        """
+        Delete every object under a prefix in a user's bucket.
+
+        This is used for job cleanup so partial uploads or outputs that do not
+        have database records are removed with the rest of the job.
+        """
+        bucket_name = self._get_bucket_name(user_id, username)
+        deleted_count = 0
+
+        try:
+            paginator = self.s3_client.get_paginator("list_objects_v2")
+            for page in paginator.paginate(Bucket=bucket_name, Prefix=prefix):
+                objects = [{"Key": obj["Key"]} for obj in page.get("Contents", [])]
+                if not objects:
+                    continue
+
+                self.s3_client.delete_objects(
+                    Bucket=bucket_name,
+                    Delete={"Objects": objects, "Quiet": True},
+                )
+                deleted_count += len(objects)
+
+            if deleted_count:
+                self._logger.info(
+                    f"Deleted {deleted_count} object(s) under prefix '{prefix}' from bucket '{bucket_name}'"
+                )
+            return deleted_count
+
+        except ClientError as e:
+            error_code = e.response.get("Error", {}).get("Code", "")
+            if error_code == "NoSuchBucket":
+                self._logger.debug(f"Bucket '{bucket_name}' does not exist, nothing to delete")
+                return 0
+
+            error_msg = f"Failed to delete objects under prefix '{prefix}': {e}"
+            self._logger.error(error_msg)
+            raise RuntimeError(error_msg)
+        except BotoCoreError as e:
+            error_msg = f"Failed to delete objects under prefix '{prefix}': {e}"
+            self._logger.error(error_msg)
+            raise RuntimeError(error_msg)
     
     def generate_presigned_url(
         self,

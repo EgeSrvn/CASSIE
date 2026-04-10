@@ -80,6 +80,7 @@ export interface PipelineRequirement {
   type: string
   label: string
   formats: string[]
+  used_by?: string[]
 }
 
 export interface PipelineRequirements {

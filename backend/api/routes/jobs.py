@@ -58,6 +58,62 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
 
+def _infer_file_formats(file_record) -> set[str]:
+    """Infer normalized file formats from stored metadata and filename."""
+    formats: set[str] = set()
+    file_format = getattr(file_record, "file_format", None)
+    if file_format:
+        formats.add(str(file_format).lower().strip().lstrip("."))
+
+    filename = str(getattr(file_record, "filename", "") or "").lower()
+    if filename.endswith((".fastq.gz", ".fq.gz", ".fastq", ".fq")):
+        formats.add("fastq")
+    if filename.endswith((".fasta.gz", ".fa.gz", ".fna.gz", ".fasta", ".fa", ".fna")):
+        formats.add("fasta")
+
+    return formats
+
+
+def _validate_job_inputs_against_first_tool(job, input_files) -> Optional[str]:
+    """Validate direct job inputs before launching Kubernetes for tool-based jobs."""
+    if not job.tool_indices:
+        return None
+
+    first_tool = get_tool_by_index(job.tool_indices[0])
+    if not first_tool:
+        return None
+
+    input_formats_by_file = {
+        getattr(file_record, "filename", "input file"): _infer_file_formats(file_record)
+        for file_record in input_files
+    }
+
+    for requirement in first_tool.get("input_requirements", []):
+        accepted_formats = {
+            str(format_name).lower().strip().lstrip(".")
+            for format_name in requirement.get("formats", [])
+            if str(format_name).strip()
+        }
+        if not accepted_formats:
+            continue
+
+        has_matching_file = any(
+            accepted_formats.intersection(file_formats)
+            for file_formats in input_formats_by_file.values()
+        )
+        if has_matching_file:
+            continue
+
+        accepted_label = ", ".join(sorted(accepted_formats)).upper()
+        selected_files = ", ".join(input_formats_by_file.keys()) or "none"
+        return (
+            f"{first_tool.get('name', 'Selected tool')} requires {requirement.get('label', 'input files')} "
+            f"({accepted_label}). Selected files: {selected_files}."
+        )
+
+    return None
+
+
 def _sanitize_execution_message(message: Optional[str]) -> Optional[str]:
     """Return a concise user-facing execution message without raw tool logs."""
     if not message:
@@ -526,6 +582,15 @@ async def execute_job(
                 status_code=status.HTTP_400_BAD_REQUEST
             )
             return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+
+        input_validation_error = _validate_job_inputs_against_first_tool(job, input_files)
+        if input_validation_error:
+            error_data = error_response(
+                error_code=ErrorCode.VALIDATION_ERROR,
+                message=input_validation_error,
+                status_code=status.HTTP_400_BAD_REQUEST
+            )
+            return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
         
         # Start pipeline execution using the configured backend
         from backend.api.services.kubernetes_manager import get_pipeline_runner
@@ -864,6 +929,51 @@ async def delete_job_endpoint(
         Success response
     """
     try:
+        job = get_job_by_id(job_id, user_id=current_user.id)
+        if not job:
+            error_data = not_found_response("Job", job_id)
+            return JSONResponse(content=error_data, status_code=status.HTTP_404_NOT_FOUND)
+
+        from backend.api.services.minio_client import get_minio_client
+        from backend.api.services.storage_service import get_files_by_user
+
+        minio_client = get_minio_client()
+        job_files = get_files_by_user(
+            user_id=current_user.id,
+            job_id=job_id,
+            limit=1000,
+            offset=0,
+        )
+
+        deleted_objects = 0
+        for file_record in job_files:
+            try:
+                if file_record.s3_key:
+                    minio_client.delete_file(
+                        user_id=current_user.id,
+                        s3_key=file_record.s3_key,
+                        username=current_user.username,
+                    )
+                    deleted_objects += 1
+            except Exception as cleanup_error:
+                logger.warning(
+                    f"Failed to delete MinIO object for job {job_id}, file {file_record.id}: {cleanup_error}",
+                    exc_info=True,
+                )
+
+        try:
+            # Remove any partial uploads/outputs that may not have a DB record.
+            deleted_objects += minio_client.delete_prefix(
+                user_id=current_user.id,
+                prefix=f"jobs/{job_id}/",
+                username=current_user.username,
+            )
+        except Exception as cleanup_error:
+            logger.warning(
+                f"Failed to delete MinIO job prefix for job {job_id}: {cleanup_error}",
+                exc_info=True,
+            )
+
         deleted = delete_job(job_id, current_user.id)
         
         if not deleted:
@@ -871,8 +981,8 @@ async def delete_job_endpoint(
             return JSONResponse(content=error_data, status_code=status.HTTP_404_NOT_FOUND)
         
         return success_response(
-            data=None,
-            message="Job deleted successfully"
+            data={"deleted_objects": deleted_objects},
+            message="Job and related data deleted successfully"
         )
     except Exception as e:
         logger.error(f"Error deleting job: {e}", exc_info=True)

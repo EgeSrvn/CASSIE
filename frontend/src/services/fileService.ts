@@ -63,7 +63,17 @@ export const uploadFile = async (
   } catch (error: any) {
     if (error.response?.data) {
       const errorData = error.response.data
-      throw new Error(errorData.message || errorData.detail || errorData.error || 'Failed to upload file')
+      const message = (
+        errorData.message ||
+        errorData.detail ||
+        errorData.error?.message ||
+        errorData.error ||
+        'Failed to upload file'
+      )
+      const uploadError = new Error(message) as Error & { status?: number; code?: string }
+      uploadError.status = error.response.status
+      uploadError.code = errorData.error?.code || errorData.code
+      throw uploadError
     }
     throw error
   }
@@ -245,4 +255,3 @@ export const downloadJobOutputsZip = async (jobId: number): Promise<void> => {
     throw error
   }
 }
-

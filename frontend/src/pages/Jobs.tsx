@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { getJobs, Job, deleteJob } from '../services/jobService'
 import { getToken } from '../services/authService'
+import { clearPendingJobUploads } from '../services/pendingJobUploadService'
 import Navigation from '../components/Navigation'
 import '../styles/globals.css'
 
@@ -49,6 +50,7 @@ export default function Jobs() {
     
     try {
       await deleteJob(jobId)
+      await clearPendingJobUploads(jobId)
       loadJobs()
     } catch (err) {
       alert('Failed to delete job')
@@ -147,4 +149,3 @@ export default function Jobs() {
     </div>
   )
 }
-
