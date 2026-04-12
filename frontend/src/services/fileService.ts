@@ -29,7 +29,8 @@ export const uploadFile = async (
   jobId: number | null,
   fileType: 'input' | 'output' | 'intermediate' | 'log',
   fileFormat?: string,
-  onProgress?: (progress: number) => void
+  onProgress?: (progress: number) => void,
+  authToken?: string
 ): Promise<File> => {
   try {
     const formData = new FormData()
@@ -46,6 +47,7 @@ export const uploadFile = async (
         params,
         headers: {
           'Content-Type': 'multipart/form-data',
+          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
         },
         onUploadProgress: (progressEvent) => {
           if (onProgress && progressEvent.total) {

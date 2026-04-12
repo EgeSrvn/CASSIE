@@ -6,6 +6,8 @@ import { getPipelineRequirements, PipelineRequirements } from '../services/pipel
 import {
   getJobUploadStatus,
   JobUploadStatus,
+  PendingQueuedJobFile,
+  getPendingJobUploadFiles,
   startPendingJobUploadProcessor,
   subscribeToJobUploadStatus
 } from '../services/pendingJobUploadService'
@@ -32,6 +34,7 @@ export default function JobDetails() {
   const [htmlZoom, setHtmlZoom] = useState<number>(0.75)
   const [now, setNow] = useState(() => Date.now())
   const [jobUploadStatus, setJobUploadStatus] = useState<JobUploadStatus | null>(null)
+  const [pendingQueuedFiles, setPendingQueuedFiles] = useState<PendingQueuedJobFile[]>([])
 
   useEffect(() => {
     if (jobId) {
@@ -105,6 +108,16 @@ export default function JobDetails() {
     }
   }
 
+  const loadPendingQueuedFiles = async () => {
+    if (!jobId) return
+    try {
+      const queuedFiles = await getPendingJobUploadFiles(parseInt(jobId))
+      setPendingQueuedFiles(queuedFiles)
+    } catch (err) {
+      console.error('Failed to load pending queued files:', err)
+    }
+  }
+
   useEffect(() => {
     const timer = window.setInterval(() => {
       setNow(Date.now())
@@ -134,11 +147,13 @@ export default function JobDetails() {
 
     const numericJobId = parseInt(jobId)
     setJobUploadStatus(getJobUploadStatus(numericJobId))
+    void loadPendingQueuedFiles()
     void startPendingJobUploadProcessor()
 
     return subscribeToJobUploadStatus((changedJobId, status) => {
       if (changedJobId !== numericJobId) return
       setJobUploadStatus(status)
+      void loadPendingQueuedFiles()
       if (!status) {
         void loadJob()
         void loadFiles()
@@ -150,6 +165,24 @@ export default function JobDetails() {
   // Compute files before early returns (will be empty arrays initially)
   const inputFiles = (files || []).filter(f => f && f.file_type === 'input')
   const outputFiles = (files || []).filter(f => f && f.file_type === 'output')
+  const visibleInputCount = inputFiles.length + pendingQueuedFiles.length
+
+  const fileMatchesRequirement = (
+    filename: string,
+    formats: string[],
+    declaredFormat?: string | null
+  ): boolean => {
+    const lowerName = filename.toLowerCase()
+    const normalizedDeclaredFormat = (declaredFormat || '').toLowerCase()
+    return formats.some(format => {
+      const normalizedFormat = format.toLowerCase()
+      return (
+        normalizedDeclaredFormat === normalizedFormat ||
+        lowerName.endsWith(`.${normalizedFormat}`) ||
+        lowerName.endsWith(`.${normalizedFormat}.gz`)
+      )
+    })
+  }
 
   // Group output files by tool family
   const groupOutputsByFamily = (files: File[]) => {
@@ -406,7 +439,7 @@ export default function JobDetails() {
   const canExecute = (() => {
     if (job.status !== 'pending') return false
     if (inputFilesPendingUpload) return false
-    if (inputFiles.length === 0) return false
+    if (visibleInputCount === 0) return false
     
     // For pipeline-based jobs, check if all requirements are met
     if (pipelineRequirements && pipelineRequirements.input_requirements.length > 0) {
@@ -422,7 +455,7 @@ export default function JobDetails() {
     if (inputFilesPendingUpload) {
       return jobUploadStatus?.message || 'Selected files are still uploading for this job.'
     }
-    if (inputFiles.length === 0) {
+    if (visibleInputCount === 0) {
       return 'This job has no input files configured. Files must be added during job creation.'
     }
     if (pipelineRequirements && pipelineRequirements.input_requirements.length > 0) {
@@ -457,27 +490,24 @@ export default function JobDetails() {
             <div className="detail-grid">
               <div><strong>Job ID:</strong> {job.id}</div>
               <div><strong>Status:</strong> 
-                <span className={`status-badge ${getStatusColor(job.status)}`}>
-                  {job.status}
-                </span>
-                {jobUploadStatus && (
-                  <span
-                    style={{
-                      display: 'inline-flex',
-                      marginLeft: '10px',
-                      padding: '0.25rem 0.75rem',
-                      borderRadius: '999px',
-                      backgroundColor: jobUploadStatus.stage === 'failed' ? '#fee2e2' : '#dbeafe',
-                      color: jobUploadStatus.stage === 'failed' ? '#b91c1c' : '#1d4ed8',
-                      fontSize: '0.875rem',
-                      fontWeight: 600
-                    }}
-                  >
-                    {jobUploadStatus.stage === 'starting'
-                      ? 'Starting job'
-                      : `Uploading files (${jobUploadStatus.uploadedFiles}/${jobUploadStatus.totalFiles})`}
+                <div className="status-line">
+                  <span className={`status-badge ${getStatusColor(job.status)}`}>
+                    {job.status}
                   </span>
-                )}
+                  {jobUploadStatus && (
+                    <span
+                      className="inline-upload-status"
+                      style={{
+                        backgroundColor: jobUploadStatus.stage === 'failed' ? '#fee2e2' : '#dbeafe',
+                        color: jobUploadStatus.stage === 'failed' ? '#b91c1c' : '#1d4ed8',
+                      }}
+                    >
+                      {jobUploadStatus.stage === 'starting'
+                        ? 'Starting job'
+                        : `Uploading files (${jobUploadStatus.uploadedFiles}/${jobUploadStatus.totalFiles})`}
+                    </span>
+                  )}
+                </div>
                 {job.status === 'pending' && (
                   <>
                     {!jobUploadStatus && (
@@ -500,14 +530,14 @@ export default function JobDetails() {
                         }}
                         disabled={executing || !canExecute}
                         className="btn-primary"
-                        style={{ marginLeft: '10px' }}
+                        style={{ marginTop: '10px' }}
                         title={getExecuteButtonMessage() || undefined}
                       >
                         {executing ? 'Executing...' : 'Execute Job'}
                       </button>
                     )}
                     {!jobUploadStatus && !canExecute && getExecuteButtonMessage() && (
-                      <span style={{ marginLeft: '10px', color: '#f59e0b', fontSize: '0.875rem' }}>
+                      <span style={{ display: 'inline-block', marginTop: '10px', color: '#f59e0b', fontSize: '0.875rem' }}>
                         {getExecuteButtonMessage()}
                       </span>
                     )}
@@ -659,15 +689,14 @@ export default function JobDetails() {
                         {pipelineRequirements.input_requirements.map((req) => {
                           // Check if this requirement is already satisfied by existing files
                           const isSatisfied = inputFiles.some(f => {
-                            // Check if any input file matches the requirement format
-                            const fileName = f.filename.toLowerCase()
-                            return req.formats.some(format => 
-                              fileName.endsWith(`.${format}`) || fileName.endsWith(`.${format}.gz`)
-                            )
+                            return fileMatchesRequirement(f.filename, req.formats, f.file_format)
                           })
+                          const isPending = !isSatisfied && pendingQueuedFiles.some(file =>
+                            fileMatchesRequirement(file.filename, req.formats, file.file_format)
+                          )
                           
-                          const borderColor = isSatisfied ? '#86efac' : '#e2e8f0'
-                          const bgColor = isSatisfied ? '#dcfce7' : '#fff'
+                          const borderColor = isSatisfied ? '#86efac' : (isPending ? '#93c5fd' : '#e2e8f0')
+                          const bgColor = isSatisfied ? '#dcfce7' : (isPending ? '#eff6ff' : '#fff')
                           return (
                             <div key={req.type} style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', padding: '0.5rem', backgroundColor: bgColor, borderRadius: '4px', border: `1px solid ${borderColor}` }}>
                               <div style={{ flex: 1 }}>
@@ -680,6 +709,9 @@ export default function JobDetails() {
                                 </span>
                                 {isSatisfied && (
                                   <span style={{ marginLeft: '0.5rem', color: '#16a34a', fontSize: '0.875rem' }}>✓ Satisfied</span>
+                                )}
+                                {isPending && (
+                                  <span style={{ marginLeft: '0.5rem', color: '#2563eb', fontSize: '0.875rem' }}>Uploading</span>
                                 )}
                               </div>
                             </div>
@@ -700,7 +732,7 @@ export default function JobDetails() {
               </div>
             )}
 
-              {inputFiles.length === 0 ? (
+              {visibleInputCount === 0 ? (
                 <div className="empty-state">
                   <p>{inputFilesPendingUpload ? 'Selected files are being uploaded to this job now.' : 'No input files configured. Files should be added during job creation.'}</p>
                   {job.status === 'pending' && (
@@ -711,6 +743,28 @@ export default function JobDetails() {
                 </div>
               ) : (
                 <div className="file-list">
+                  {pendingQueuedFiles.map((file) => (
+                    <div key={`pending-${file.jobId}-${file.filename}-${file.created_at}`} className="file-item">
+                      <div className="file-info">
+                        <strong>{file.filename}</strong>
+                        <span>{(file.size_bytes / 1024 / 1024).toFixed(2)} MB</span>
+                      </div>
+                      <span
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          padding: '0.25rem 0.75rem',
+                          borderRadius: '999px',
+                          backgroundColor: '#dbeafe',
+                          color: '#1d4ed8',
+                          fontSize: '0.875rem',
+                          fontWeight: 600,
+                        }}
+                      >
+                        Pending upload
+                      </span>
+                    </div>
+                  ))}
                   {inputFiles.map((file) => (
                     <div key={file.id} className="file-item">
                       <div className="file-info">

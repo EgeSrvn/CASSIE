@@ -4,6 +4,24 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+set_dotenv_value() {
+  local file_path="$1"
+  local key="$2"
+  local value="$3"
+  local escaped_key=""
+
+  if [[ ! -f "${file_path}" ]]; then
+    return 0
+  fi
+
+  escaped_key="$(printf '%s\n' "${key}" | sed 's/[][\\/.*^$]/\\&/g')"
+  if grep -qE "^${escaped_key}=" "${file_path}"; then
+    sed -i -E "s|^${escaped_key}=.*$|${key}=${value}|" "${file_path}"
+  else
+    printf '%s=%s\n' "${key}" "${value}" >> "${file_path}"
+  fi
+}
+
 if [[ ! -f .env && -f .env.example ]]; then
   cp .env.example .env
 fi
@@ -30,12 +48,9 @@ if [[ -z "${KUBE_CONFIG_DIR:-}" ]]; then
 fi
 
 export EXECUTION_BACKEND="${EXECUTION_BACKEND:-kubernetes}"
-export HTTP_PROXY=""
-export HTTPS_PROXY=""
-export http_proxy=""
-export https_proxy=""
 
 MINIO_API_PORT="${MINIO_API_PORT:-9010}"
+MINIO_CONSOLE_PORT="${MINIO_CONSOLE_PORT:-9011}"
 NO_PROXY_ITEMS=(
   "localhost"
   "127.0.0.1"
@@ -58,22 +73,18 @@ if [[ "$(uname -s)" == "Linux" ]]; then
   fi
 fi
 
-preflight_minikube() {
-  local current_context=""
+ensure_minikube_running() {
   local status_output=""
+  local current_context=""
 
   if ! command -v kubectl >/dev/null 2>&1; then
-    return 0
-  fi
-
-  current_context="$(kubectl config current-context 2>/dev/null || true)"
-  if [[ "${current_context}" != "minikube" ]]; then
-    return 0
+    echo "kubectl is required but was not found in PATH."
+    exit 1
   fi
 
   if ! command -v minikube >/dev/null 2>&1; then
-    echo "Current Kubernetes context is minikube, but the minikube CLI is not installed."
-    return 0
+    echo "minikube is required but was not found in PATH."
+    exit 1
   fi
 
   status_output="$(minikube status 2>&1 || true)"
@@ -84,15 +95,22 @@ preflight_minikube() {
     status_output="$(minikube status 2>&1 || true)"
   fi
 
-  if grep -q "apiserver: Stopped" <<<"${status_output}"; then
-    echo "Minikube API server is stopped. Start the cluster first with:"
-    echo "  minikube start"
-    echo "Then rerun ./scripts/start-cassie.sh"
+  if grep -Eq "host: Stopped|kubelet: Stopped|apiserver: Stopped|minikube does not exist|Profile \"minikube\" not found|No such container: minikube|unknown state|GUEST_STATUS" <<<"${status_output}"; then
+    echo "Starting Minikube with the Docker driver ..."
+    minikube start --driver=docker
+  fi
+
+  minikube update-context
+  kubectl config use-context minikube >/dev/null 2>&1 || true
+
+  current_context="$(kubectl config current-context 2>/dev/null || true)"
+  if [[ "${current_context}" != "minikube" ]]; then
+    echo "Minikube context could not be activated."
     exit 1
   fi
 }
 
-preflight_minikube
+ensure_minikube_running
 
 load_images_into_minikube() {
   local current_context=""
@@ -113,6 +131,26 @@ load_images_into_minikube() {
   done
 }
 
+connect_backend_to_minikube_network() {
+  local backend_networks=""
+
+  if ! docker network inspect minikube >/dev/null 2>&1; then
+    return 0
+  fi
+
+  if ! docker inspect cassie-backend >/dev/null 2>&1; then
+    return 0
+  fi
+
+  backend_networks="$(docker inspect cassie-backend --format '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}} {{end}}' 2>/dev/null || true)"
+  if grep -qw "minikube" <<<"${backend_networks}"; then
+    return 0
+  fi
+
+  echo "Connecting backend container to the Minikube Docker network ..."
+  docker network connect minikube cassie-backend >/dev/null 2>&1 || true
+}
+
 prepare_container_kubeconfig() {
   local source_dir="${KUBE_CONFIG_DIR:-}"
   local source_config=""
@@ -125,6 +163,8 @@ prepare_container_kubeconfig() {
   local minikube_profile=""
   local minikube_ip=""
   local minikube_port=""
+  local minikube_memory=""
+  local minikube_cpus=""
 
   if [[ -z "${source_dir}" ]]; then
     return 0
@@ -174,6 +214,17 @@ prepare_container_kubeconfig() {
   fi
 
   export KUBE_CONFIG_DIR="${runtime_dir}"
+
+  if docker inspect minikube --format '{{.HostConfig.Memory}} {{.HostConfig.NanoCpus}}' >/tmp/cassie-minikube-limits 2>/dev/null; then
+    read -r minikube_memory minikube_cpus < /tmp/cassie-minikube-limits || true
+    rm -f /tmp/cassie-minikube-limits
+    if [[ -n "${minikube_memory:-}" && "${minikube_memory}" -gt 0 ]]; then
+      export CASSIE_CLUSTER_MEMORY_MIB="$((minikube_memory / 1024 / 1024))"
+    fi
+    if [[ -n "${minikube_cpus:-}" && "${minikube_cpus}" -gt 0 ]]; then
+      export CASSIE_CLUSTER_CPU_MILLIS="$((minikube_cpus / 1000000))"
+    fi
+  fi
 }
 
 prepare_container_kubeconfig
@@ -181,6 +232,30 @@ prepare_container_kubeconfig
 NO_PROXY_VALUE="$(IFS=,; echo "${NO_PROXY_ITEMS[*]}")"
 export NO_PROXY="${KUBERNETES_NO_PROXY:-$NO_PROXY_VALUE}"
 export no_proxy="${NO_PROXY}"
+
+set_dotenv_value ".env" "EXECUTION_BACKEND" "${EXECUTION_BACKEND}"
+if [[ -n "${KUBE_CONFIG_DIR:-}" ]]; then
+  set_dotenv_value ".env" "KUBE_CONFIG_DIR" "${KUBE_CONFIG_DIR}"
+fi
+if [[ -n "${KUBERNETES_MINIO_ENDPOINT:-}" ]]; then
+  set_dotenv_value ".env" "KUBERNETES_MINIO_ENDPOINT" "${KUBERNETES_MINIO_ENDPOINT}"
+fi
+set_dotenv_value ".env" "KUBERNETES_NO_PROXY" "${NO_PROXY}"
+if [[ -n "${CASSIE_CLUSTER_MEMORY_MIB:-}" ]]; then
+  set_dotenv_value ".env" "CASSIE_CLUSTER_MEMORY_MIB" "${CASSIE_CLUSTER_MEMORY_MIB}"
+fi
+if [[ -n "${CASSIE_CLUSTER_CPU_MILLIS:-}" ]]; then
+  set_dotenv_value ".env" "CASSIE_CLUSTER_CPU_MILLIS" "${CASSIE_CLUSTER_CPU_MILLIS}"
+fi
+set_dotenv_value ".env" "CASSIE_CLUSTER_STORAGE_RESERVE_MIB" "2048"
+set_dotenv_value ".env" "FASTQC_THREADS" "auto"
+set_dotenv_value ".env" "GENOMESCOPE2_THREADS" "auto"
+set_dotenv_value ".env" "SPADES_THREADS" "auto"
+set_dotenv_value ".env" "SPADES_MEMORY_GB" "auto"
+set_dotenv_value ".env" "SPADES_LOW_RESOURCE" "auto"
+set_dotenv_value ".env" "SPADES_KMERS" "auto"
+set_dotenv_value ".env" "SPADES_MEMORY_LIMIT" "auto"
+set_dotenv_value ".env" "QUAST_THREADS" "auto"
 
 TOOL_IMAGES=(
   "fastqc:0.12.1 dockerized_tools/fastqc"
@@ -201,6 +276,7 @@ done
 load_images_into_minikube
 
 "${COMPOSE_CMD[@]}" up --build -d --force-recreate --remove-orphans
+connect_backend_to_minikube_network
 
 echo
 echo "CASSIE is starting."
@@ -208,7 +284,7 @@ echo "Frontend:   http://localhost:3000"
 echo "Backend:    http://localhost:8000"
 echo "Docs:       http://localhost:8000/docs"
 echo "MinIO API:  http://localhost:${MINIO_API_PORT}"
-echo "MinIO UI:   http://localhost:${MINIO_CONSOLE_PORT:-9011}"
+echo "MinIO UI:   http://localhost:${MINIO_CONSOLE_PORT}"
 echo "Backend:    ${EXECUTION_BACKEND} execution backend"
 if [[ -n "${KUBE_CONFIG_DIR:-}" ]]; then
   echo "Kubeconfig: ${KUBE_CONFIG_DIR}"

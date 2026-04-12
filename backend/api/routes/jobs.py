@@ -19,12 +19,13 @@ import asyncio
 import json
 import time
 # Use real JWT auth (Task 5.4 - now fixed)
-from backend.api.routes.auth import get_current_user
+from backend.api.routes.auth import get_current_user, get_auth_context, AuthContext
 from backend.api.models.user_model import UserResponse
 from backend.api.models.job_model import (
     JobCreate,
     JobUpdate,
     JobResponse,
+    JobCreateResponse,
     JobStatus,
     JobExecutionResponse,
 )
@@ -35,6 +36,10 @@ from backend.api.services.job_service import (
     update_job,
     delete_job,
     count_jobs_by_user
+)
+from backend.api.services.job_launch_service import (
+    get_auto_start_payload,
+    start_job_execution_task,
 )
 from backend.api.utils.response_builder import (
     success_response,
@@ -52,6 +57,7 @@ from backend.api.utils.validators import (
 )
 from backend.api.utils.logger import get_logger
 from tool_registry import get_tool_by_index, get_tool_registry
+from backend.api.services.auth_service import create_job_upload_token
 
 logger = get_logger(__name__)
 
@@ -257,6 +263,15 @@ async def create_job_endpoint(
                 status_code=status.HTTP_400_BAD_REQUEST
             )
             return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+
+    if job_data.pending_upload_count is not None and job_data.expected_total_input_files is not None:
+        if job_data.expected_total_input_files < job_data.pending_upload_count:
+            error_data = error_response(
+                error_code=ErrorCode.VALIDATION_ERROR,
+                message="expected_total_input_files must be greater than or equal to pending_upload_count",
+                status_code=status.HTTP_400_BAD_REQUEST
+            )
+            return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
     
     # Validate tool selection, workflow_id, or pipeline_id
     if job_data.tool_indices and job_data.pipeline_id:
@@ -366,9 +381,20 @@ async def create_job_endpoint(
             f"User must manually trigger execution via the execute endpoint."
         )
         
+        upload_session_token: Optional[str] = None
+        if job_data.pending_upload_count and job_data.pending_upload_count > 0:
+            upload_session_token = create_job_upload_token(
+                data={
+                    "user_id": current_user.id,
+                    "username": current_user.username,
+                    "job_id": job.id,
+                    "expected_total_input_files": job_data.expected_total_input_files,
+                }
+            )
+
         return JSONResponse(
             content=success_response(
-                data=JobResponse(
+                data=JobCreateResponse(
                     id=job.id,
                     user_id=job.user_id,
                     name=job.name,
@@ -380,7 +406,10 @@ async def create_job_endpoint(
                     data_types=job.data_types,
                     cloud_provider=job.cloud_provider,
                     created_at=job.created_at,
-                    updated_at=job.updated_at
+                    updated_at=job.updated_at,
+                    upload_session_token=upload_session_token,
+                    pending_upload_count=job_data.pending_upload_count,
+                    expected_total_input_files=job_data.expected_total_input_files,
                 ).model_dump(mode='json'),  # Use mode='json' to serialize datetime to ISO strings
                 message="Job created successfully",
                 status_code=status.HTTP_201_CREATED
@@ -472,7 +501,7 @@ async def list_jobs(
 @router.get("/{job_id}")
 async def get_job(
     job_id: int,
-    current_user: UserResponse = Depends(get_current_user)
+    auth_context: AuthContext = Depends(get_auth_context)
 ):
     """
     Get job details by ID.
@@ -484,6 +513,10 @@ async def get_job(
     Returns:
         Success response with job data
     """
+    if auth_context.token_type == "job_upload_session" and auth_context.job_id != job_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Upload session token cannot access this job")
+
+    current_user = auth_context.user
     job = get_job_by_id(job_id, user_id=current_user.id)
     
     if job is None:
@@ -513,7 +546,7 @@ async def get_job(
 async def execute_job(
     job_id: int,
     background_tasks: BackgroundTasks,
-    current_user: UserResponse = Depends(get_current_user)
+    auth_context: AuthContext = Depends(get_auth_context)
 ):
     """
     Manually execute a pending job.
@@ -527,6 +560,10 @@ async def execute_job(
         Success response with execution details
     """
     try:
+        if auth_context.token_type == "job_upload_session" and auth_context.job_id != job_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Upload session token cannot execute this job")
+
+        current_user = auth_context.user
         # Verify job exists and belongs to user
         job = get_job_by_id(job_id, user_id=current_user.id)
         if not job:
@@ -542,82 +579,22 @@ async def execute_job(
             )
             return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
         
-        # Get input files for this job
-        from backend.api.services.storage_service import get_files_by_user
-        from backend.api.models.pipeline_model import FileType
-        
-        input_files = get_files_by_user(
-            user_id=current_user.id,
-            job_id=job.id,
-            file_type=FileType.INPUT,
-            limit=100,
-            offset=0
+        _, input_file_ids, readiness_error = get_auto_start_payload(job_id, current_user.id)
+        if readiness_error or not input_file_ids:
+            error_data = error_response(
+                error_code=ErrorCode.VALIDATION_ERROR,
+                message=f"Cannot execute job: {readiness_error or 'Job is not ready to execute.'}",
+                status_code=status.HTTP_400_BAD_REQUEST
+            )
+            return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+
+        background_tasks.add_task(
+            start_job_execution_task,
+            job_id,
+            current_user.id,
+            job.workflow_id,
+            input_file_ids,
         )
-        input_file_ids = [f.id for f in input_files]
-        
-        # Check if required files are present (for pipeline-based jobs)
-        if job.pipeline_id:
-            from backend.api.services.pipeline_service import get_pipeline_by_id
-            from backend.api.services.pipeline_analyzer import analyze_pipeline_requirements
-            
-            pipeline = get_pipeline_by_id(job.pipeline_id, current_user.id)
-            if pipeline:
-                requirements = analyze_pipeline_requirements(pipeline)
-                required_count = len(requirements.get("input_requirements", []))
-                
-                if required_count > 0 and len(input_file_ids) < required_count:
-                    missing_count = required_count - len(input_file_ids)
-                    error_data = error_response(
-                        error_code=ErrorCode.VALIDATION_ERROR,
-                        message=f"Cannot execute job: Missing {missing_count} required input file(s). This pipeline requires {required_count} input file(s), but only {len(input_file_ids)} file(s) are provided. Please add the required files first.",
-                        status_code=status.HTTP_400_BAD_REQUEST
-                    )
-                    return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
-        
-        # For tool-based jobs, at least one file is required
-        if not input_file_ids:
-            error_data = error_response(
-                error_code=ErrorCode.VALIDATION_ERROR,
-                message="Cannot execute job: No input files found. Please upload input files first.",
-                status_code=status.HTTP_400_BAD_REQUEST
-            )
-            return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
-
-        input_validation_error = _validate_job_inputs_against_first_tool(job, input_files)
-        if input_validation_error:
-            error_data = error_response(
-                error_code=ErrorCode.VALIDATION_ERROR,
-                message=input_validation_error,
-                status_code=status.HTTP_400_BAD_REQUEST
-            )
-            return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
-        
-        # Start pipeline execution using the configured backend
-        from backend.api.services.kubernetes_manager import get_pipeline_runner
-
-        async def start_pipeline_task():
-            try:
-                logger.info(f"Starting pipeline execution for job {job_id}")
-                runner = get_pipeline_runner()
-                execution = await runner.start_pipeline(
-                    job_id=job_id,
-                    user_id=current_user.id,
-                    workflow_id=job.workflow_id,
-                    input_files=input_file_ids,
-                    execution_number=1
-                )
-                logger.info(
-                    f"Pipeline execution started for job {job_id}: "
-                    f"execution_id={execution.get('execution_id') if isinstance(execution, dict) else 'N/A'}"
-                )
-            except Exception as e:
-                logger.error(f"Error starting pipeline for job {job_id}: {e}", exc_info=True)
-                # Update job status to failed
-                from backend.api.models.job_model import JobUpdate
-                update_job(job_id, current_user.id, JobUpdate(status=JobStatus.FAILED))
-        
-        # Schedule background task to start pipeline
-        background_tasks.add_task(start_pipeline_task)
         
         return success_response(
             data={
@@ -703,6 +680,7 @@ class AddFilesRequest(BaseModel):
 async def add_files_to_job(
     job_id: int,
     request: AddFilesRequest,
+    background_tasks: BackgroundTasks,
     current_user: UserResponse = Depends(get_current_user)
 ):
     """
@@ -792,6 +770,19 @@ async def add_files_to_job(
         message = f"Successfully added {len(added_file_ids)} file(s) to job"
         if errors:
             message += f". Some files failed: {'; '.join(errors)}"
+
+        ready_job, input_file_ids, readiness_error = get_auto_start_payload(job_id, current_user.id)
+        if ready_job and input_file_ids:
+            background_tasks.add_task(
+                start_job_execution_task,
+                ready_job.id,
+                current_user.id,
+                ready_job.workflow_id,
+                input_file_ids,
+            )
+            message += ". Job started automatically."
+        elif readiness_error:
+            logger.info(f"Job {job_id} not auto-started after adding files: {readiness_error}")
         
         return success_response(
             data=JobResponse(

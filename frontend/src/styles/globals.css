@@ -649,6 +649,66 @@ body {
   margin: 0;
 }
 
+.tool-selection-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--spacing-md);
+}
+
+.tool-option {
+  width: 100%;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--spacing-md);
+  padding: var(--spacing-lg);
+  border: 2px solid var(--gray-200);
+  border-radius: var(--radius-lg);
+  background: var(--bg-primary);
+  color: var(--gray-900);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: var(--shadow-sm);
+}
+
+.tool-option:hover:not(.disabled) {
+  border-color: var(--primary-light);
+  box-shadow: var(--shadow-md);
+  transform: translateY(-2px);
+}
+
+.tool-option.selected {
+  border-color: var(--primary);
+  background: #eff6ff;
+}
+
+.tool-option.disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.tool-option input[type="checkbox"] {
+  flex-shrink: 0;
+  margin-top: 0.1rem;
+}
+
+.tool-option-content {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.tool-option-content strong {
+  font-size: 1rem;
+  color: var(--gray-900);
+}
+
+.tool-option-content p {
+  margin: 0;
+  color: var(--gray-600);
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+
 /* Job Details */
 .job-details-container {
   max-width: 1200px;
@@ -845,6 +905,23 @@ body {
   font-weight: 600;
   display: block;
   margin-bottom: var(--spacing-xs);
+}
+
+.status-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.625rem;
+  flex-wrap: wrap;
+}
+
+.inline-upload-status {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.25rem 0.75rem;
+  border-radius: 999px;
+  font-size: 0.875rem;
+  font-weight: 600;
+  white-space: nowrap;
 }
 
 .file-list {

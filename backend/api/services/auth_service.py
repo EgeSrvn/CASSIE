@@ -20,6 +20,7 @@ logger = get_logger(__name__)
 SECRET_KEY = os.getenv("JWT_SECRET_KEY", "your-secret-key-change-in-production")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "1440"))  # 24 hours default
+JOB_UPLOAD_TOKEN_EXPIRE_MINUTES = int(os.getenv("JWT_JOB_UPLOAD_TOKEN_EXPIRE_MINUTES", "10080"))  # 7 days default
 
 
 def hash_password(password: str) -> str:
@@ -125,3 +126,26 @@ def get_token_expiration() -> datetime:
     """
     return datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
 
+
+def create_job_upload_token(data: Dict[str, Any], expires_delta: Optional[timedelta] = None) -> str:
+    """
+    Create a scoped JWT token for queued job uploads and post-upload execution.
+
+    Args:
+        data: Token payload including user_id, username, and job_id
+        expires_delta: Optional expiration time delta
+
+    Returns:
+        str: Encoded JWT token
+    """
+    to_encode = data.copy()
+    to_encode["token_type"] = "job_upload_session"
+
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=JOB_UPLOAD_TOKEN_EXPIRE_MINUTES)
+
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt

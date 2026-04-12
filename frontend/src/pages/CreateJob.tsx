@@ -37,6 +37,15 @@ export default function CreateJob() {
   const [loadingToolRequirements, setLoadingToolRequirements] = useState(false)
   const [toolFileMappings, setToolFileMappings] = useState<Record<string, Record<string, number[]>>>({}) // Maps tool_index -> requirement_type -> file_id[]
   const navigate = useNavigate()
+  const sharedRequirementCardStyle = {
+    display: 'flex',
+    flexWrap: 'wrap' as const,
+    gap: '0.5rem',
+    padding: '1rem',
+    border: '1px solid #e5e7eb',
+    borderRadius: '4px',
+    backgroundColor: 'white',
+  }
 
   // Check if pipeline_id was passed via navigation state
   useEffect(() => {
@@ -457,10 +466,15 @@ export default function CreateJob() {
       
       const existingLibraryFileIds = uploadedFileIds.filter(id => id > 0)
       const pendingFileIds = Array.from(new Set(uploadedFileIds.filter(id => id < 0)))
+      const expectedTotalInputFiles = existingLibraryFileIds.length + pendingFileIds.length
 
       // Only include already-uploaded library files at create time
       if (existingLibraryFileIds.length > 0) {
         jobData.input_file_ids = existingLibraryFileIds
+      }
+      if (pendingFileIds.length > 0) {
+        jobData.pending_upload_count = pendingFileIds.length
+        jobData.expected_total_input_files = expectedTotalInputFiles
       }
 
       if (selectionMode === 'pipeline') {
@@ -494,7 +508,7 @@ export default function CreateJob() {
       if (job && job.id && pendingFileIds.length > 0) {
         const pendingFilesToUpload = pendingLocalFiles.filter(file => pendingFileIds.includes(file.tempId))
         setSubmitStatus('Queueing selected files...')
-        await enqueuePendingJobUploads(job.id, pendingFilesToUpload)
+        await enqueuePendingJobUploads(job.id, pendingFilesToUpload, job.upload_session_token)
         navigate(`/jobs/${job.id}`)
         return
       }
@@ -621,24 +635,20 @@ export default function CreateJob() {
                     </button>
                   </div>
                 ) : (
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(250px, 1fr))', gap: '1rem' }}>
+                  <div className="tool-selection-grid">
                     {pipelines.map((pipeline) => (
-                      <div
+                      <button
+                        type="button"
                         key={pipeline.id}
                         onClick={() => setSelectedPipelineId(pipeline.id)}
-                        style={{
-                          padding: '1rem',
-                          border: `2px solid ${selectedPipelineId === pipeline.id ? '#2563eb' : '#e5e7eb'}`,
-                          borderRadius: '8px',
-                          cursor: 'pointer',
-                          backgroundColor: selectedPipelineId === pipeline.id ? '#eff6ff' : 'white',
-                        }}
+                        className={`tool-option ${selectedPipelineId === pipeline.id ? 'selected' : ''}`}
+                        style={{ textAlign: 'left' }}
                       >
-                        <h3 style={{ margin: '0 0 0.5rem 0', fontSize: '1rem', fontWeight: '600' }}>{pipeline.name}</h3>
-                        {pipeline.description && (
-                          <p style={{ margin: '0', fontSize: '0.875rem', color: '#6b7280' }}>{pipeline.description}</p>
-                        )}
-                      </div>
+                        <div className="tool-option-content">
+                          <strong>{pipeline.name}</strong>
+                          <p>{pipeline.description || 'Saved pipeline ready for execution.'}</p>
+                        </div>
+                      </button>
                     ))}
                   </div>
                 )}
@@ -721,7 +731,7 @@ export default function CreateJob() {
                       )
                       
                       return (
-                        <div key={requirementKey} style={{ marginBottom: '1.5rem' }}>
+                        <div key={requirementKey} style={{ marginBottom: '1.5rem', padding: '1.5rem', border: '1px solid #e5e7eb', borderRadius: '8px', backgroundColor: '#f9fafb' }}>
                           <div style={{ marginBottom: '0.75rem' }}>
                             <strong>{req.label}</strong>
                             <span style={{ marginLeft: '0.5rem', color: '#666', fontSize: '0.875rem' }}>
@@ -741,17 +751,10 @@ export default function CreateJob() {
                               No compatible files found. Upload files with formats: {req.formats.join(', ').toUpperCase()}
                             </p>
                           ) : (
-                            <div style={{ 
-                              display: 'flex', 
-                              flexWrap: 'wrap', 
-                              gap: '0.5rem',
-                              padding: '1rem',
-                              border: '1px solid #ddd',
-                              borderRadius: '4px',
-                              backgroundColor: '#f9fafb'
-                            }}>
+                            <div style={sharedRequirementCardStyle}>
                               {compatibleFiles.map((file) => {
                                 const isSelected = mappedFileId === file.id
+                                const isPendingLocalFile = file.id < 0
                                 return (
                                   <button
                                     key={file.id}
@@ -761,8 +764,8 @@ export default function CreateJob() {
                                     style={{
                                       padding: '0.5rem 1rem',
                                       borderRadius: '4px',
-                                      border: `2px solid ${isSelected ? '#2563eb' : '#e5e7eb'}`,
-                                      backgroundColor: isSelected ? '#eff6ff' : 'white',
+                                      border: `2px solid ${isSelected ? '#2563eb' : (isPendingLocalFile ? '#3b82f6' : '#e5e7eb')}`,
+                                      backgroundColor: isSelected ? '#eff6ff' : (isPendingLocalFile ? '#f0f9ff' : 'white'),
                                       color: isSelected ? '#2563eb' : '#374151',
                                       cursor: creating ? 'not-allowed' : 'pointer',
                                       fontSize: '0.875rem',
@@ -770,7 +773,8 @@ export default function CreateJob() {
                                       display: 'flex',
                                       alignItems: 'center',
                                       gap: '0.5rem',
-                                      whiteSpace: 'nowrap'
+                                      whiteSpace: 'nowrap',
+                                      transition: 'all 0.2s ease'
                                     }}
                                     title={file.folderPath ? `${file.folderPath}/${file.filename}` : file.filename}
                                   >
@@ -900,15 +904,7 @@ export default function CreateJob() {
                                       No compatible files found. Upload files with formats: {req.formats.join(', ').toUpperCase()}
                                     </p>
                                   ) : (
-                                    <div style={{ 
-                                      display: 'flex', 
-                                      flexWrap: 'wrap', 
-                                      gap: '0.5rem',
-                                      padding: '1rem',
-                                      border: '1px solid #e5e7eb',
-                                      borderRadius: '4px',
-                                      backgroundColor: 'white'
-                                    }}>
+                                    <div style={sharedRequirementCardStyle}>
                                       {compatibleFiles.map((file) => {
                                         const isSelected = mappedFileIds.includes(file.id)
                                         const isPendingLocalFile = file.id < 0

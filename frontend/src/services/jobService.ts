@@ -11,6 +11,9 @@ export interface Job {
   data_types?: string[]
   cloud_provider?: string
   vm_name?: string
+  upload_session_token?: string
+  pending_upload_count?: number
+  expected_total_input_files?: number
   created_at: string
   updated_at: string
 }
@@ -63,6 +66,8 @@ export interface JobCreate {
   cloud_provider?: string
   vm_name?: string // Virtual machine name for execution (e.g., 'vm1', 'vm2')
   input_file_ids?: number[] // Pre-uploaded file IDs to associate with this job
+  pending_upload_count?: number
+  expected_total_input_files?: number
 }
 
 export interface JobListResponse {
@@ -100,9 +105,11 @@ export const getJobs = async (status?: string, page: number = 1): Promise<JobLis
   return response.data
 }
 
-export const getJob = async (jobId: number): Promise<Job> => {
+export const getJob = async (jobId: number, authToken?: string): Promise<Job> => {
   try {
-    const response = await apiClient.get<{ success: boolean; data: Job; message?: string }>(`/api/jobs/${jobId}`)
+    const response = await apiClient.get<{ success: boolean; data: Job; message?: string }>(`/api/jobs/${jobId}`, {
+      headers: authToken ? { Authorization: `Bearer ${authToken}` } : undefined,
+    })
     if (response.data && response.data.success) {
       return response.data.data
     }
@@ -138,9 +145,15 @@ export const deleteJob = async (jobId: number): Promise<void> => {
   await apiClient.delete(`/api/jobs/${jobId}`)
 }
 
-export const executeJob = async (jobId: number): Promise<void> => {
+export const executeJob = async (jobId: number, authToken?: string): Promise<void> => {
   try {
-    const response = await apiClient.post<{ success: boolean; data: any; message?: string }>(`/api/jobs/${jobId}/execute`)
+    const response = await apiClient.post<{ success: boolean; data: any; message?: string }>(
+      `/api/jobs/${jobId}/execute`,
+      undefined,
+      {
+        headers: authToken ? { Authorization: `Bearer ${authToken}` } : undefined,
+      }
+    )
     if (!response.data.success) {
       throw new Error(response.data.message || 'Failed to execute job')
     }

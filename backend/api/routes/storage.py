@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, status,
 from fastapi.responses import JSONResponse, StreamingResponse, Response
 from typing import Optional, List
 # Use real JWT auth (Task 5.4 - now fixed)
-from backend.api.routes.auth import get_current_user
+from backend.api.routes.auth import get_current_user, get_auth_context, AuthContext
 from backend.api.models.user_model import UserResponse
 from backend.api.models.pipeline_model import (
     FileCreate,
@@ -38,6 +38,10 @@ from backend.api.services.storage_service import (
 from backend.api.services.minio_client import MinIOClient, get_minio_client
 from backend.api.services.job_service import get_job_by_id
 from backend.api.models.job_model import JobStatus
+from backend.api.services.job_launch_service import (
+    get_auto_start_payload,
+    start_job_execution_task,
+)
 from backend.api.utils.response_builder import (
     success_response,
     error_response,
@@ -66,7 +70,7 @@ async def upload_file(
     file_type: FileType = Query(..., description="Type of file (input, output, intermediate, log)"),
     file_format: Optional[str] = Query(None, description="File format (fastq, fasta, etc.)"),
     background_tasks: BackgroundTasks = BackgroundTasks(),
-    current_user: UserResponse = Depends(get_current_user)
+    auth_context: AuthContext = Depends(get_auth_context)
 ):
     """
     Upload a file. Can be associated with a job immediately or stored for later association.
@@ -81,6 +85,20 @@ async def upload_file(
     Returns:
         Success response with file data (including file_id for later job association)
     """
+    current_user = auth_context.user
+
+    if auth_context.token_type == "job_upload_session":
+        if job_id is None or job_id != auth_context.job_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Upload session token can only upload files for its job",
+            )
+        if file_type != FileType.INPUT:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Upload session token can only upload input files",
+            )
+
     # If job_id is provided, verify job exists and belongs to user
     if job_id is not None:
         job = get_job_by_id(job_id, user_id=current_user.id)
@@ -158,51 +176,23 @@ async def upload_file(
             
             file_record = create_file_record(file_data)
             
-            # If this is an input file for a job, check if we should start the pipeline
-            # This handles the case where: Job created first → File uploaded later → Pipeline starts
             if job_id and file_type == FileType.INPUT:
                 try:
-                    job = get_job_by_id(job_id, user_id=current_user.id)
-                    if job:
-                        # Check if job is in pending status (waiting for files)
-                        job_status = JobStatus(job.status) if isinstance(job.status, str) else job.status
-                        
-                        if job_status == JobStatus.PENDING:
-                            # Check if job already has any running executions
-                            from backend.api.services.job_execution_service import get_executions_by_job
-                            from backend.api.models.job_model import ExecutionStatus
-                            executions = get_executions_by_job(job_id)
-                            has_running = any(
-                                exec.status == ExecutionStatus.RUNNING 
-                                for exec in executions
-                            )
-                            
-                            if not has_running:
-                                # Get all input files for this job (including the one just uploaded)
-                                from backend.api.services.emulator_pipeline_runner import get_emulator_pipeline_runner
-                                from backend.api.services.storage_service import get_files_by_user
-                                
-                                input_files = get_files_by_user(
-                                    user_id=current_user.id,
-                                    job_id=job_id,
-                                    file_type=FileType.INPUT,
-                                    limit=100,
-                                    offset=0
-                                )
-                                input_file_ids = [f.id for f in input_files]
-                                
-                                if input_file_ids:
-                                    logger.info(
-                                        f"Input file uploaded to pending job {job_id}. "
-                                        f"Found {len(input_file_ids)} input file(s). "
-                                        f"Job remains in PENDING status. User must manually trigger execution."
-                                    )
-                                else:
-                                    logger.warning(f"No input files found for job {job_id} after file upload")
-                            else:
-                                logger.info(f"Job {job_id} is not in PENDING status (status: {job_status.value}), skipping automatic execution")
-                        else:
-                            logger.debug(f"Job {job_id} status is {job_status}, not pending. Pipeline start not triggered by file upload.")
+                    ready_job, input_file_ids, readiness_error = get_auto_start_payload(job_id, current_user.id)
+                    if ready_job and input_file_ids:
+                        background_tasks.add_task(
+                            start_job_execution_task,
+                            ready_job.id,
+                            current_user.id,
+                            ready_job.workflow_id,
+                            input_file_ids,
+                        )
+                        logger.info(
+                            f"Input file uploaded to pending job {job_id}. "
+                            f"Found {len(input_file_ids)} input file(s). Job will start automatically."
+                        )
+                    elif readiness_error:
+                        logger.info(f"Job {job_id} not auto-started after upload: {readiness_error}")
                 except Exception as pipeline_error:
                     # Don't fail file upload if pipeline start fails
                     logger.warning(

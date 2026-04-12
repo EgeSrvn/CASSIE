@@ -214,3 +214,4 @@ data/*
 /dataset/*
 emulation/emulation_run/*
 /frontend/node_modules/*
+.cassie/kube/config

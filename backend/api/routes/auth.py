@@ -64,9 +64,77 @@ class TokenData(BaseModel):
     username: str
 
 
+class AuthContext(BaseModel):
+    """Authenticated request context for access and upload-session tokens."""
+    user: UserResponse
+    token_type: str = "access"
+    job_id: Optional[int] = None
+    expected_total_input_files: Optional[int] = None
+
+
+async def get_auth_context(
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+) -> AuthContext:
+    """
+    Resolve the bearer token to a user plus any scoped upload-session claims.
+    """
+    token = credentials.credentials
+    payload = decode_access_token(token)
+
+    if payload is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    user_id: int = payload.get("user_id")
+    username: str = payload.get("username")
+    token_type = str(payload.get("token_type") or "access")
+
+    if user_id is None or username is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token payload",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    user = get_user_by_id(user_id)
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    context = AuthContext(
+        user=UserResponse(
+            id=user.id,
+            username=user.username,
+            email=user.email,
+            bucket_name=user.bucket_name,
+            created_at=user.created_at,
+            updated_at=user.updated_at
+        ),
+        token_type=token_type,
+    )
+
+    if token_type == "job_upload_session":
+        context.job_id = payload.get("job_id")
+        context.expected_total_input_files = payload.get("expected_total_input_files")
+        if context.job_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid upload session token",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+    return context
+
+
 # Dependency to get current user from JWT token
 async def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security)
+    auth_context: AuthContext = Depends(get_auth_context)
 ) -> UserResponse:
     """
     Dependency to get the current authenticated user from JWT token.
@@ -80,42 +148,14 @@ async def get_current_user(
     Raises:
         HTTPException: If token is invalid or user not found
     """
-    token = credentials.credentials
-    payload = decode_access_token(token)
-    
-    if payload is None:
+    if auth_context.token_type != "access":
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid authentication credentials",
+            detail="This token is not valid for general authenticated access",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    
-    user_id: int = payload.get("user_id")
-    username: str = payload.get("username")
-    
-    if user_id is None or username is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token payload",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    
-    user = get_user_by_id(user_id)
-    if user is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    
-    return UserResponse(
-        id=user.id,
-        username=user.username,
-        email=user.email,
-        bucket_name=user.bucket_name,
-        created_at=user.created_at,
-        updated_at=user.updated_at
-    )
+
+    return auth_context.user
 
 
 # Optional dependency for routes that may or may not require auth
@@ -135,7 +175,10 @@ async def get_current_user_optional(
         return None
     
     try:
-        return await get_current_user(credentials)
+        auth_context = await get_auth_context(credentials)
+        if auth_context.token_type != "access":
+            return None
+        return auth_context.user
     except HTTPException:
         return None
 

@@ -53,7 +53,8 @@ class JobBase(BaseModel):
 
 class JobCreate(JobBase):
     """Model for creating a new job."""
-    pass
+    pending_upload_count: Optional[int] = Field(None, ge=0, description="Number of browser-side files queued for background upload")
+    expected_total_input_files: Optional[int] = Field(None, ge=0, description="Expected total number of input files after queued uploads finish")
 
 
 class JobUpdate(BaseModel):
@@ -81,6 +82,13 @@ class JobInDB(JobBase):
 class JobResponse(JobInDB):
     """Job model for API responses."""
     pass
+
+
+class JobCreateResponse(JobResponse):
+    """Job response returned immediately after job creation."""
+    upload_session_token: Optional[str] = None
+    pending_upload_count: Optional[int] = None
+    expected_total_input_files: Optional[int] = None
 
 
 class JobExecutionBase(BaseModel):
