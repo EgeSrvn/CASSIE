@@ -440,6 +440,7 @@ class KubernetesPipelineRunner:
                 user_id=user_id,
                 stage_number=stage_number,
                 tool=tool,
+                current_inputs=current_inputs,
             )
 
             return stage_outputs
@@ -467,6 +468,7 @@ class KubernetesPipelineRunner:
         download_script = self._build_init_download_script(bucket_name, current_inputs)
         tool_plan = self._plan_tool_resources(tool["id"], current_inputs)
         tool_script = self._build_tool_script(tool, current_inputs, tool_plan)
+        artifact_grace_seconds = self._env_int("CASSIE_ARTIFACT_SIDECAR_GRACE_SECONDS") or 600
 
         labels = {
             "app.kubernetes.io/name": "cassie-pipeline",
@@ -543,7 +545,7 @@ class KubernetesPipelineRunner:
                                 "image": "busybox:1.36.1",
                                 "imagePullPolicy": "IfNotPresent",
                                 "command": ["sh", "-lc"],
-                                "args": ["while true; do sleep 30; done"],
+                                "args": [self._build_artifact_sidecar_script(artifact_grace_seconds)],
                                 "resources": {
                                     "requests": {
                                         "cpu": "10m",
@@ -577,6 +579,26 @@ class KubernetesPipelineRunner:
             )
         return "\n".join(lines)
 
+    def _wrap_tool_script(self, body_lines: List[str]) -> str:
+        return "\n".join(
+            [
+                "set -euo pipefail",
+                'rm -f /workspace/.tool-complete /workspace/.tool-exit-code',
+                'trap \'status=$?; printf "%s\\n" "$status" > /workspace/.tool-exit-code; touch /workspace/.tool-complete; exit "$status"\' EXIT',
+                *body_lines,
+            ]
+        )
+
+    def _build_artifact_sidecar_script(self, grace_seconds: int) -> str:
+        safe_grace_seconds = max(30, grace_seconds)
+        return "\n".join(
+            [
+                "set -eu",
+                "while [ ! -f /workspace/.tool-complete ]; do sleep 5; done",
+                f"sleep {safe_grace_seconds}",
+            ]
+        )
+
     def _build_tool_script(
         self,
         tool: Dict[str, Any],
@@ -598,13 +620,15 @@ class KubernetesPipelineRunner:
             reads = classified["fastq"]
             if not reads:
                 raise ValueError("FastQC requires at least one FASTQ input file. FASTA files are not supported by FastQC.")
-            input_file = os.path.basename(reads[0]["filename"])
-            return "\n".join(
+            fastqc_inputs = " ".join(
+                f'"{input_dir}/{os.path.basename(read["filename"])}"'
+                for read in reads
+            )
+            return self._wrap_tool_script(
                 [
-                    "set -euo pipefail",
                     profile_note,
                     f"mkdir -p {output_dir}",
-                    f'fastqc --threads {tool_plan["threads"]} -o {output_dir} "{input_dir}/{input_file}"',
+                    f'fastqc --threads {tool_plan["threads"]} -o {output_dir} {fastqc_inputs}',
                 ]
             )
 
@@ -620,9 +644,8 @@ class KubernetesPipelineRunner:
             low_resource_flag = " --only-assembler" if low_resource else ""
             kmers = str(tool_plan.get("kmers", "") or "").strip()
             kmers_flag = f" -k {kmers}" if kmers and re.fullmatch(r"\d+(,\d+)*", kmers) else ""
-            return "\n".join(
+            return self._wrap_tool_script(
                 [
-                    "set -euo pipefail",
                     profile_note,
                     "export TMPDIR=/workspace/tmp",
                     "mkdir -p /workspace/tmp",
@@ -640,9 +663,8 @@ class KubernetesPipelineRunner:
             assembly, reference = self._resolve_quast_inputs(classified["fasta"])
             threads = tool_plan["threads"]
             memory_flag = " --memory-efficient" if tool_plan["low_resource"] else ""
-            return "\n".join(
+            return self._wrap_tool_script(
                 [
-                    "set -euo pipefail",
                     profile_note,
                     f"mkdir -p {output_dir}/quast_out",
                     f'quast.py "{input_dir}/{os.path.basename(assembly["filename"])}" '
@@ -652,11 +674,11 @@ class KubernetesPipelineRunner:
             )
 
         if tool["id"] == "GENOMESCOPE2":
-            fastq_reads = self._select_fastq_inputs(classified["fastq"], required=2)
+            fastq_reads = classified["fastq"]
             if not fastq_reads:
                 raise ValueError("GenomeScope2 requires FASTQ reads")
             threads = tool_plan["threads"]
-            inputs = [os.path.basename(item["filename"]) for item in fastq_reads[:2]]
+            inputs = [os.path.basename(item["filename"]) for item in fastq_reads]
             stream_commands: List[str] = []
             for input_name in inputs:
                 src = f"{input_dir}/{input_name}"
@@ -668,9 +690,8 @@ class KubernetesPipelineRunner:
             stream_expr = "; ".join(stream_commands)
             jellyfish_size = tool_plan.get("jellyfish_size", "50M")
             gs_out = f"{output_dir}/genomescope2_out"
-            return "\n".join(
+            return self._wrap_tool_script(
                 [
-                    "set -euo pipefail",
                     profile_note,
                     f"mkdir -p {gs_out}",
                     (
@@ -1293,6 +1314,7 @@ class KubernetesPipelineRunner:
         user_id: int,
         stage_number: int,
         tool: Dict[str, Any],
+        current_inputs: List[Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
         if not os.path.isdir(local_output_dir):
             raise RuntimeError(f"Expected output directory does not exist: {local_output_dir}")
@@ -1305,7 +1327,7 @@ class KubernetesPipelineRunner:
                 for filename in files:
                     local_path = os.path.join(root, filename)
                     rel_path = os.path.relpath(local_path, local_output_dir).replace("\\", "/")
-                    safe_filename = rel_path.replace("/", "_")
+                    safe_filename = self._stage_output_display_name(tool, rel_path, current_inputs)
                     s3_key = (
                         f"jobs/{job_id}/executions/{execution_id}/"
                         f"stage_{stage_number:02d}_{tool['id'].lower()}/{rel_path}"
@@ -1341,6 +1363,49 @@ class KubernetesPipelineRunner:
             shutil.rmtree(Path(local_output_dir).parent, ignore_errors=True)
 
         return stage_outputs
+
+    def _stage_output_display_name(
+        self,
+        tool: Dict[str, Any],
+        rel_path: str,
+        current_inputs: List[Dict[str, Any]],
+    ) -> str:
+        base_name = rel_path.replace("/", "_")
+        if tool.get("id") != "GENOMESCOPE2":
+            return base_name
+
+        fastq_names = [
+            self._compact_filename_label(os.path.basename(artifact.get("filename", "")))
+            for artifact in self._classify_inputs(current_inputs)["fastq"]
+            if artifact.get("filename")
+        ]
+        fastq_names = [name for name in fastq_names if name]
+        if not fastq_names:
+            return base_name
+
+        prefix = "__".join(fastq_names)
+        if len(prefix) > 140:
+            visible = fastq_names[:2]
+            remaining = len(fastq_names) - len(visible)
+            prefix = "__".join(visible)
+            if remaining > 0:
+                prefix = f"{prefix}__plus_{remaining}_more"
+
+        return f"{prefix}__{base_name}"
+
+    def _compact_filename_label(self, filename: str) -> str:
+        name = filename.strip()
+        if not name:
+            return ""
+
+        lowered = name.lower()
+        for suffix in (".fastq.gz", ".fq.gz", ".fastq", ".fq", ".fasta.gz", ".fa.gz", ".fna.gz", ".fasta", ".fa", ".fna"):
+            if lowered.endswith(suffix):
+                name = name[: -len(suffix)]
+                break
+
+        compact = re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("._-")
+        return compact[:60]
 
     def _get_job_logs(self, job_name: str) -> str:
         namespace = self._config.kubernetes.namespace
@@ -1401,6 +1466,52 @@ class KubernetesPipelineRunner:
                 tool_versions=tool_versions,
             ),
         )
+
+    def terminate_job_stages(self, job_id: int, executions: List[Any]) -> Dict[str, Any]:
+        """Delete active Kubernetes stage Jobs/Pods for a CASSIE job."""
+        namespace = self._config.kubernetes.namespace
+        deleted_stage_jobs: List[str] = []
+        errors: List[str] = []
+        seen_stage_jobs: set[str] = set()
+
+        for execution in executions:
+            parameters_used = getattr(execution, "parameters_used", None) or {}
+            stages = parameters_used.get("stages") if isinstance(parameters_used, dict) else None
+            if not isinstance(stages, list):
+                continue
+
+            for stage in stages:
+                if not isinstance(stage, dict):
+                    continue
+                stage_job_name = str(stage.get("kubernetes_job_name") or "").strip()
+                if not stage_job_name or stage_job_name in seen_stage_jobs:
+                    continue
+                seen_stage_jobs.add(stage_job_name)
+
+                delete_result = self._run_kubectl(
+                    ["delete", "job", stage_job_name, "-n", namespace, "--ignore-not-found=true", "--cascade=foreground"],
+                    timeout=60,
+                )
+                if delete_result.returncode == 0:
+                    deleted_stage_jobs.append(stage_job_name)
+                else:
+                    errors.append(f"{stage_job_name}: {delete_result.stderr.strip() or delete_result.stdout.strip() or 'unknown kubectl delete failure'}")
+
+        label_selector = f"cassie/job-id={job_id}"
+        pod_delete_result = self._run_kubectl(
+            ["delete", "pod", "-n", namespace, "-l", label_selector, "--ignore-not-found=true", "--force", "--grace-period=0"],
+            timeout=60,
+        )
+        if pod_delete_result.returncode != 0:
+            errors.append(
+                f"pods for {label_selector}: {pod_delete_result.stderr.strip() or pod_delete_result.stdout.strip() or 'unknown kubectl pod delete failure'}"
+            )
+
+        return {
+            "namespace": namespace,
+            "deleted_stage_jobs": deleted_stage_jobs,
+            "errors": errors,
+        }
 
     def _run_kubectl(
         self,

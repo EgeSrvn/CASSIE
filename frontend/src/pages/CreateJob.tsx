@@ -1,8 +1,17 @@
 import { useState, useEffect } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { createJob, JobCreate, executeJob, getAvailableVMs, VM } from '../services/jobService'
-import { getAvailableTools, Tool, getToolRequirements, ToolRequirementInfo } from '../services/toolService'
-import { getPipelines, Pipeline, getPipelineRequirements, PipelineRequirements, PipelineRequirement } from '../services/pipelineService'
+import {
+  getAvailableTools,
+  Tool,
+  getToolRequirements,
+  ToolRequirementInfo,
+  getRecommendationIntents,
+  getPipelineRecommendations,
+  RecommendationIntent,
+  RecommendationOption,
+} from '../services/toolService'
+import { getPipelines, Pipeline, getPipelineRequirements, PipelineRequirements } from '../services/pipelineService'
 import { getDataFileTree } from '../services/dataFileService'
 import { FolderTreeItem, FileItem } from '../services/folderService'
 import { getToken } from '../services/authService'
@@ -23,7 +32,6 @@ export default function CreateJob() {
   const [loadingPipelines, setLoadingPipelines] = useState(false)
   const [pipelineRequirements, setPipelineRequirements] = useState<PipelineRequirements | null>(null)
   const [loadingRequirements, setLoadingRequirements] = useState(false)
-  const [fileMappings, setFileMappings] = useState<Record<string, number>>({}) // Maps requirement type to file ID
   const [creating, setCreating] = useState(false)
   const [error, setError] = useState<string>('')
   const [dataFileTree, setDataFileTree] = useState<FolderTreeItem[]>([])
@@ -36,6 +44,12 @@ export default function CreateJob() {
   const [toolRequirements, setToolRequirements] = useState<ToolRequirementInfo[]>([])
   const [loadingToolRequirements, setLoadingToolRequirements] = useState(false)
   const [toolFileMappings, setToolFileMappings] = useState<Record<string, Record<string, number[]>>>({}) // Maps tool_index -> requirement_type -> file_id[]
+  const [recommendationIntents, setRecommendationIntents] = useState<RecommendationIntent[]>([])
+  const [selectedIntentIds, setSelectedIntentIds] = useState<string[]>([])
+  const [recommendationFileIds, setRecommendationFileIds] = useState<number[]>([])
+  const [recommendationOptions, setRecommendationOptions] = useState<RecommendationOption[]>([])
+  const [loadingRecommendations, setLoadingRecommendations] = useState(false)
+  const [appliedRecommendationFileIds, setAppliedRecommendationFileIds] = useState<number[] | null>(null)
   const navigate = useNavigate()
   const sharedRequirementCardStyle = {
     display: 'flex',
@@ -82,6 +96,14 @@ export default function CreateJob() {
     fetchTools()
   }, [isAuthenticated])
 
+  useEffect(() => {
+    const fetchIntents = async () => {
+      const intents = await getRecommendationIntents()
+      setRecommendationIntents(intents)
+    }
+    fetchIntents()
+  }, [])
+
   // Fetch pipelines when pipeline mode is selected
   useEffect(() => {
     if (selectionMode === 'pipeline') {
@@ -112,8 +134,7 @@ export default function CreateJob() {
           setLoadingRequirements(true)
           const requirements = await getPipelineRequirements(selectedPipelineId)
           setPipelineRequirements(requirements)
-          // Reset file mappings when pipeline changes
-          setFileMappings({})
+          setToolFileMappings({})
         } catch (err) {
           console.error('Failed to load pipeline requirements:', err)
           setError('Failed to load pipeline requirements')
@@ -124,7 +145,7 @@ export default function CreateJob() {
       fetchRequirements()
     } else {
       setPipelineRequirements(null)
-      setFileMappings({})
+      setToolFileMappings({})
     }
   }, [selectedPipelineId, selectionMode])
 
@@ -194,9 +215,27 @@ export default function CreateJob() {
     }
   }
 
+  const handleIntentToggle = (intentId: string) => {
+    setSelectedIntentIds(prev => (
+      prev.includes(intentId)
+        ? prev.filter(id => id !== intentId)
+        : [...prev, intentId]
+    ))
+  }
+
+  const activeToolRequirementCards = selectionMode === 'pipeline'
+    ? (pipelineRequirements?.tool_requirements || [])
+    : toolRequirements
+
   // Fetch tool requirements when tools are selected
   useEffect(() => {
-    if (selectionMode === 'tools' && selectedTools.length > 0) {
+    if (selectionMode === 'pipeline') {
+      setToolRequirements(pipelineRequirements?.tool_requirements || [])
+      setLoadingToolRequirements(false)
+      return
+    }
+
+    if (selectedTools.length > 0) {
       const fetchRequirements = async () => {
         try {
           setLoadingToolRequirements(true)
@@ -214,7 +253,36 @@ export default function CreateJob() {
       setToolRequirements([])
       setToolFileMappings({})
     }
-  }, [selectedTools, selectionMode])
+  }, [selectionMode, selectedTools, pipelineRequirements])
+
+  useEffect(() => {
+    if (selectionMode !== 'tools' || !appliedRecommendationFileIds || toolRequirements.length === 0) {
+      return
+    }
+
+    const candidateFiles = getCombinedSelectableFiles().filter(file => appliedRecommendationFileIds.includes(file.id))
+    const suggestedMappings: Record<string, Record<string, number[]>> = {}
+
+    toolRequirements.forEach(toolReq => {
+      const toolKey = toolReq.tool_index.toString()
+      const requirementMappings: Record<string, number[]> = {}
+
+      toolReq.requirements.forEach(req => {
+        if (req.is_intermediate) return
+        const compatibleIds = getCompatibleCandidateFileIds(req, candidateFiles)
+        if (compatibleIds.length > 0) {
+          requirementMappings[req.type] = compatibleIds
+        }
+      })
+
+      if (Object.keys(requirementMappings).length > 0) {
+        suggestedMappings[toolKey] = requirementMappings
+      }
+    })
+
+    setToolFileMappings(suggestedMappings)
+    setAppliedRecommendationFileIds(null)
+  }, [selectionMode, appliedRecommendationFileIds, toolRequirements, pendingLocalFiles, dataFileTree])
 
   const handleToolFileMapping = (toolIndex: number, requirementType: string, fileId: number) => {
     setToolFileMappings(prev => {
@@ -246,21 +314,12 @@ export default function CreateJob() {
     })
   }
 
-  const handleFileMapping = (requirementType: string, fileId: number) => {
-    setFileMappings(prev => {
-      const currentFileId = prev[requirementType]
-      // Toggle: if clicking the same file, unmap it
-      if (currentFileId === fileId) {
-        const newMappings = { ...prev }
-        delete newMappings[requirementType]
-        return newMappings
-      } else {
-        return {
-          ...prev,
-          [requirementType]: fileId
-        }
-      }
-    })
+  const handleApplyRecommendation = (option: RecommendationOption) => {
+    setSelectionMode('tools')
+    setSelectedPipelineId(null)
+    setSelectedTools(option.tool_indices)
+    setToolFileMappings({})
+    setAppliedRecommendationFileIds([...recommendationFileIds])
   }
 
   // Helper function to flatten file tree into a list of files with folder paths
@@ -306,26 +365,6 @@ export default function CreateJob() {
     return null
   }
 
-  const isMappedFileId = (fileId: unknown): fileId is number => (
-    typeof fileId === 'number' && Number.isFinite(fileId)
-  )
-
-  const getPipelineRequirementKey = (req: PipelineRequirement) => `${req.type}:${req.label}`
-
-  const getPipelineRequirementTools = (req: PipelineRequirement): string[] => {
-    if (req.used_by && req.used_by.length > 0) return req.used_by
-
-    if (req.type === 'forward_reads' || req.type === 'reverse_reads') return ['SPAdes']
-    if (req.type === 'assembly' || req.type === 'reference') return ['QUAST']
-    if (req.type === 'reads') {
-      const tools: string[] = []
-      if (pipelineRequirements?.has_fastqc) tools.push('FastQC')
-      if (pipelineRequirements?.has_genomescope2) tools.push('GenomeScope2')
-      return tools.length > 0 ? tools : ['Read-based tools']
-    }
-    return ['Selected pipeline']
-  }
-
   const getCombinedSelectableFiles = (): Array<FileItem & { folderPath?: string }> => {
     const libraryFiles = flattenFiles(dataFileTree)
     const pendingFilesAsItems: Array<FileItem & { folderPath?: string }> = pendingLocalFiles.map(file => ({
@@ -342,6 +381,33 @@ export default function CreateJob() {
     }))
 
     return [...pendingFilesAsItems, ...libraryFiles]
+  }
+
+  const getCompatibleCandidateFileIds = (
+    requirement: { type: string; formats: string[] },
+    candidateFiles: Array<FileItem & { folderPath?: string }>
+  ): number[] => {
+    const compatibleFiles = candidateFiles.filter(file =>
+      requirement.formats.some(format =>
+        file.filename.toLowerCase().endsWith(`.${format}`) ||
+        file.filename.toLowerCase().endsWith(`.${format}.gz`)
+      )
+    )
+
+    if (requirement.type === 'forward_reads') {
+      return compatibleFiles.slice(0, 1).map(file => file.id)
+    }
+    if (requirement.type === 'reverse_reads') {
+      return compatibleFiles.slice(1, 2).map(file => file.id)
+    }
+    if (requirement.type === 'assembly') {
+      return compatibleFiles.slice(0, 1).map(file => file.id)
+    }
+    if (requirement.type === 'reference') {
+      const alternate = compatibleFiles.slice(1, 2).map(file => file.id)
+      return alternate.length > 0 ? alternate : compatibleFiles.slice(0, 1).map(file => file.id)
+    }
+    return compatibleFiles.map(file => file.id)
   }
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -373,6 +439,37 @@ export default function CreateJob() {
     }
   }
 
+  const handleRecommendationFileToggle = (fileId: number) => {
+    setRecommendationFileIds(prev => (
+      prev.includes(fileId)
+        ? prev.filter(id => id !== fileId)
+        : [...prev, fileId]
+    ))
+  }
+
+  const handleGenerateRecommendations = async () => {
+    const selectedFiles = getCombinedSelectableFiles().filter(file => recommendationFileIds.includes(file.id))
+    setLoadingRecommendations(true)
+    try {
+      const response = await getPipelineRecommendations(
+        selectedIntentIds,
+        selectedFiles.map(file => ({
+          filename: file.filename,
+          file_format: file.file_format || null,
+        }))
+      )
+      const options = response?.pipeline_options || []
+      setRecommendationOptions(options)
+      if (options.length === 0) {
+        setError('No recommendation could be generated from the selected intentions and candidate files')
+      } else {
+        setError('')
+      }
+    } finally {
+      setLoadingRecommendations(false)
+    }
+  }
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setError('')
@@ -394,10 +491,10 @@ export default function CreateJob() {
       return
     }
 
-    // For tools mode, validate that all non-intermediate requirements have files mapped
-    if (selectionMode === 'tools') {
+    // Validate that all non-intermediate requirements have files mapped
+    if ((selectionMode === 'tools' && selectedTools.length > 0) || (selectionMode === 'pipeline' && activeToolRequirementCards.length > 0)) {
       const missingRequirements: string[] = []
-      toolRequirements.forEach(toolReq => {
+      activeToolRequirementCards.forEach(toolReq => {
         toolReq.requirements.forEach(req => {
           if (!req.is_intermediate) {
             const toolKey = toolReq.tool_index.toString()
@@ -419,39 +516,22 @@ export default function CreateJob() {
       return
     }
 
-    // Get file IDs from data library
-    let uploadedFileIds: number[] = []
-    
-    if (selectionMode === 'pipeline' && pipelineRequirements) {
-      // Use mapped files from requirements
-      uploadedFileIds = pipelineRequirements.input_requirements
-        .map(req => fileMappings[getPipelineRequirementKey(req)])
-        .filter(isMappedFileId)
-      
-      // Validate that all pipeline requirements are mapped
-      if (pipelineRequirements.input_requirements.length > 0) {
-        const missingRequirements = pipelineRequirements.input_requirements.filter(
-          req => !isMappedFileId(fileMappings[getPipelineRequirementKey(req)])
-        )
-        if (missingRequirements.length > 0) {
-          setError(`Please map files for all required inputs: ${missingRequirements.map(r => r.label).join(', ')}`)
-          return
+    // Collect all mapped files from visible tool requirements
+    const fileIdSet = new Set<number>()
+    activeToolRequirementCards.forEach(toolReq => {
+      toolReq.requirements.forEach(req => {
+        if (!req.is_intermediate) {
+          const toolKey = toolReq.tool_index.toString()
+          const mappedFileIds = toolFileMappings[toolKey]?.[req.type] || []
+          mappedFileIds.forEach(fileId => fileIdSet.add(fileId))
         }
-      }
-      // For pipelines, if there are no requirements, it's valid to have no files
-    } else {
-      // For tools mode, collect all mapped files from tool requirements
-      const fileIdSet = new Set<number>()
-      toolRequirements.forEach(toolReq => {
-        toolReq.requirements.forEach(req => {
-          if (!req.is_intermediate) {
-            const toolKey = toolReq.tool_index.toString()
-            const mappedFileIds = toolFileMappings[toolKey]?.[req.type] || []
-            mappedFileIds.forEach(fileId => fileIdSet.add(fileId))
-          }
-        })
       })
-      uploadedFileIds = Array.from(fileIdSet)
+    })
+    const uploadedFileIds = Array.from(fileIdSet)
+
+    if (selectionMode === 'pipeline' && activeToolRequirementCards.length === 0) {
+      setError('The selected pipeline has no supported tools available for job creation')
+      return
     }
 
     try {
@@ -595,6 +675,119 @@ export default function CreateJob() {
             </small>
           </div>
 
+          {selectionMode === 'tools' && (
+            <div className="form-group">
+              <label>Intent-Based Suggestions</label>
+              <div style={{ padding: '1rem', border: '1px solid #e5e7eb', borderRadius: '8px', backgroundColor: '#f9fafb' }}>
+                <p style={{ marginBottom: '1rem', color: '#666', fontSize: '0.875rem' }}>
+                  Choose what you want to achieve, provide candidate input files, and the system will suggest a few possible pipelines.
+                </p>
+
+                <div style={{ marginBottom: '1rem', display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
+                  {recommendationIntents.map(intent => {
+                    const selected = selectedIntentIds.includes(intent.id)
+                    return (
+                      <button
+                        key={intent.id}
+                        type="button"
+                        onClick={() => handleIntentToggle(intent.id)}
+                        className={selected ? 'btn-primary' : 'btn-secondary'}
+                        style={{ padding: '0.5rem 0.75rem' }}
+                        title={intent.description}
+                      >
+                        {intent.label}
+                      </button>
+                    )
+                  })}
+                </div>
+
+                <div style={{ marginBottom: '1rem' }}>
+                  <label className="btn-secondary" style={{ cursor: 'pointer', display: 'inline-block' }}>
+                    Select Candidate File(s)
+                    <input
+                      type="file"
+                      onChange={handleFileUpload}
+                      disabled={creating}
+                      multiple
+                      style={{ display: 'none' }}
+                      accept=".fastq,.fasta,.fq,.fa,.gz"
+                    />
+                  </label>
+                </div>
+
+                {loadingDataTree ? (
+                  <p style={{ color: '#666', fontStyle: 'italic' }}>Loading candidate files...</p>
+                ) : (
+                  <div style={{ marginBottom: '1rem' }}>
+                    <div style={sharedRequirementCardStyle}>
+                      {getCombinedSelectableFiles().map(file => {
+                        const isSelected = recommendationFileIds.includes(file.id)
+                        return (
+                          <button
+                            key={`rec-file-${file.id}`}
+                            type="button"
+                            onClick={() => handleRecommendationFileToggle(file.id)}
+                            className={isSelected ? 'btn-primary' : 'btn-secondary'}
+                            style={{ padding: '0.4rem 0.75rem' }}
+                            title={file.folderPath ? `${file.folderPath}/${file.filename}` : file.filename}
+                          >
+                            {file.filename}
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                <button
+                  type="button"
+                  onClick={handleGenerateRecommendations}
+                  className="btn-primary"
+                  disabled={loadingRecommendations || selectedIntentIds.length === 0 || recommendationFileIds.length === 0}
+                >
+                  {loadingRecommendations ? 'Generating Suggestions...' : 'Suggest Pipelines'}
+                </button>
+
+                {recommendationOptions.length > 0 && (
+                  <div style={{ marginTop: '1rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                    {recommendationOptions.map(option => (
+                      <div
+                        key={option.id}
+                        style={{ padding: '1rem', border: '1px solid #dbeafe', borderRadius: '8px', backgroundColor: '#fff' }}
+                      >
+                        <div style={{ display: 'flex', justifyContent: 'space-between', gap: '1rem', flexWrap: 'wrap', marginBottom: '0.5rem' }}>
+                          <div>
+                            <strong>{option.title}</strong>
+                            <p style={{ margin: '0.25rem 0 0 0', color: '#64748b', fontSize: '0.875rem' }}>{option.summary}</p>
+                          </div>
+                          <button type="button" className="btn-primary" onClick={() => handleApplyRecommendation(option)}>
+                            Use This Plan
+                          </button>
+                        </div>
+                        <p style={{ margin: '0 0 0.5rem 0', fontSize: '0.875rem' }}>
+                          <strong>Tools:</strong> {option.tool_names.join(', ')}
+                        </p>
+                        {option.missing_inputs.length > 0 && (
+                          <p style={{ margin: '0 0 0.5rem 0', color: '#b45309', fontSize: '0.875rem' }}>
+                            <strong>Missing inputs:</strong> {option.missing_inputs.join(', ')}
+                          </p>
+                        )}
+                        {option.assumptions.length > 0 && (
+                          <p style={{ margin: '0 0 0.5rem 0', color: '#475569', fontSize: '0.875rem' }}>
+                            <strong>Assumptions:</strong> {option.assumptions.join(' ')}
+                          </p>
+                        )}
+                        <p style={{ margin: 0, color: '#475569', fontSize: '0.875rem' }}>
+                          <strong>Why this plan:</strong> {option.rationale.join(', ')}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           <div className="form-group">
             <label>Workflow Selection *</label>
             <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem' }}>
@@ -690,126 +883,50 @@ export default function CreateJob() {
           {/* Pipeline Requirements Section */}
           {selectionMode === 'pipeline' && selectedPipelineId && (
             <div className="form-group">
-              <label>Pipeline Input Requirements *</label>
+              <label>Pipeline Tools</label>
               {loadingRequirements ? (
                 <p style={{ color: '#666', fontStyle: 'italic' }}>Loading requirements...</p>
-              ) : pipelineRequirements && pipelineRequirements.input_requirements.length > 0 ? (
-                <div className="pipeline-requirements-container">
-                  <p style={{ marginBottom: '1rem', color: '#666', fontSize: '0.875rem' }}>
-                    This pipeline requires the following input files. Map each requirement to a file from your data library or upload new files:
-                  </p>
-                  
-                  {/* File Upload Section for Pipeline */}
-                  <div style={{ marginBottom: '1rem' }}>
-                    <label className="btn-secondary" style={{ cursor: 'pointer', display: 'inline-block' }}>
-                      Select New File(s)
-                      <input
-                        type="file"
-                        onChange={handleFileUpload}
-                        disabled={creating}
-                        multiple
-                        style={{ display: 'none' }}
-                        accept=".fastq,.fasta,.fq,.fa,.gz"
-                      />
-                    </label>
-                  </div>
-                  {loadingDataTree ? (
-                    <p style={{ color: '#666', fontStyle: 'italic' }}>Loading data library...</p>
-                  ) : (() => {
-                    const combinedFiles = getCombinedSelectableFiles()
-                    
-                    return pipelineRequirements.input_requirements.map((req: PipelineRequirement) => {
-                      const requirementKey = getPipelineRequirementKey(req)
-                      const mappedFileId = fileMappings[requirementKey]
-                      const toolNames = getPipelineRequirementTools(req)
-                      // Filter files that match the requirement format
-                      const compatibleFiles = combinedFiles.filter(file => 
-                        req.formats.some(format => 
-                          file.filename.toLowerCase().endsWith(`.${format}`) || 
-                          file.filename.toLowerCase().endsWith(`.${format}.gz`)
-                        )
-                      )
-                      
-                      return (
-                        <div key={requirementKey} style={{ marginBottom: '1.5rem', padding: '1.5rem', border: '1px solid #e5e7eb', borderRadius: '8px', backgroundColor: '#f9fafb' }}>
-                          <div style={{ marginBottom: '0.75rem' }}>
-                            <strong>{req.label}</strong>
-                            <span style={{ marginLeft: '0.5rem', color: '#666', fontSize: '0.875rem' }}>
-                              ({req.formats.join(', ').toUpperCase()})
-                            </span>
-                            <span style={{ marginLeft: '0.5rem', color: '#475569', fontSize: '0.875rem' }}>
-                              Used by: {toolNames.join(', ')}
-                            </span>
-                            {isMappedFileId(mappedFileId) && (
-                              <span style={{ marginLeft: '0.5rem', color: '#16a34a', fontSize: '0.875rem', fontWeight: '500' }}>
-                                ✓ File selected
-                              </span>
-                            )}
-                          </div>
-                          {compatibleFiles.length === 0 ? (
-                            <p style={{ color: '#666', fontStyle: 'italic', fontSize: '0.875rem' }}>
-                              No compatible files found. Upload files with formats: {req.formats.join(', ').toUpperCase()}
-                            </p>
-                          ) : (
-                            <div style={sharedRequirementCardStyle}>
-                              {compatibleFiles.map((file) => {
-                                const isSelected = mappedFileId === file.id
-                                const isPendingLocalFile = file.id < 0
-                                return (
-                                  <button
-                                    key={file.id}
-                                    type="button"
-                                    onClick={() => handleFileMapping(requirementKey, file.id)}
-                                    disabled={creating}
-                                    style={{
-                                      padding: '0.5rem 1rem',
-                                      borderRadius: '4px',
-                                      border: `2px solid ${isSelected ? '#2563eb' : (isPendingLocalFile ? '#3b82f6' : '#e5e7eb')}`,
-                                      backgroundColor: isSelected ? '#eff6ff' : (isPendingLocalFile ? '#f0f9ff' : 'white'),
-                                      color: isSelected ? '#2563eb' : '#374151',
-                                      cursor: creating ? 'not-allowed' : 'pointer',
-                                      fontSize: '0.875rem',
-                                      fontWeight: isSelected ? '600' : '400',
-                                      display: 'flex',
-                                      alignItems: 'center',
-                                      gap: '0.5rem',
-                                      whiteSpace: 'nowrap',
-                                      transition: 'all 0.2s ease'
-                                    }}
-                                    title={file.folderPath ? `${file.folderPath}/${file.filename}` : file.filename}
-                                  >
-                                    {isSelected && <span>✓</span>}
-                                    <span>{file.filename}</span>
-                                    {file.folderPath && (
-                                      <span style={{ color: '#6b7280', fontSize: '0.75rem' }}>
-                                        ({file.folderPath})
-                                      </span>
-                                    )}
-                                  </button>
-                                )
-                              })}
-                            </div>
-                          )}
-                        </div>
-                      )
-                    })
-                  })()}
-                </div>
               ) : pipelineRequirements ? (
-                <p style={{ color: '#666', fontStyle: 'italic' }}>
-                  This pipeline doesn't require any input files (or all inputs come from previous tools).
-                </p>
+                <div style={{ padding: '1rem', border: '1px solid #e5e7eb', borderRadius: '8px', backgroundColor: '#f9fafb' }}>
+                  <p style={{ marginBottom: '0.75rem', color: '#666', fontSize: '0.875rem' }}>
+                    This pipeline will use the same tool/input configuration flow as normal tool selection.
+                  </p>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
+                    {pipelineRequirements.tools.length > 0 ? pipelineRequirements.tools.map(toolId => {
+                      const tool = availableTools.find(item => item.tool_id === toolId || item.name.toUpperCase() === toolId)
+                      const label = tool?.name || toolId
+                      return (
+                        <span
+                          key={toolId}
+                          style={{
+                            display: 'inline-flex',
+                            padding: '0.4rem 0.75rem',
+                            borderRadius: '999px',
+                            backgroundColor: '#eff6ff',
+                            color: '#1d4ed8',
+                            fontSize: '0.875rem',
+                            fontWeight: 500,
+                          }}
+                        >
+                          {label}
+                        </span>
+                      )
+                    }) : (
+                      <span style={{ color: '#666', fontStyle: 'italic' }}>No supported tools detected in this pipeline.</span>
+                    )}
+                  </div>
+                </div>
               ) : null}
             </div>
           )}
 
-          {/* Tool Input Requirements Section - Only for tools mode */}
-          {selectionMode === 'tools' && selectedTools.length > 0 && (
+          {/* Tool Input Requirements Section */}
+          {activeToolRequirementCards.length > 0 && (
             <div className="form-group">
               <label>Tool Input Requirements *</label>
               {loadingToolRequirements ? (
                 <p style={{ color: '#666', fontStyle: 'italic' }}>Loading tool requirements...</p>
-              ) : toolRequirements.length > 0 ? (
+              ) : activeToolRequirementCards.length > 0 ? (
                 <div>
                   <p style={{ marginBottom: '1rem', color: '#666', fontSize: '0.875rem' }}>
                     Each tool requires specific input files. Map files from your data library or upload new files.
@@ -836,7 +953,7 @@ export default function CreateJob() {
                   ) : (() => {
                     const combinedFiles = getCombinedSelectableFiles()
                     
-                    return toolRequirements.map((toolReq) => {
+                    return activeToolRequirementCards.map((toolReq) => {
                       const toolKey = toolReq.tool_index.toString()
                       return (
                         <div key={toolReq.tool_index} style={{ marginBottom: '2rem', padding: '1.5rem', border: '1px solid #e5e7eb', borderRadius: '8px', backgroundColor: '#f9fafb' }}>

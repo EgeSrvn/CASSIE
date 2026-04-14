@@ -15,7 +15,8 @@ const apiClient: AxiosInstance = axios.create({
 apiClient.interceptors.request.use(
   (config) => {
     const token = getToken()
-    if (token) {
+    const hasExplicitAuthorization = !!config.headers?.Authorization
+    if (token && !hasExplicitAuthorization) {
       config.headers.Authorization = `Bearer ${token}`
     }
     return config

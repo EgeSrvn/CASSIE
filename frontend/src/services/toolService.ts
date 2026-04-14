@@ -89,6 +89,45 @@ export interface ToolRequirementsResponse {
   message?: string
 }
 
+export interface RecommendationIntent {
+  id: string
+  label: string
+  description: string
+  tags: string[]
+}
+
+export interface RecommendationFileSummary {
+  filename: string
+  file_format?: string | null
+}
+
+export interface RecommendationOption {
+  id: string
+  title: string
+  summary: string
+  intent_ids: string[]
+  tool_ids: string[]
+  tool_indices: number[]
+  tool_names: string[]
+  missing_inputs: string[]
+  assumptions: string[]
+  rationale: string[]
+  tags: string[]
+  score: number
+}
+
+export interface RecommendationResponseData {
+  intents: RecommendationIntent[]
+  detected_inputs: {
+    fastq_count: number
+    fasta_count: number
+    has_fastq: boolean
+    has_paired_fastq: boolean
+    has_fasta: boolean
+  }
+  pipeline_options: RecommendationOption[]
+}
+
 /**
  * Get input requirements for specified tools.
  */
@@ -106,5 +145,42 @@ export const getToolRequirements = async (toolIndices: number[]): Promise<ToolRe
   } catch (error) {
     console.error('Failed to get tool requirements:', error)
     return []
+  }
+}
+
+export const getRecommendationIntents = async (): Promise<RecommendationIntent[]> => {
+  try {
+    const response = await apiClient.get<{ success: boolean; data: RecommendationIntent[]; message?: string }>(
+      '/api/tools/recommendation-intents'
+    )
+    if (response.data.success && response.data.data) {
+      return response.data.data
+    }
+    return []
+  } catch (error) {
+    console.error('Failed to get recommendation intents:', error)
+    return []
+  }
+}
+
+export const getPipelineRecommendations = async (
+  intentIds: string[],
+  files: RecommendationFileSummary[]
+): Promise<RecommendationResponseData | null> => {
+  try {
+    const response = await apiClient.post<{ success: boolean; data: RecommendationResponseData; message?: string }>(
+      '/api/tools/recommendations',
+      {
+        intent_ids: intentIds,
+        files,
+      }
+    )
+    if (response.data.success && response.data.data) {
+      return response.data.data
+    }
+    return null
+  } catch (error) {
+    console.error('Failed to get pipeline recommendations:', error)
+    return null
   }
 }

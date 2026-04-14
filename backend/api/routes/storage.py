@@ -178,7 +178,31 @@ async def upload_file(
             
             if job_id and file_type == FileType.INPUT:
                 try:
-                    ready_job, input_file_ids, readiness_error = get_auto_start_payload(job_id, current_user.id)
+                    expected_total_input_files = auth_context.expected_total_input_files
+                    if expected_total_input_files:
+                        current_job_input_files = get_files_by_user(
+                            user_id=current_user.id,
+                            job_id=job_id,
+                            file_type=FileType.INPUT,
+                            limit=expected_total_input_files + 5,
+                            offset=0,
+                        )
+                        current_input_count = len(current_job_input_files)
+                        if current_input_count < expected_total_input_files:
+                            logger.info(
+                                f"Input file uploaded to pending job {job_id}, but waiting for more files before auto-start. "
+                                f"Currently have {current_input_count}/{expected_total_input_files} input file(s)."
+                            )
+                            ready_job = None
+                            input_file_ids = None
+                            readiness_error = (
+                                f"Waiting for all queued uploads ({current_input_count}/{expected_total_input_files} received)"
+                            )
+                        else:
+                            ready_job, input_file_ids, readiness_error = get_auto_start_payload(job_id, current_user.id)
+                    else:
+                        ready_job, input_file_ids, readiness_error = get_auto_start_payload(job_id, current_user.id)
+
                     if ready_job and input_file_ids:
                         background_tasks.add_task(
                             start_job_execution_task,

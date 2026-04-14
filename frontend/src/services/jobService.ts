@@ -1,5 +1,18 @@
 import apiClient from './apiClient'
 
+const extractApiErrorMessage = (errorData: any, fallback: string): string => {
+  const candidate = (
+    errorData?.message ||
+    errorData?.detail ||
+    errorData?.error?.message ||
+    errorData?.error
+  )
+
+  return typeof candidate === 'string' && candidate.trim().length > 0
+    ? candidate
+    : fallback
+}
+
 export interface Job {
   id: number
   name: string
@@ -91,7 +104,7 @@ export const createJob = async (jobData: JobCreate): Promise<Job> => {
   } catch (error: any) {
     if (error.response?.data) {
       const errorData = error.response.data
-      throw new Error(errorData.message || errorData.detail || errorData.error || 'Failed to create job')
+      throw new Error(extractApiErrorMessage(errorData, 'Failed to create job'))
     }
     throw error
   }
@@ -117,7 +130,7 @@ export const getJob = async (jobId: number, authToken?: string): Promise<Job> =>
   } catch (error: any) {
     if (error.response?.data) {
       const errorData = error.response.data
-      throw new Error(errorData.message || errorData.detail || errorData.error || 'Failed to get job')
+      throw new Error(extractApiErrorMessage(errorData, 'Failed to get job'))
     }
     throw error
   }
@@ -135,7 +148,7 @@ export const getJobExecutions = async (jobId: number): Promise<JobExecution[]> =
   } catch (error: any) {
     if (error.response?.data) {
       const errorData = error.response.data
-      throw new Error(errorData.message || errorData.detail || errorData.error || 'Failed to get job executions')
+      throw new Error(extractApiErrorMessage(errorData, 'Failed to get job executions'))
     }
     throw error
   }
@@ -160,7 +173,7 @@ export const executeJob = async (jobId: number, authToken?: string): Promise<voi
   } catch (error: any) {
     if (error.response?.data) {
       const errorData = error.response.data
-      throw new Error(errorData.message || errorData.detail || errorData.error || 'Failed to execute job')
+      throw new Error(extractApiErrorMessage(errorData, 'Failed to execute job'))
     }
     throw error
   }
@@ -192,7 +205,7 @@ export const addFilesToJob = async (
   } catch (error: any) {
     if (error.response?.data) {
       const errorData = error.response.data
-      throw new Error(errorData.message || errorData.detail || errorData.error || 'Failed to add files to job')
+      throw new Error(extractApiErrorMessage(errorData, 'Failed to add files to job'))
     }
     throw error
   }
@@ -213,7 +226,7 @@ export const getAvailableVMs = async (): Promise<VM[]> => {
   } catch (error: any) {
     if (error.response?.data) {
       const errorData = error.response.data
-      throw new Error(errorData.message || errorData.detail || errorData.error || 'Failed to get available VMs')
+      throw new Error(extractApiErrorMessage(errorData, 'Failed to get available VMs'))
     }
     throw error
   }

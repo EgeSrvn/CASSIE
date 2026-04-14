@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { getJobs, Job, deleteJob } from '../services/jobService'
 import { getToken } from '../services/authService'
 import { clearPendingJobUploads } from '../services/pendingJobUploadService'
+import { formatLocalDateTime } from '../utils/dateTime'
 import Navigation from '../components/Navigation'
 import '../styles/globals.css'
 
@@ -121,9 +122,9 @@ export default function Jobs() {
                   {job.workflow_id && (
                     <p><strong>Workflow ID:</strong> {job.workflow_id}</p>
                   )}
-                  <p><strong>Created:</strong> {new Date(job.created_at).toLocaleString()}</p>
+                  <p><strong>Created:</strong> {formatLocalDateTime(job.created_at)}</p>
                   {job.updated_at && (
-                    <p><strong>Updated:</strong> {new Date(job.updated_at).toLocaleString()}</p>
+                    <p><strong>Updated:</strong> {formatLocalDateTime(job.updated_at)}</p>
                   )}
                 </div>
                 <div className="job-actions">

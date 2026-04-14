@@ -3,11 +3,14 @@ Tools API routes for CASSIE backend.
 
 This module provides:
 - Get available tools list
+- Get input requirements
+- Get intent-driven pipeline recommendations
 """
 
 from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse
-from typing import Optional
+from typing import Optional, List, Dict, Any
+from pydantic import BaseModel, Field
 
 from backend.api.utils.response_builder import (
     success_response,
@@ -15,6 +18,10 @@ from backend.api.utils.response_builder import (
     ErrorCode
 )
 from backend.api.utils.logger import get_logger
+from backend.api.services.intent_recommender import (
+    get_recommendation_intents,
+    recommend_pipelines,
+)
 from tool_registry import (
     get_tool_by_index,
     get_tool_registry,
@@ -24,6 +31,16 @@ from tool_registry import (
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/tools", tags=["tools"])
+
+
+class RecommendationFileSummary(BaseModel):
+    filename: str
+    file_format: Optional[str] = None
+
+
+class RecommendationRequest(BaseModel):
+    intent_ids: List[str] = Field(default_factory=list)
+    files: List[RecommendationFileSummary] = Field(default_factory=list)
 
 
 @router.get("")
@@ -62,6 +79,44 @@ async def get_available_tools():
         return JSONResponse(content=error_data, status_code=500)
 
 
+@router.get("/recommendation-intents")
+async def list_recommendation_intents():
+    try:
+        return success_response(
+            data=get_recommendation_intents(),
+            message="Recommendation intents retrieved successfully",
+        )
+    except Exception as e:
+        logger.error(f"Error getting recommendation intents: {e}", exc_info=True)
+        error_data = error_response(
+            error_code=ErrorCode.INTERNAL_ERROR,
+            message="Failed to retrieve recommendation intents",
+            status_code=500,
+        )
+        return JSONResponse(content=error_data, status_code=500)
+
+
+@router.post("/recommendations")
+async def get_recommendations(request: RecommendationRequest):
+    try:
+        recommendation_data = recommend_pipelines(
+            intent_ids=request.intent_ids,
+            file_entries=[file.model_dump() for file in request.files],
+        )
+        return success_response(
+            data=recommendation_data,
+            message="Pipeline recommendations generated successfully",
+        )
+    except Exception as e:
+        logger.error(f"Error generating recommendations: {e}", exc_info=True)
+        error_data = error_response(
+            error_code=ErrorCode.INTERNAL_ERROR,
+            message="Failed to generate pipeline recommendations",
+            status_code=500,
+        )
+        return JSONResponse(content=error_data, status_code=500)
+
+
 @router.get("/requirements")
 async def get_tool_requirements(
     tool_indices: Optional[str] = Query(None, description="Comma-separated tool indices (e.g., '0,1,2')")
@@ -94,9 +149,16 @@ async def get_tool_requirements(
             )
             return JSONResponse(content=error_data, status_code=400)
         
+        selected_tool_ids = {
+            tool["id"]
+            for idx in indices
+            for tool in [get_tool_by_index(idx)]
+            if tool
+        }
+
         # Get tools and their requirements
         tool_requirements = []
-        has_spades = False
+        has_spades_selected = "SPADES" in selected_tool_ids
         
         for idx in indices:
             tool = get_tool_by_index(idx)
@@ -114,8 +176,9 @@ async def get_tool_requirements(
                 for req in requirements:
                     req_copy = req.copy()
                     
-                    # QUAST assembly comes from SPAdes if SPAdes is before it
-                    if tool_id == "QUAST" and req["type"] == "assembly" and has_spades:
+                    # QUAST assembly comes from SPAdes whenever both are selected for the same workflow.
+                    # Tool ordering later normalizes execution order, so this should not depend on iteration order here.
+                    if tool_id == "QUAST" and req["type"] == "assembly" and has_spades_selected:
                         req_copy["is_intermediate"] = True
                         req_copy["source_tool"] = "SPAdes"
                     else:
@@ -131,9 +194,6 @@ async def get_tool_requirements(
                     "description": tool.get("description", ""),
                     "requirements": processed_requirements
                 })
-                
-                if tool_id == "SPADES":
-                    has_spades = True
         
         return success_response(
             data=tool_requirements,

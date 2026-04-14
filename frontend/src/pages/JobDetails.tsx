@@ -11,6 +11,7 @@ import {
   startPendingJobUploadProcessor,
   subscribeToJobUploadStatus
 } from '../services/pendingJobUploadService'
+import { formatDurationClock, formatLocalDateTime } from '../utils/dateTime'
 import Navigation from '../components/Navigation'
 import '../styles/globals.css'
 
@@ -32,7 +33,7 @@ export default function JobDetails() {
   const [viewingFileUrl, setViewingFileUrl] = useState<string | null>(null)
   const viewingFileUrlRef = useRef<string | null>(null)
   const [htmlZoom, setHtmlZoom] = useState<number>(0.75)
-  const [now, setNow] = useState(() => Date.now())
+  const [, setClockTick] = useState(0)
   const [jobUploadStatus, setJobUploadStatus] = useState<JobUploadStatus | null>(null)
   const [pendingQueuedFiles, setPendingQueuedFiles] = useState<PendingQueuedJobFile[]>([])
 
@@ -120,7 +121,7 @@ export default function JobDetails() {
 
   useEffect(() => {
     const timer = window.setInterval(() => {
-      setNow(Date.now())
+      setClockTick(value => value + 1)
     }, 1000)
 
     return () => window.clearInterval(timer)
@@ -354,20 +355,6 @@ export default function JobDetails() {
     }
   }
 
-  const formatDuration = (start?: string | null, end?: string | null) => {
-    if (!start) return null
-
-    const startTime = new Date(start).getTime()
-    const endTime = end ? new Date(end).getTime() : now
-    if (Number.isNaN(startTime) || Number.isNaN(endTime)) return null
-
-    const totalSeconds = Math.max(0, Math.floor((endTime - startTime) / 1000))
-    const hours = Math.floor(totalSeconds / 3600)
-    const minutes = Math.floor((totalSeconds % 3600) / 60)
-    const seconds = totalSeconds % 60
-    return [hours, minutes, seconds].map(value => String(value).padStart(2, '0')).join(':')
-  }
-
   const getCurrentStage = (execution: JobExecution) => {
     const stages = execution.parameters_used?.stages || []
     const runningStage = stages.find(stage => stage.status === 'running')
@@ -545,8 +532,8 @@ export default function JobDetails() {
                 )}
               </div>
               <div><strong>Workflow ID:</strong> {job.workflow_id}</div>
-              <div><strong>Created:</strong> {new Date(job.created_at).toLocaleString()}</div>
-              <div><strong>Updated:</strong> {new Date(job.updated_at).toLocaleString()}</div>
+              <div><strong>Created:</strong> {formatLocalDateTime(job.created_at)}</div>
+              <div><strong>Updated:</strong> {formatLocalDateTime(job.updated_at)}</div>
               {jobUploadStatus?.error && (
                 <div style={{ gridColumn: '1 / -1', color: '#b91c1c' }}>
                   <strong>Upload error:</strong> {jobUploadStatus.error}
@@ -568,7 +555,7 @@ export default function JobDetails() {
               <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
                 {executions.map((execution) => {
                   const stages = execution.parameters_used?.stages || []
-                  const elapsed = formatDuration(execution.started_at, execution.completed_at)
+                  const elapsed = formatDurationClock(execution.started_at, execution.completed_at)
                   const currentStageLabel = getCurrentStageLabel(execution)
 
                   return (
@@ -594,8 +581,8 @@ export default function JobDetails() {
 
                       {execution.started_at && (
                         <div style={{ marginBottom: '0.5rem', color: '#475569', fontSize: '0.9rem' }}>
-                          Started: {new Date(execution.started_at).toLocaleString()}
-                          {execution.completed_at ? ` | Completed: ${new Date(execution.completed_at).toLocaleString()}` : ''}
+                          Started: {formatLocalDateTime(execution.started_at)}
+                          {execution.completed_at ? ` | Completed: ${formatLocalDateTime(execution.completed_at)}` : ''}
                         </div>
                       )}
 
@@ -646,9 +633,9 @@ export default function JobDetails() {
 
                               {stage.started_at && (
                                 <div style={{ marginTop: '0.5rem', fontSize: '0.9rem', color: '#64748b' }}>
-                                  Started: {new Date(stage.started_at).toLocaleString()}
-                                  {stage.completed_at ? ` | Completed: ${new Date(stage.completed_at).toLocaleString()}` : ''}
-                                  {formatDuration(stage.started_at, stage.completed_at) ? ` | Time: ${formatDuration(stage.started_at, stage.completed_at)}` : ''}
+                                  Started: {formatLocalDateTime(stage.started_at)}
+                                  {stage.completed_at ? ` | Completed: ${formatLocalDateTime(stage.completed_at)}` : ''}
+                                  {formatDurationClock(stage.started_at, stage.completed_at) ? ` | Time: ${formatDurationClock(stage.started_at, stage.completed_at)}` : ''}
                                 </div>
                               )}
 

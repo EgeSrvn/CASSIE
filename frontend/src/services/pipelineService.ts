@@ -1,4 +1,5 @@
 import apiClient from './apiClient'
+import type { ToolRequirementInfo } from './toolService'
 
 export interface Pipeline {
   id: number
@@ -86,6 +87,7 @@ export interface PipelineRequirement {
 export interface PipelineRequirements {
   input_requirements: PipelineRequirement[]
   tools: string[]
+  tool_requirements: ToolRequirementInfo[]
   has_spades: boolean
   has_quast: boolean
   has_fastqc: boolean

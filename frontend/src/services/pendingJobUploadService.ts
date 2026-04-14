@@ -250,6 +250,16 @@ const isDeletedJobUploadError = (error: any): boolean => {
   )
 }
 
+const isJobAlreadyStartingOrStartedError = (error: any): boolean => {
+  const message = getUploadErrorMessage(error).toLowerCase()
+  return (
+    message.includes('job must be in pending status') ||
+    message.includes('active execution') ||
+    message.includes('already running') ||
+    message.includes('already started')
+  )
+}
+
 const getUploadErrorStatus = (error: any): number | undefined => {
   return error?.status || error?.response?.status
 }
@@ -276,6 +286,11 @@ const queuedJobStillExists = async (jobId: number, uploadSessionToken?: string):
     }
     throw error
   }
+}
+
+const jobHasLeftPendingState = async (jobId: number, uploadSessionToken?: string): Promise<boolean> => {
+  const job = await getJob(jobId, uploadSessionToken)
+  return job.status !== 'pending'
 }
 
 const buildUploadStatus = (
@@ -469,9 +484,39 @@ const processUploadQueue = async () => {
 
       try {
         const uploadSessionToken = jobRecords.find(record => record.uploadSessionToken)?.uploadSessionToken
+        if (await jobHasLeftPendingState(jobId, uploadSessionToken)) {
+          setJobUploadStatus(jobId, null)
+          continue
+        }
+
         await executeJob(jobId, uploadSessionToken)
         setJobUploadStatus(jobId, null)
       } catch (error: any) {
+        if (isJobAlreadyStartingOrStartedError(error)) {
+          try {
+            const uploadSessionToken = jobRecords.find(record => record.uploadSessionToken)?.uploadSessionToken
+            if (await jobHasLeftPendingState(jobId, uploadSessionToken)) {
+              setJobUploadStatus(jobId, null)
+              continue
+            }
+          } catch (followUpError: any) {
+            setJobUploadStatus(
+              jobId,
+              buildUploadStatus(
+                jobId,
+                'failed',
+                'Failed to confirm job start after upload',
+                totalFiles,
+                uploadedFiles,
+                {
+                  error: getUploadErrorMessage(followUpError) || getUploadErrorMessage(error) || 'Failed to confirm job start after upload',
+                }
+              )
+            )
+            return
+          }
+        }
+
         setJobUploadStatus(
           jobId,
           buildUploadStatus(

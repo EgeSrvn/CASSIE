@@ -41,6 +41,8 @@ from backend.api.services.job_launch_service import (
     get_auto_start_payload,
     start_job_execution_task,
 )
+from backend.api.services.job_execution_service import get_executions_by_job
+from backend.api.services.kubernetes_manager import get_kubernetes_pipeline_runner, kubernetes_is_available
 from backend.api.utils.response_builder import (
     success_response,
     error_response,
@@ -62,6 +64,69 @@ from backend.api.services.auth_service import create_job_upload_token
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
+
+
+def _cleanup_deleted_job_resources(
+    *,
+    job_id: int,
+    user_id: int,
+    username: str,
+    file_s3_keys: List[str],
+    executions: List,
+) -> None:
+    from backend.api.services.minio_client import get_minio_client
+
+    k8s_cleanup_summary: Dict[str, Any] = {
+        "namespace": None,
+        "deleted_stage_jobs": [],
+        "errors": [],
+    }
+
+    if kubernetes_is_available():
+        try:
+            k8s_cleanup_summary = get_kubernetes_pipeline_runner().terminate_job_stages(job_id, executions)
+        except Exception as cleanup_error:
+            logger.warning(
+                f"Failed to terminate Kubernetes stages for deleted job {job_id}: {cleanup_error}",
+                exc_info=True,
+            )
+            k8s_cleanup_summary["errors"].append(str(cleanup_error))
+
+    minio_client = get_minio_client()
+    deleted_objects = 0
+
+    for s3_key in file_s3_keys:
+        try:
+            minio_client.delete_file(
+                user_id=user_id,
+                s3_key=s3_key,
+                username=username,
+            )
+            deleted_objects += 1
+        except Exception as cleanup_error:
+            logger.warning(
+                f"Failed to delete MinIO object for deleted job {job_id}, key {s3_key}: {cleanup_error}",
+                exc_info=True,
+            )
+
+    try:
+        deleted_objects += minio_client.delete_prefix(
+            user_id=user_id,
+            prefix=f"jobs/{job_id}/",
+            username=username,
+        )
+    except Exception as cleanup_error:
+        logger.warning(
+            f"Failed to delete MinIO job prefix for deleted job {job_id}: {cleanup_error}",
+            exc_info=True,
+        )
+
+    logger.info(
+        "Finished asynchronous cleanup for deleted job %s. Deleted objects=%s, kubernetes_cleanup=%s",
+        job_id,
+        deleted_objects,
+        k8s_cleanup_summary,
+    )
 
 
 def _infer_file_formats(file_record) -> set[str]:
@@ -907,6 +972,7 @@ async def update_job_endpoint(
 @router.delete("/{job_id}")
 async def delete_job_endpoint(
     job_id: int,
+    background_tasks: BackgroundTasks,
     current_user: UserResponse = Depends(get_current_user)
 ):
     """
@@ -925,54 +991,38 @@ async def delete_job_endpoint(
             error_data = not_found_response("Job", job_id)
             return JSONResponse(content=error_data, status_code=status.HTTP_404_NOT_FOUND)
 
-        from backend.api.services.minio_client import get_minio_client
+        executions = get_executions_by_job(job_id)
+
         from backend.api.services.storage_service import get_files_by_user
 
-        minio_client = get_minio_client()
         job_files = get_files_by_user(
             user_id=current_user.id,
             job_id=job_id,
             limit=1000,
             offset=0,
         )
-
-        deleted_objects = 0
-        for file_record in job_files:
-            try:
-                if file_record.s3_key:
-                    minio_client.delete_file(
-                        user_id=current_user.id,
-                        s3_key=file_record.s3_key,
-                        username=current_user.username,
-                    )
-                    deleted_objects += 1
-            except Exception as cleanup_error:
-                logger.warning(
-                    f"Failed to delete MinIO object for job {job_id}, file {file_record.id}: {cleanup_error}",
-                    exc_info=True,
-                )
-
-        try:
-            # Remove any partial uploads/outputs that may not have a DB record.
-            deleted_objects += minio_client.delete_prefix(
-                user_id=current_user.id,
-                prefix=f"jobs/{job_id}/",
-                username=current_user.username,
-            )
-        except Exception as cleanup_error:
-            logger.warning(
-                f"Failed to delete MinIO job prefix for job {job_id}: {cleanup_error}",
-                exc_info=True,
-            )
+        file_s3_keys = [file_record.s3_key for file_record in job_files if getattr(file_record, "s3_key", None)]
 
         deleted = delete_job(job_id, current_user.id)
         
         if not deleted:
             error_data = not_found_response("Job", job_id)
             return JSONResponse(content=error_data, status_code=status.HTTP_404_NOT_FOUND)
+
+        background_tasks.add_task(
+            _cleanup_deleted_job_resources,
+            job_id=job_id,
+            user_id=current_user.id,
+            username=current_user.username,
+            file_s3_keys=file_s3_keys,
+            executions=executions,
+        )
         
         return success_response(
-            data={"deleted_objects": deleted_objects},
+            data={
+                "deleted_objects": len(file_s3_keys),
+                "cleanup_queued": True,
+            },
             message="Job and related data deleted successfully"
         )
     except Exception as e:

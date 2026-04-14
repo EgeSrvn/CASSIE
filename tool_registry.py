@@ -241,7 +241,7 @@ process QUAST {
         "kubernetes": {
             "command": ["bash", "-lc"],
             "args_template": [
-                "rungenomescope2 /data/<reads_1.fastq> /data/<reads_2.fastq> /data/genomescope2_out"
+                "rungenomescope2 /data/<reads.fastq>... /data/genomescope2_out"
             ],
             "expected_outputs": ["genomescope2_out/summary.txt", "genomescope2_out/model.txt"],
         },
@@ -250,7 +250,7 @@ process GENOMESCOPE2 {
     publishDir "${params.outdir}/GenomeScope2", mode: 'copy'
 
     input:
-    tuple path(r1), path(r2)
+    path reads
 
     output:
     path "out/*"
@@ -265,17 +265,18 @@ process GENOMESCOPE2 {
     rm -rf "/data/genomescope2_in/${workflow.runName}-${task.index}"
     mkdir -p "/data/genomescope2_in/${workflow.runName}-${task.index}"
 
-    cp "$r1" "/data/genomescope2_in/${workflow.runName}-${task.index}/r1.fastq"
-    cp "$r2" "/data/genomescope2_in/${workflow.runName}-${task.index}/r2.fastq"
+    READ_ARGS=()
+    for read in $reads; do
+        staged="/data/genomescope2_in/${workflow.runName}-${task.index}/$(basename "$read")"
+        cp "$read" "$staged"
+        READ_ARGS+=("$staged")
+    done
 
     rm -rf "/data/genomescope2_out/${workflow.runName}-${task.index}"
     mkdir -p "/data/genomescope2_out/${workflow.runName}-${task.index}"
 
-    # Call rungenomescope2 with absolute /data paths for both mates
-    rungenomescope2 \
-        "/data/genomescope2_in/${workflow.runName}-${task.index}/r1.fastq" \
-        "/data/genomescope2_in/${workflow.runName}-${task.index}/r2.fastq" \
-        "/data/genomescope2_out/${workflow.runName}-${task.index}"
+    # Call rungenomescope2 with all staged FASTQ inputs
+    rungenomescope2 "${READ_ARGS[@]}" "/data/genomescope2_out/${workflow.runName}-${task.index}"
 
     # Bring results back into the Nextflow workdir
     cp -a "/data/genomescope2_out/${workflow.runName}-${task.index}"/. out/

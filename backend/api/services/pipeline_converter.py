@@ -13,6 +13,17 @@ from tool_registry import get_tool_id_from_label, get_tool_index_by_id
 
 logger = logging.getLogger(__name__)
 
+NON_TOOL_NODE_TYPES = {
+    "input",
+    "inputnode",
+    "start",
+    "end",
+    "output",
+    "result",
+    "fastqinput",
+    "fastainput",
+}
+
 
 def extract_tool_nodes(nodes: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     """
@@ -55,7 +66,8 @@ def extract_tool_nodes(nodes: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
             node_label = getattr(node_data, "label", None) if hasattr(node_data, "label") else str(node_data)
         
         # Only include tool nodes (not input/output nodes)
-        if node_type in ("tool", "process") or (node_type not in ("input", "inputNode", "start", "end", "output")):
+        normalized_type = str(node_type or "").strip().lower()
+        if normalized_type in ("tool", "process") or normalized_type not in NON_TOOL_NODE_TYPES:
             if node_id:
                 tool_nodes[node_id] = {
                     "id": node_id,

@@ -73,6 +73,15 @@ const nodeTypes = {
   tool: ({ data }: { data: NodeData }) => (
     <NodeBox label={data.label} description={data.description} color="#2563eb" />
   ),
+  fastqInput: ({ data }: { data: NodeData }) => (
+    <NodeBox label={data.label} description={data.description} color="#7c3aed" showTarget={false} />
+  ),
+  fastaInput: ({ data }: { data: NodeData }) => (
+    <NodeBox label={data.label} description={data.description} color="#8b5cf6" showTarget={false} />
+  ),
+  result: ({ data }: { data: NodeData }) => (
+    <NodeBox label={data.label} description={data.description} color="#22c55e" showSource={false} />
+  ),
   inputNode: ({ data }: { data: NodeData }) => (
     <NodeBox label={data.label} description={data.description} color="#7c3aed" showTarget={false} />
   ),
@@ -245,20 +254,30 @@ export default function PipelineBuilder() {
                 <div className="sidebar-buttons">
                   <button
                     onClick={() =>
-                      addNode('inputNode', 'Input Data', [
-                        'FASTQ (Illumina/ONT)',
-                        'BAM/CRAM alignments',
-                        'FASTA assemblies',
+                      addNode('fastqInput', 'FASTQ Input', [
+                        'One FASTQ file per node',
+                        'Use separate nodes for R1 and R2',
                       ])
                     }
                     className="btn-primary"
                   >
-                    Input Data
+                    FASTQ Input
+                  </button>
+                  <button
+                    onClick={() =>
+                      addNode('fastaInput', 'FASTA Input', [
+                        'Reference or assembly FASTA',
+                        'Use separate nodes per FASTA file',
+                      ])
+                    }
+                    className="btn-primary"
+                  >
+                    FASTA Input
                   </button>
                   <button
                     onClick={() =>
                       addNode('tool', 'Read Quality (FastQC)', [
-                        'Input: FASTQ/FASTA',
+                        'Input: FASTQ',
                         'Output: QC reports (HTML/JSON)',
                       ])
                     }
@@ -301,10 +320,15 @@ export default function PipelineBuilder() {
                     Quality Assessment for Assembly (QUAST)
                   </button>
                   <button
-                    onClick={() => addNode('end', 'Results')}
+                    onClick={() =>
+                      addNode('result', 'Result Block', [
+                        'Connect every tool to a result node',
+                        'Intermediate tools can also connect onward',
+                      ])
+                    }
                     className="btn-success"
                   >
-                    Results
+                    Result Block
                   </button>
                 </div>
               </div>
