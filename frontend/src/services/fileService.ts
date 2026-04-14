@@ -24,6 +24,14 @@ export interface FileListResponse {
   }
 }
 
+export interface JobOutputsZipStatus {
+  status: 'idle' | 'queued' | 'processing' | 'ready' | 'failed' | 'expired'
+  download_url: string | null
+  filename: string | null
+  expires_in: number | null
+  error: string | null
+}
+
 export const uploadFile = async (
   file: globalThis.File,
   jobId: number | null,
@@ -175,85 +183,52 @@ export const deleteFile = async (fileId: number): Promise<void> => {
   await apiClient.delete(`/api/storage/files/${fileId}`)
 }
 
-export const downloadJobOutputsZip = async (jobId: number): Promise<void> => {
-  try {
-    const response = await apiClient.get(`/api/storage/jobs/${jobId}/download-zip`, {
-      responseType: 'blob',
-      timeout: 300000 // 5 minutes timeout for large ZIP files
-    })
-    
-    // response.data is already a Blob when responseType is 'blob'
-    const blob = response.data as Blob
-    
-    if (!(blob instanceof Blob)) {
-      throw new Error('Invalid response: expected blob')
+export const requestJobOutputsZip = async (jobId: number): Promise<JobOutputsZipStatus> => {
+  const response = await apiClient.post<{ success: boolean; data: JobOutputsZipStatus; message?: string }>(
+    `/api/storage/jobs/${jobId}/download-zip`,
+    null,
+    {
+      timeout: 15000
     }
-    
-    // Check if blob is actually an error response (JSON error in blob format)
-    if (blob.type === 'application/json' || blob.size < 100) {
-      const text = await blob.text()
-      try {
-        const errorData = JSON.parse(text)
-        throw new Error(errorData.message || 'Failed to download ZIP')
-      } catch {
-        // If not JSON, might be empty or error message
-        if (text.includes('error') || text.includes('Error')) {
-          throw new Error(text)
-        }
-      }
-    }
-    
-    // Extract filename from Content-Disposition header if available
-    const contentDisposition = response.headers['content-disposition'] || response.headers['Content-Disposition']
-    let filename = `job_${jobId}_outputs.zip`
-    if (contentDisposition) {
-      // Try different patterns for Content-Disposition parsing
-      const patterns = [
-        /filename\*?=['"]?([^'";\n]+)['"]?/i,
-        /filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/i,
-        /filename=(.+)/i
-      ]
-      
-      for (const pattern of patterns) {
-        const match = contentDisposition.match(pattern)
-        if (match && match[1]) {
-          filename = decodeURIComponent(match[1].replace(/['"]/g, ''))
-          break
-        }
-      }
-    }
-    
-    // Create a blob URL and trigger download
-    const url = window.URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.href = url
-    link.download = filename
-    link.style.display = 'none'
-    document.body.appendChild(link)
-    
-    // Trigger download
-    link.click()
-    
-    // Clean up
-    setTimeout(() => {
-      document.body.removeChild(link)
-      window.URL.revokeObjectURL(url)
-    }, 100)
-  } catch (error: any) {
-    console.error('ZIP download error:', error)
-    // If blob download fails, try to show error message
-    if (error.response?.data instanceof Blob) {
-      // Try to read error message from blob
-      const text = await error.response.data.text()
-      try {
-        const errorData = JSON.parse(text)
-        alert(`Failed to download ZIP: ${errorData.message || 'Unknown error'}`)
-      } catch {
-        alert('Failed to download ZIP archive')
-      }
-    } else {
-      alert(`Failed to download ZIP: ${error.message || 'Unknown error'}`)
-    }
-    throw error
+  )
+
+  if (response.data.success && response.data.data) {
+    return response.data.data
   }
+
+  throw new Error(response.data.message || 'Failed to start ZIP generation')
+}
+
+export const getJobOutputsZipStatus = async (jobId: number): Promise<JobOutputsZipStatus> => {
+  const response = await apiClient.get<{ success: boolean; data: JobOutputsZipStatus; message?: string }>(
+    `/api/storage/jobs/${jobId}/download-zip`,
+    {
+      params: { redirect: false }
+    }
+  )
+
+  if (response.data.success && response.data.data) {
+    return response.data.data
+  }
+
+  throw new Error(response.data.message || 'Failed to get ZIP download status')
+}
+
+export const openJobOutputsZipLink = (status: JobOutputsZipStatus, jobId: number): void => {
+  if (!status.download_url) {
+    throw new Error('ZIP download link is not ready yet')
+  }
+
+  const link = document.createElement('a')
+  link.href = status.download_url
+  link.download = status.filename || `job_${jobId}_outputs.zip`
+  link.target = '_blank'
+  link.rel = 'noopener noreferrer'
+  link.style.display = 'none'
+  document.body.appendChild(link)
+  link.click()
+
+  setTimeout(() => {
+    document.body.removeChild(link)
+  }, 100)
 }

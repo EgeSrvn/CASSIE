@@ -1,7 +1,16 @@
 import { useState, useEffect, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { getJob, Job, JobExecution, executeJob, getJobExecutions } from '../services/jobService'
-import { getFiles, File, downloadFile, downloadJobOutputsZip, getFileViewUrl } from '../services/fileService'
+import { getJob, Job, JobExecution, executeJob, getJobExecutions, getAvailableVMs, VM } from '../services/jobService'
+import {
+  getFiles,
+  File,
+  downloadFile,
+  getFileViewUrl,
+  requestJobOutputsZip,
+  getJobOutputsZipStatus,
+  openJobOutputsZipLink,
+  JobOutputsZipStatus
+} from '../services/fileService'
 import { getPipelineRequirements, PipelineRequirements } from '../services/pipelineService'
 import {
   getJobUploadStatus,
@@ -14,6 +23,41 @@ import {
 import { formatDurationClock, formatLocalDateTime } from '../utils/dateTime'
 import Navigation from '../components/Navigation'
 import '../styles/globals.css'
+
+const ZIP_PANEL_STORAGE_KEY = 'cassie-zip-download-panel-jobs'
+const formatVmCpu = (cpuMillis: number): string => `${(cpuMillis / 1000).toFixed(2)} cores`
+const formatVmMemory = (memoryMib: number): string => `${(memoryMib / 1024).toFixed(2)} GiB`
+const formatVmStorage = (storageMib: number): string => storageMib > 0 ? `${(storageMib / 1024).toFixed(2)} GiB` : 'Auto'
+
+const readZipPanelVisibilityMap = (): Record<string, boolean> => {
+  if (typeof window === 'undefined') return {}
+  try {
+    const raw = window.localStorage.getItem(ZIP_PANEL_STORAGE_KEY)
+    return raw ? JSON.parse(raw) : {}
+  } catch {
+    return {}
+  }
+}
+
+const writeZipPanelVisibilityMap = (value: Record<string, boolean>) => {
+  if (typeof window === 'undefined') return
+  window.localStorage.setItem(ZIP_PANEL_STORAGE_KEY, JSON.stringify(value))
+}
+
+const getStoredZipPanelVisibility = (jobId: number): boolean => {
+  const visibilityMap = readZipPanelVisibilityMap()
+  return visibilityMap[jobId.toString()] === true
+}
+
+const setStoredZipPanelVisibility = (jobId: number, visible: boolean) => {
+  const visibilityMap = readZipPanelVisibilityMap()
+  if (visible) {
+    visibilityMap[jobId.toString()] = true
+  } else {
+    delete visibilityMap[jobId.toString()]
+  }
+  writeZipPanelVisibilityMap(visibilityMap)
+}
 
 export default function JobDetails() {
   const { jobId } = useParams<{ jobId: string }>()
@@ -36,6 +80,11 @@ export default function JobDetails() {
   const [, setClockTick] = useState(0)
   const [jobUploadStatus, setJobUploadStatus] = useState<JobUploadStatus | null>(null)
   const [pendingQueuedFiles, setPendingQueuedFiles] = useState<PendingQueuedJobFile[]>([])
+  const [zipPanelVisible, setZipPanelVisible] = useState(false)
+  const [zipStatus, setZipStatus] = useState<JobOutputsZipStatus | null>(null)
+  const [zipStatusError, setZipStatusError] = useState('')
+  const [startingZipGeneration, setStartingZipGeneration] = useState(false)
+  const [availableVMs, setAvailableVMs] = useState<VM[]>([])
 
   useEffect(() => {
     if (jobId) {
@@ -147,6 +196,9 @@ export default function JobDetails() {
     if (!jobId) return
 
     const numericJobId = parseInt(jobId)
+    setZipStatus(null)
+    setZipStatusError('')
+    setZipPanelVisible(getStoredZipPanelVisibility(numericJobId))
     setJobUploadStatus(getJobUploadStatus(numericJobId))
     void loadPendingQueuedFiles()
     void startPendingJobUploadProcessor()
@@ -163,10 +215,64 @@ export default function JobDetails() {
     })
   }, [jobId])
 
+  useEffect(() => {
+    const loadVMs = async () => {
+      try {
+        const vms = await getAvailableVMs()
+        setAvailableVMs(vms)
+      } catch (err) {
+        console.error('Failed to load VMs:', err)
+        setAvailableVMs([])
+      }
+    }
+
+    void loadVMs()
+  }, [])
+
+  useEffect(() => {
+    if (!jobId || !zipPanelVisible) return
+
+    const numericJobId = parseInt(jobId)
+    let cancelled = false
+
+    const loadZipStatus = async () => {
+      try {
+        const status = await getJobOutputsZipStatus(numericJobId)
+        if (!cancelled) {
+          setZipStatus(status)
+          setZipStatusError('')
+        }
+      } catch (err: any) {
+        if (!cancelled) {
+          setZipStatusError(err.response?.data?.message || err.message || 'Failed to load ZIP status')
+        }
+      }
+    }
+
+    void loadZipStatus()
+
+    const shouldPoll = zipStatus?.status === 'queued' || zipStatus?.status === 'processing' || zipStatus === null
+    if (!shouldPoll) {
+      return () => {
+        cancelled = true
+      }
+    }
+
+    const poller = window.setInterval(() => {
+      void loadZipStatus()
+    }, 3000)
+
+    return () => {
+      cancelled = true
+      window.clearInterval(poller)
+    }
+  }, [jobId, zipPanelVisible, zipStatus?.status])
+
   // Compute files before early returns (will be empty arrays initially)
   const inputFiles = (files || []).filter(f => f && f.file_type === 'input')
   const outputFiles = (files || []).filter(f => f && f.file_type === 'output')
   const visibleInputCount = inputFiles.length + pendingQueuedFiles.length
+  const selectedVMDetails = job?.vm_name ? availableVMs.find(vm => vm.name === job.vm_name) || null : null
 
   const fileMatchesRequirement = (
     filename: string,
@@ -342,6 +448,35 @@ export default function JobDetails() {
       console.error('Download error:', err)
       const errorMsg = err.message || 'Failed to download file'
       alert(`Failed to download file: ${errorMsg}`)
+    }
+  }
+
+  const handlePrepareZip = async () => {
+    if (!jobId) return
+
+    try {
+      const numericJobId = parseInt(jobId)
+      setZipPanelVisible(true)
+      setStoredZipPanelVisibility(numericJobId, true)
+      setStartingZipGeneration(true)
+      setZipStatusError('')
+      const status = await requestJobOutputsZip(numericJobId)
+      setZipStatus(status)
+    } catch (err: any) {
+      console.error('Failed to start ZIP generation:', err)
+      setZipStatusError(err.response?.data?.message || err.message || 'Failed to start ZIP generation')
+    } finally {
+      setStartingZipGeneration(false)
+    }
+  }
+
+  const handleOpenZipLink = () => {
+    if (!jobId || !zipStatus) return
+
+    try {
+      openJobOutputsZipLink(zipStatus, parseInt(jobId))
+    } catch (err: any) {
+      setZipStatusError(err.message || 'ZIP download link is not ready yet')
     }
   }
 
@@ -532,6 +667,9 @@ export default function JobDetails() {
                 )}
               </div>
               <div><strong>Workflow ID:</strong> {job.workflow_id}</div>
+              {job.vm_name && (
+                <div><strong>Virtual Machine:</strong> {job.vm_name}</div>
+              )}
               <div><strong>Created:</strong> {formatLocalDateTime(job.created_at)}</div>
               <div><strong>Updated:</strong> {formatLocalDateTime(job.updated_at)}</div>
               {jobUploadStatus?.error && (
@@ -543,6 +681,23 @@ export default function JobDetails() {
                 <div><strong>Data Types:</strong> {job.data_types.join(', ')}</div>
               )}
             </div>
+            {selectedVMDetails && (
+              <div style={{ marginTop: '1rem', padding: '0.875rem 1rem', borderRadius: '8px', backgroundColor: '#f8fafc', border: '1px solid #e2e8f0' }}>
+                <div style={{ fontWeight: 600, color: '#0f172a', marginBottom: '0.35rem' }}>
+                  Max resource limits for {selectedVMDetails.display_name}
+                </div>
+                <div style={{ color: '#475569', fontSize: '0.95rem', lineHeight: 1.6 }}>
+                  CPU: {formatVmCpu(selectedVMDetails.available_cpu_millis)}
+                  {' | '}
+                  Memory: {formatVmMemory(selectedVMDetails.available_memory_mib)}
+                  {' | '}
+                  Storage: {formatVmStorage(selectedVMDetails.available_storage_mib)}
+                </div>
+                <div style={{ color: '#64748b', fontSize: '0.875rem', marginTop: '0.35rem' }}>
+                  Hard limit per job on this VM profile: total resources / number of VMs / max pods on this VM.
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="detail-section">
@@ -789,24 +944,68 @@ export default function JobDetails() {
                       {outputFilesCollapsed ? '▶' : '▼'} {outputFilesCollapsed ? 'Expand' : 'Collapse'}
                     </button>
                     <button
-                      onClick={async () => {
-                        try {
-                          console.log('Starting ZIP download for job', jobId)
-                          await downloadJobOutputsZip(parseInt(jobId!))
-                          console.log('ZIP download completed successfully')
-                        } catch (err) {
-                          console.error('Failed to download ZIP:', err)
-                          alert('Failed to download ZIP archive. Please check the browser console for details.')
-                        }
-                      }}
+                      onClick={handlePrepareZip}
                       className="btn-primary"
+                      disabled={startingZipGeneration}
                     >
-                      📦 Download All as ZIP
+                      {startingZipGeneration ? 'Preparing ZIP...' : '📦 Download All as ZIP'}
                     </button>
                   </>
                 )}
               </div>
             </div>
+            {zipPanelVisible && outputFiles.length > 0 && (
+              <div className="zip-download-panel">
+                <div className="zip-download-panel-header">
+                  <strong>ZIP Download</strong>
+                  {zipStatus?.status && (
+                    <span className={`zip-download-status zip-download-status-${zipStatus.status}`}>
+                      {zipStatus.status === 'queued' && 'Queued'}
+                      {zipStatus.status === 'processing' && 'Preparing archive'}
+                      {zipStatus.status === 'ready' && 'Ready'}
+                      {zipStatus.status === 'failed' && 'Failed'}
+                      {zipStatus.status === 'expired' && 'Expired'}
+                      {zipStatus.status === 'idle' && 'Not started'}
+                    </span>
+                  )}
+                </div>
+                {zipStatus?.status === 'ready' ? (
+                  <div className="zip-download-panel-body">
+                    <p>Your ZIP link is ready. It stays valid for 1 hour.</p>
+                    <div className="zip-download-actions">
+                      <button onClick={handleOpenZipLink} className="btn-primary">
+                        Download ZIP
+                      </button>
+                      <button onClick={handlePrepareZip} className="btn-secondary">
+                        Regenerate Link
+                      </button>
+                    </div>
+                    {zipStatus.filename && (
+                      <p className="zip-download-filename">{zipStatus.filename}</p>
+                    )}
+                  </div>
+                ) : (
+                  <div className="zip-download-panel-body">
+                    <p>
+                      {zipStatus?.status === 'failed' && (zipStatus.error || 'ZIP generation failed.')}
+                      {zipStatus?.status === 'expired' && 'The previous ZIP link expired. Generate a fresh one when you need it.'}
+                      {zipStatus?.status === 'queued' && 'The ZIP request was accepted. You can keep using the page while it is queued.'}
+                      {zipStatus?.status === 'processing' && 'The ZIP archive is being created in the background.'}
+                      {zipStatus?.status === 'idle' && 'ZIP generation has not started yet.'}
+                      {!zipStatus && 'Starting ZIP generation...'}
+                    </p>
+                    <div className="zip-download-actions">
+                      {(zipStatus?.status === 'failed' || zipStatus?.status === 'expired' || zipStatus?.status === 'idle') && (
+                        <button onClick={handlePrepareZip} className="btn-primary" disabled={startingZipGeneration}>
+                          {startingZipGeneration ? 'Preparing ZIP...' : 'Generate ZIP Link'}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
+                {zipStatusError && <p className="zip-download-error">{zipStatusError}</p>}
+              </div>
+            )}
             {outputFiles.length === 0 ? (
               <div className="empty-state">
                 {job.status === 'completed' ? (

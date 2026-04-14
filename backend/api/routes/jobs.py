@@ -43,6 +43,7 @@ from backend.api.services.job_launch_service import (
 )
 from backend.api.services.job_execution_service import get_executions_by_job
 from backend.api.services.kubernetes_manager import get_kubernetes_pipeline_runner, kubernetes_is_available
+from backend.api.services.vm_partition_service import get_vm_partitions, get_vm_partition
 from backend.api.utils.response_builder import (
     success_response,
     error_response,
@@ -235,20 +236,8 @@ async def list_available_vms(
         List of available VM names
     """
     try:
-        # Get available VMs from emulation system
-        try:
-            import sys
-            from pathlib import Path
-            project_root = Path(__file__).parent.parent.parent.parent
-            if str(project_root) not in sys.path:
-                sys.path.insert(0, str(project_root))
-            from emulation.docker_commands import VM_NAMES
-            
-            vms = [{"name": vm, "display_name": vm.upper()} for vm in VM_NAMES]
-        except ImportError:
-            # Fallback if emulation module not available
-            logger.warning("Emulation module not available, using default VMs")
-            vms = [{"name": "vm1", "display_name": "VM1"}, {"name": "vm2", "display_name": "VM2"}, {"name": "vm3", "display_name": "VM3"}]
+        runner = get_kubernetes_pipeline_runner()
+        vms = runner.get_vm_capacity_summary()
         
         return JSONResponse(
             content=success_response(
@@ -308,6 +297,20 @@ async def create_job_endpoint(
                 status_code=status.HTTP_400_BAD_REQUEST
             )
             return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+
+    available_vm_partitions = get_vm_partitions()
+    if job_data.vm_name:
+        selected_vm = get_vm_partition(job_data.vm_name)
+        if selected_vm is None:
+            valid_vm_names = ", ".join(partition.name for partition in available_vm_partitions)
+            error_data = error_response(
+                error_code=ErrorCode.VALIDATION_ERROR,
+                message=f"Invalid vm_name '{job_data.vm_name}'. Valid VM names: {valid_vm_names}",
+                status_code=status.HTTP_400_BAD_REQUEST
+            )
+            return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+    elif available_vm_partitions:
+        job_data.vm_name = available_vm_partitions[0].name
     
     if job_data.data_types:
         is_valid, error_msg = validate_data_types(job_data.data_types)
@@ -470,6 +473,7 @@ async def create_job_endpoint(
                     assembler=job.assembler,
                     data_types=job.data_types,
                     cloud_provider=job.cloud_provider,
+                    vm_name=job.vm_name,
                     created_at=job.created_at,
                     updated_at=job.updated_at,
                     upload_session_token=upload_session_token,
@@ -540,6 +544,7 @@ async def list_jobs(
                 assembler=job.assembler,
                 data_types=job.data_types,
                 cloud_provider=job.cloud_provider,
+                vm_name=job.vm_name,
                 created_at=job.created_at,
                 updated_at=job.updated_at
             ).model_dump(mode='json')  # Use mode='json' to serialize datetime to ISO strings
@@ -600,6 +605,7 @@ async def get_job(
             assembler=job.assembler,
             data_types=job.data_types,
             cloud_provider=job.cloud_provider,
+            vm_name=job.vm_name,
             created_at=job.created_at,
             updated_at=job.updated_at
         ).model_dump(mode='json'),  # Use mode='json' to serialize datetime to ISO strings
@@ -861,6 +867,7 @@ async def add_files_to_job(
                 assembler=updated_job.assembler,
                 data_types=updated_job.data_types,
                 cloud_provider=updated_job.cloud_provider,
+                vm_name=updated_job.vm_name,
                 created_at=updated_job.created_at,
                 updated_at=updated_job.updated_at
             ).model_dump(mode='json'),
@@ -954,6 +961,7 @@ async def update_job_endpoint(
                 assembler=job.assembler,
                 data_types=job.data_types,
                 cloud_provider=job.cloud_provider,
+                vm_name=job.vm_name,
                 created_at=job.created_at,
                 updated_at=job.updated_at
             ).model_dump(mode='json'),  # Use mode='json' to serialize datetime to ISO strings

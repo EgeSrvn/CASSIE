@@ -214,6 +214,10 @@ export const addFilesToJob = async (
 export interface VM {
   name: string
   display_name: string
+  max_pods: number
+  available_cpu_millis: number
+  available_memory_mib: number
+  available_storage_mib: number
 }
 
 export const getAvailableVMs = async (): Promise<VM[]> => {

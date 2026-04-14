@@ -16,6 +16,4 @@
 
 # Current Issues
 
-## Download all as zip is not working
-
 ## when the user token is expired, user should be directed to the home page

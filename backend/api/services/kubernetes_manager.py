@@ -31,9 +31,10 @@ from backend.api.models.job_model import (
 )
 from backend.api.models.pipeline_model import FileCreate, FileType
 from backend.api.services.job_execution_service import create_job_execution, update_job_execution
-from backend.api.services.job_service import update_job
+from backend.api.services.job_service import update_job, get_job_by_id
 from backend.api.services.minio_client import get_minio_client
 from backend.api.services.storage_service import create_file_record, get_file_by_id
+from backend.api.services.vm_partition_service import get_vm_partition, get_vm_partitions
 from backend.api.utils.config_loader import get_config
 from backend.api.utils.logger import get_logger
 from tool_registry import get_tool_by_id, get_tool_registry
@@ -61,6 +62,8 @@ class KubernetesPipelineRunner:
         Create an execution record and schedule the Kubernetes pipeline.
         """
         namespace = self._config.kubernetes.namespace
+        job = get_job_by_id(job_id, user_id=user_id)
+        selected_vm_name = job.vm_name if job else None
         run_id = f"k8s-{job_id}-{execution_number}-{int(datetime.now().timestamp())}"
         work_dir = f"k8s://{namespace}/jobs/{run_id}"
         output_dir = f"{work_dir}/output"
@@ -70,6 +73,7 @@ class KubernetesPipelineRunner:
             "namespace": namespace,
             "workflow_id": workflow_id,
             "input_files": input_files,
+            "vm_name": selected_vm_name,
             "stages": [],
         }
 
@@ -99,6 +103,7 @@ class KubernetesPipelineRunner:
                 workflow_id=workflow_id,
                 input_files=input_files,
                 parameters_used=initial_parameters,
+                vm_name=selected_vm_name,
             )
         )
 
@@ -118,6 +123,7 @@ class KubernetesPipelineRunner:
         workflow_id: int,
         input_files: List[int],
         parameters_used: Dict[str, Any],
+        vm_name: Optional[str],
     ) -> None:
         try:
             self._ensure_cluster_available()
@@ -163,6 +169,7 @@ class KubernetesPipelineRunner:
                             tool=tool,
                             stage_job_name=stage_job_name,
                             current_inputs=current_inputs,
+                            vm_name=vm_name,
                             stage_info=stage_info,
                             parameters_used=parameters_used,
                         ),
@@ -401,18 +408,20 @@ class KubernetesPipelineRunner:
         tool: Dict[str, Any],
         stage_job_name: str,
         current_inputs: List[Dict[str, Any]],
+        vm_name: Optional[str],
         stage_info: Dict[str, Any],
         parameters_used: Dict[str, Any],
     ) -> List[Dict[str, Any]]:
         manifest = self._build_manifest(
             job_id=job_id,
-            execution_id=execution_id,
-            user_id=user_id,
-            stage_number=stage_number,
-            tool=tool,
-            stage_job_name=stage_job_name,
-            current_inputs=current_inputs,
-        )
+                execution_id=execution_id,
+                user_id=user_id,
+                stage_number=stage_number,
+                tool=tool,
+                stage_job_name=stage_job_name,
+                current_inputs=current_inputs,
+                vm_name=vm_name,
+            )
         namespace = self._config.kubernetes.namespace
 
         temp_manifest = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8")
@@ -460,13 +469,14 @@ class KubernetesPipelineRunner:
         tool: Dict[str, Any],
         stage_job_name: str,
         current_inputs: List[Dict[str, Any]],
+        vm_name: Optional[str],
     ) -> Dict[str, Any]:
         config = self._config
         namespace = config.kubernetes.namespace
         minio_client = get_minio_client()
         bucket_name = minio_client.ensure_user_bucket(user_id=user_id)
         download_script = self._build_init_download_script(bucket_name, current_inputs)
-        tool_plan = self._plan_tool_resources(tool["id"], current_inputs)
+        tool_plan = self._plan_tool_resources(tool["id"], current_inputs, vm_name=vm_name)
         tool_script = self._build_tool_script(tool, current_inputs, tool_plan)
         artifact_grace_seconds = self._env_int("CASSIE_ARTIFACT_SIDECAR_GRACE_SECONDS") or 600
 
@@ -518,12 +528,12 @@ class KubernetesPipelineRunner:
                                 "resources": {
                                     "requests": {
                                         "cpu": "50m",
-                                        "memory": "128Mi",
+                                        "memory": tool_plan["init_memory_request"],
                                         "ephemeral-storage": f'{tool_plan["init_storage_request_mib"]}Mi',
                                     },
                                     "limits": {
                                         "cpu": "500m",
-                                        "memory": "512Mi",
+                                        "memory": f'{tool_plan["init_memory_limit_mib"]}Mi',
                                         "ephemeral-storage": f'{tool_plan["storage_limit_mib"]}Mi',
                                     },
                                 },
@@ -729,12 +739,13 @@ class KubernetesPipelineRunner:
         self,
         tool_id: str,
         current_inputs: Optional[List[Dict[str, Any]]] = None,
+        vm_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Choose the strongest safe tool profile for the current cluster."""
-        capacity = self._detect_effective_cluster_capacity()
+        capacity = self._detect_effective_cluster_capacity(vm_name=vm_name)
         cpu_millis = max(250, capacity["cpu_millis"])
         memory_mib = max(768, capacity["memory_mib"])
-        tool_memory_budget_mib = max(512, min(int(memory_mib * 0.88), memory_mib - 256) - 128)
+        tool_memory_budget_mib = memory_mib
         whole_cpus = max(1, cpu_millis // 1000)
         resource_mode = os.getenv("CASSIE_RESOURCE_MODE", "adaptive").strip().lower()
         input_size_mib = self._estimate_input_size_mib(current_inputs or [])
@@ -754,7 +765,7 @@ class KubernetesPipelineRunner:
             default_memory_gb = 2 if low_resource else min(12, max(4, (tool_memory_budget_mib - 512) // 1024))
             default_kmers = "21" if low_resource else ""
             profile = "low-resource" if low_resource else "full"
-            memory_limit = min(tool_memory_budget_mib, max(1024, default_memory_gb * 1024 + 512))
+            memory_limit = tool_memory_budget_mib
 
             if self._tool_flag("SPADES_REQUIRE_FULL", default=False) and low_resource:
                 raise RuntimeError(
@@ -782,7 +793,7 @@ class KubernetesPipelineRunner:
 
         if tool_id == "GENOMESCOPE2":
             default_threads = min(2, whole_cpus) if memory_mib >= 4096 else 1
-            memory_limit = min(tool_memory_budget_mib, 2048 if memory_mib >= 3072 else 1536)
+            memory_limit = tool_memory_budget_mib
             return self._resource_plan(
                 tool_id=tool_id,
                 profile="adaptive",
@@ -799,7 +810,7 @@ class KubernetesPipelineRunner:
 
         if tool_id == "QUAST":
             default_threads = min(2, whole_cpus) if memory_mib >= 4096 else 1
-            memory_limit = min(tool_memory_budget_mib, 2048 if memory_mib >= 4096 else 1500)
+            memory_limit = tool_memory_budget_mib
             return self._resource_plan(
                 tool_id=tool_id,
                 profile="adaptive",
@@ -814,7 +825,7 @@ class KubernetesPipelineRunner:
             )
 
         default_threads = min(2, whole_cpus) if memory_mib >= 4096 else 1
-        memory_limit = min(tool_memory_budget_mib, 1024)
+        memory_limit = tool_memory_budget_mib
         return self._resource_plan(
             tool_id=tool_id,
             profile="adaptive",
@@ -854,17 +865,17 @@ class KubernetesPipelineRunner:
             max(256, input_size_mib + (512 if tool_id == "SPADES" else 256)),
         )
         init_storage_request_mib = min(storage_limit_mib, max(128, input_size_mib + 128))
-        cpu_request = self._env_value_or_default(
-            f"{prefix}_CPU_REQUEST",
-            "100m" if tool_id in {"FASTQC", "QUAST"} else "250m",
+        init_memory_limit_mib = min(
+            capacity["memory_mib"],
+            max(768, memory_limit_mib, input_size_mib + 384),
         )
-        memory_request = self._env_value_or_default(
-            f"{prefix}_MEMORY_REQUEST",
-            "256Mi" if tool_id in {"FASTQC", "QUAST"} else "512Mi",
-        )
+        init_memory_request = f"{init_memory_limit_mib}Mi"
         cpu_limit = self._env_value_or_default(f"{prefix}_CPU_LIMIT", self._format_cpu_quantity(cpu_limit_millis))
         memory_limit = self._env_value_or_default(f"{prefix}_MEMORY_LIMIT", f"{memory_limit_mib}Mi")
         storage_limit = self._env_value_or_default(f"{prefix}_STORAGE_LIMIT", f"{storage_limit_mib}Mi")
+        hard_cpu_request = cpu_limit
+        hard_memory_request = memory_limit
+        hard_storage_request = storage_limit
 
         plan = {
             "profile": profile,
@@ -876,6 +887,8 @@ class KubernetesPipelineRunner:
             "storage_limit_mib": storage_limit_mib,
             "storage_request_mib": storage_request_mib,
             "init_storage_request_mib": init_storage_request_mib,
+            "init_memory_limit_mib": init_memory_limit_mib,
+            "init_memory_request": init_memory_request,
             "storage_constrained": storage_limit_mib < self._estimated_required_storage_mib(
                 tool_id, input_size_mib, low_resource
             ),
@@ -884,9 +897,9 @@ class KubernetesPipelineRunner:
             "available_storage_mib": capacity.get("storage_mib", 0),
             "resources": {
                 "requests": {
-                    "cpu": cpu_request,
-                    "memory": memory_request,
-                    "ephemeral-storage": f"{storage_request_mib}Mi",
+                    "cpu": hard_cpu_request,
+                    "memory": hard_memory_request,
+                    "ephemeral-storage": hard_storage_request,
                 },
                 "limits": {
                     "cpu": cpu_limit,
@@ -949,11 +962,16 @@ class KubernetesPipelineRunner:
             return "50M"
         return "25M"
 
-    def _detect_effective_cluster_capacity(self) -> Dict[str, int]:
+    def _detect_effective_cluster_capacity(self, vm_name: Optional[str] = None) -> Dict[str, int]:
         now = time.time()
         if self._resource_cache and now - self._resource_cache[0] < 60:
-            return dict(self._resource_cache[1])
+            return self._capacity_for_vm_partition(dict(self._resource_cache[1]), vm_name)
 
+        capacity = self._detect_total_cluster_capacity()
+        self._resource_cache = (now, dict(capacity))
+        return self._capacity_for_vm_partition(capacity, vm_name)
+
+    def _detect_total_cluster_capacity(self) -> Dict[str, int]:
         capacity = {"cpu_millis": 1000, "memory_mib": 2048, "storage_mib": 0}
         result = self._run_kubectl(["get", "nodes", "-o", "json"], timeout=30)
         if result.returncode == 0:
@@ -989,8 +1007,44 @@ class KubernetesPipelineRunner:
         if override_storage_mib > 0:
             capacity["storage_mib"] = min(capacity["storage_mib"] or override_storage_mib, override_storage_mib)
 
-        self._resource_cache = (now, dict(capacity))
         return capacity
+
+    def _capacity_for_vm_partition(self, cluster_capacity: Dict[str, int], vm_name: Optional[str]) -> Dict[str, int]:
+        partitions = get_vm_partitions()
+        if not partitions:
+            return cluster_capacity
+
+        selected_partition = get_vm_partition(vm_name) or partitions[0]
+        partition_count = max(1, len(partitions))
+        max_pods = max(1, selected_partition.max_pods)
+
+        partition_capacity = dict(cluster_capacity)
+        partition_capacity["cpu_millis"] = max(250, cluster_capacity["cpu_millis"] // partition_count // max_pods)
+        partition_capacity["memory_mib"] = max(768, cluster_capacity["memory_mib"] // partition_count // max_pods)
+
+        storage_mib = cluster_capacity.get("storage_mib", 0)
+        if storage_mib > 0:
+            partition_capacity["storage_mib"] = max(1024, storage_mib // partition_count // max_pods)
+        return partition_capacity
+
+    def get_vm_capacity_summary(self) -> List[Dict[str, Any]]:
+        total_capacity = self._detect_total_cluster_capacity()
+        summaries: List[Dict[str, Any]] = []
+
+        for partition in get_vm_partitions():
+            capacity = self._capacity_for_vm_partition(total_capacity, partition.name)
+            summaries.append(
+                {
+                    "name": partition.name,
+                    "display_name": partition.display_name,
+                    "max_pods": partition.max_pods,
+                    "available_cpu_millis": capacity["cpu_millis"],
+                    "available_memory_mib": capacity["memory_mib"],
+                    "available_storage_mib": capacity.get("storage_mib", 0),
+                }
+            )
+
+        return summaries
 
     def _detect_minikube_docker_capacity(self) -> Dict[str, int]:
         if not shutil.which("docker"):

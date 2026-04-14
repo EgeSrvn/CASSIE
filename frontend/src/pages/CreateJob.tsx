@@ -19,6 +19,10 @@ import { PendingJobUploadFile, enqueuePendingJobUploads } from '../services/pend
 import Navigation from '../components/Navigation'
 import '../styles/globals.css'
 
+const formatVmCpu = (cpuMillis: number): string => `${(cpuMillis / 1000).toFixed(2)} cores`
+const formatVmMemory = (memoryMib: number): string => `${(memoryMib / 1024).toFixed(2)} GiB`
+const formatVmStorage = (storageMib: number): string => storageMib > 0 ? `${(storageMib / 1024).toFixed(2)} GiB` : 'Auto'
+
 export default function CreateJob() {
   const location = useLocation()
   const [jobName, setJobName] = useState('')
@@ -60,6 +64,7 @@ export default function CreateJob() {
     borderRadius: '4px',
     backgroundColor: 'white',
   }
+  const selectedVMDetails = availableVMs.find(vm => vm.name === selectedVM) || null
 
   // Check if pipeline_id was passed via navigation state
   useEffect(() => {
@@ -665,14 +670,31 @@ export default function CreateJob() {
               >
                 {availableVMs.map((vm) => (
                   <option key={vm.name} value={vm.name}>
-                    {vm.display_name}
+                    {vm.display_name} (max {vm.max_pods} pod{vm.max_pods === 1 ? '' : 's'})
                   </option>
                 ))}
               </select>
             )}
             <small style={{ color: '#666', display: 'block', marginTop: '0.25rem' }}>
-              Select the virtual machine where this job will be executed
+              Each VM gets an equal share of cluster resources. The selected VM decides how many pods can share that slice.
             </small>
+            {selectedVMDetails && (
+              <div style={{ marginTop: '0.75rem', padding: '0.875rem 1rem', borderRadius: '8px', backgroundColor: '#f8fafc', border: '1px solid #e2e8f0' }}>
+                <div style={{ fontWeight: 600, color: '#0f172a', marginBottom: '0.35rem' }}>
+                  Max resource limits for {selectedVMDetails.display_name}
+                </div>
+                <div style={{ color: '#475569', fontSize: '0.95rem', lineHeight: 1.6 }}>
+                  CPU: {formatVmCpu(selectedVMDetails.available_cpu_millis)}
+                  {' | '}
+                  Memory: {formatVmMemory(selectedVMDetails.available_memory_mib)}
+                  {' | '}
+                  Storage: {formatVmStorage(selectedVMDetails.available_storage_mib)}
+                </div>
+                <div style={{ color: '#64748b', fontSize: '0.875rem', marginTop: '0.35rem' }}>
+                  Hard limit per job on this VM profile: total resources / number of VMs / max pods on this VM.
+                </div>
+              </div>
+            )}
           </div>
 
           {selectionMode === 'tools' && (

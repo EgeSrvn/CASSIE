@@ -14,10 +14,11 @@ import tempfile
 import hashlib
 import time
 import zipfile
-import io
+import urllib.parse
+from threading import Lock
 from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, status, Query, BackgroundTasks
-from fastapi.responses import JSONResponse, StreamingResponse, Response
-from typing import Optional, List
+from fastapi.responses import JSONResponse, StreamingResponse, RedirectResponse
+from typing import Optional, List, Dict, Any, Tuple
 # Use real JWT auth (Task 5.4 - now fixed)
 from backend.api.routes.auth import get_current_user, get_auth_context, AuthContext
 from backend.api.models.user_model import UserResponse
@@ -61,6 +62,176 @@ router = APIRouter(prefix="/storage", tags=["storage"])
 
 # Initialize MinIO client
 minio_client = get_minio_client()
+ZIP_DOWNLOAD_EXPIRATION_SECONDS = 3600
+zip_download_jobs: Dict[Tuple[int, int], Dict[str, Any]] = {}
+zip_download_jobs_lock = Lock()
+
+
+def _get_zip_job_key(user_id: int, job_id: int) -> Tuple[int, int]:
+    return (user_id, job_id)
+
+
+def _get_zip_download_status_payload(user_id: int, job_id: int) -> Dict[str, Any]:
+    job_key = _get_zip_job_key(user_id, job_id)
+    with zip_download_jobs_lock:
+        status_data = zip_download_jobs.get(job_key)
+        if not status_data:
+            return {
+                "status": "idle",
+                "download_url": None,
+                "filename": None,
+                "expires_in": None,
+                "error": None,
+            }
+
+        payload = dict(status_data)
+
+        expires_at = payload.get("expires_at")
+        if payload.get("status") == "ready" and expires_at and time.time() >= expires_at:
+            payload.update({
+                "status": "expired",
+                "download_url": None,
+                "error": "Download link expired. Generate a new ZIP link to continue.",
+            })
+            zip_download_jobs[job_key] = payload
+
+        if payload.get("status") != "ready":
+            payload["download_url"] = None
+
+        return payload
+
+
+def _set_zip_download_status(user_id: int, job_id: int, **values: Any) -> None:
+    job_key = _get_zip_job_key(user_id, job_id)
+    with zip_download_jobs_lock:
+        current = zip_download_jobs.get(job_key, {})
+        current.update(values)
+        current["updated_at"] = time.time()
+        zip_download_jobs[job_key] = current
+
+
+def _build_job_outputs_zip_for_download(job_id: int, current_user: UserResponse) -> Dict[str, Any]:
+    job = get_job_by_id(job_id, user_id=current_user.id)
+    if job is None:
+        raise FileNotFoundError(f"Job {job_id} not found")
+
+    output_files = get_files_by_user(
+        user_id=current_user.id,
+        job_id=job_id,
+        file_type=FileType.OUTPUT,
+        limit=1000,
+        offset=0
+    )
+
+    if not output_files:
+        raise ValueError("No output files found for this job")
+
+    temp_zip = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
+    temp_zip_path = temp_zip.name
+    temp_zip.close()
+
+    added_files = 0
+
+    try:
+        with zipfile.ZipFile(temp_zip_path, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+            for file_record in output_files:
+                try:
+                    temp_file = tempfile.NamedTemporaryFile(delete=False)
+                    temp_path = temp_file.name
+                    temp_file.close()
+
+                    try:
+                        minio_client.download_file(
+                            user_id=current_user.id,
+                            s3_key=file_record.s3_key,
+                            local_path=temp_path,
+                            username=current_user.username
+                        )
+                        zip_file.write(temp_path, file_record.filename)
+                        added_files += 1
+                        logger.info(f"Added {file_record.filename} to ZIP archive")
+                    finally:
+                        if os.path.exists(temp_path):
+                            try:
+                                os.unlink(temp_path)
+                            except Exception as e:
+                                logger.warning(f"Failed to delete temp file {temp_path}: {e}")
+                except Exception as e:
+                    logger.warning(f"Failed to add {file_record.filename} to ZIP: {e}")
+                    continue
+
+        if added_files == 0:
+            raise RuntimeError("Failed to create ZIP archive because no output files could be packaged")
+
+        job_name_safe = "".join(c for c in job.name if c.isalnum() or c in (' ', '-', '_')).rstrip()
+        zip_filename = f"job_{job_id}_{job_name_safe}_outputs.zip"
+        safe_job_fragment = "".join(c if c.isalnum() or c in ('-', '_') else "_" for c in job.name).strip("_") or f"job_{job_id}"
+        zip_s3_key = f"generated-archives/jobs/{job_id}/{safe_job_fragment}_outputs.zip"
+
+        minio_client.upload_file(
+            user_id=current_user.id,
+            local_path=temp_zip_path,
+            s3_key=zip_s3_key,
+            username=current_user.username,
+            metadata={
+                "job-id": str(job_id),
+                "archive-type": "job-outputs-zip"
+            }
+        )
+
+        content_disposition = (
+            f'attachment; filename="{zip_filename}"; '
+            f"filename*=UTF-8''{urllib.parse.quote(zip_filename, safe='')}"
+        )
+        download_url = minio_client.generate_presigned_url(
+            user_id=current_user.id,
+            s3_key=zip_s3_key,
+            username=current_user.username,
+            expiration=ZIP_DOWNLOAD_EXPIRATION_SECONDS,
+            response_content_disposition=content_disposition
+        )
+
+        return {
+            "status": "ready",
+            "download_url": download_url,
+            "filename": zip_filename,
+            "expires_in": ZIP_DOWNLOAD_EXPIRATION_SECONDS,
+            "expires_at": time.time() + ZIP_DOWNLOAD_EXPIRATION_SECONDS,
+            "error": None,
+        }
+    finally:
+        if os.path.exists(temp_zip_path):
+            try:
+                os.unlink(temp_zip_path)
+            except Exception as e:
+                logger.warning(f"Failed to delete temp ZIP file {temp_zip_path}: {e}")
+
+
+def _generate_job_outputs_zip_in_background(job_id: int, current_user: UserResponse) -> None:
+    try:
+        _set_zip_download_status(
+            current_user.id,
+            job_id,
+            status="processing",
+            download_url=None,
+            filename=None,
+            expires_in=None,
+            expires_at=None,
+            error=None,
+        )
+        result = _build_job_outputs_zip_for_download(job_id, current_user)
+        _set_zip_download_status(current_user.id, job_id, **result)
+    except Exception as e:
+        logger.error(f"Error creating ZIP archive for job {job_id}: {e}", exc_info=True)
+        _set_zip_download_status(
+            current_user.id,
+            job_id,
+            status="failed",
+            download_url=None,
+            expires_in=None,
+            expires_at=None,
+            error=str(e) or "Failed to create ZIP archive",
+        )
 
 
 @router.post("/upload", status_code=status.HTTP_201_CREATED)
@@ -556,118 +727,75 @@ async def view_file(
         return JSONResponse(content=error_data, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-@router.get("/jobs/{job_id}/download-zip")
-async def download_job_outputs_zip(
+@router.post("/jobs/{job_id}/download-zip")
+async def request_job_outputs_zip(
     job_id: int,
-    current_user: UserResponse = Depends(get_current_user)
+    background_tasks: BackgroundTasks,
+    current_user: UserResponse = Depends(get_current_user),
 ):
     """
-    Download all output files for a job as a ZIP archive.
-    
-    Args:
-        job_id: Job ID
-        current_user: Current authenticated user (from dependency)
-        
-    Returns:
-        ZIP file stream
+    Start background generation of a ZIP archive for all job outputs.
     """
-    import zipfile
-    import io
-    
-    # Verify job exists and belongs to user
     job = get_job_by_id(job_id, user_id=current_user.id)
     if job is None:
         error_data = not_found_response("Job", job_id)
         return JSONResponse(content=error_data, status_code=status.HTTP_404_NOT_FOUND)
-    
-    try:
-        # Get all output files for this job
-        output_files = get_files_by_user(
-            user_id=current_user.id,
-            job_id=job_id,
-            file_type=FileType.OUTPUT,
-            limit=1000,  # Get all output files
-            offset=0
+
+    status_payload = _get_zip_download_status_payload(current_user.id, job_id)
+    if status_payload["status"] in {"queued", "processing"}:
+        return JSONResponse(
+            content=success_response(
+                data=status_payload,
+                message="ZIP generation is already in progress",
+                status_code=status.HTTP_202_ACCEPTED
+            ),
+            status_code=status.HTTP_202_ACCEPTED
         )
-        
-        if not output_files:
-            error_data = error_response(
-                error_code=ErrorCode.VALIDATION_ERROR,
-                message="No output files found for this job",
-                status_code=status.HTTP_404_NOT_FOUND
-            )
-            return JSONResponse(content=error_data, status_code=status.HTTP_404_NOT_FOUND)
-        
-        # Create a ZIP file in memory
-        zip_buffer = io.BytesIO()
-        
-        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-            # Download each file from MinIO and add to ZIP
-            for file_record in output_files:
-                try:
-                    # Download file to temp location
-                    temp_file = tempfile.NamedTemporaryFile(delete=False)
-                    temp_path = temp_file.name
-                    temp_file.close()
-                    
-                    try:
-                        # Download from MinIO
-                        minio_client.download_file(
-                            user_id=current_user.id,
-                            s3_key=file_record.s3_key,
-                            local_path=temp_path,
-                            username=current_user.username
-                        )
-                        
-                        # Add to ZIP with original filename
-                        zip_file.write(temp_path, file_record.filename)
-                        logger.info(f"Added {file_record.filename} to ZIP archive")
-                        
-                    finally:
-                        # Clean up temp file
-                        if os.path.exists(temp_path):
-                            try:
-                                os.unlink(temp_path)
-                            except Exception as e:
-                                logger.warning(f"Failed to delete temp file {temp_path}: {e}")
-                                
-                except Exception as e:
-                    logger.warning(f"Failed to add {file_record.filename} to ZIP: {e}")
-                    continue
-        
-        # Prepare ZIP for streaming
-        zip_buffer.seek(0)
-        
-        # Generate filename
-        import urllib.parse
-        job_name_safe = "".join(c for c in job.name if c.isalnum() or c in (' ', '-', '_')).rstrip()
-        zip_filename = f"job_{job_id}_{job_name_safe}_outputs.zip"
-        
-        # Get the ZIP data
-        zip_data = zip_buffer.getvalue()
-        
-        # URL-encode filename for Content-Disposition header (RFC 5987)
-        filename_encoded = urllib.parse.quote(zip_filename, safe='')
-        
-        # Use Response instead of StreamingResponse for better browser compatibility
-        return Response(
-            content=zip_data,
-            media_type="application/zip",
-            headers={
-                "Content-Disposition": f'attachment; filename="{zip_filename}"; filename*=UTF-8\'\'{filename_encoded}',
-                "Content-Length": str(len(zip_data)),
-                "Content-Type": "application/zip"
-            }
-        )
-        
-    except Exception as e:
-        logger.error(f"Error creating ZIP archive for job {job_id}: {e}", exc_info=True)
-        error_data = error_response(
-            error_code=ErrorCode.INTERNAL_ERROR,
-            message="Failed to create ZIP archive",
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
-        )
-        return JSONResponse(content=error_data, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    _set_zip_download_status(
+        current_user.id,
+        job_id,
+        status="queued",
+        download_url=None,
+        filename=None,
+        expires_in=None,
+        expires_at=None,
+        error=None,
+    )
+    background_tasks.add_task(_generate_job_outputs_zip_in_background, job_id, current_user)
+
+    return JSONResponse(
+        content=success_response(
+            data=_get_zip_download_status_payload(current_user.id, job_id),
+            message="ZIP generation started",
+            status_code=status.HTTP_202_ACCEPTED
+        ),
+        status_code=status.HTTP_202_ACCEPTED
+    )
+
+
+@router.get("/jobs/{job_id}/download-zip")
+async def get_job_outputs_zip_download(
+    job_id: int,
+    current_user: UserResponse = Depends(get_current_user),
+    redirect: bool = Query(False, description="Whether to redirect to the presigned ZIP URL when ready"),
+):
+    """
+    Get the current ZIP generation status and optionally redirect when a link is ready.
+    """
+    job = get_job_by_id(job_id, user_id=current_user.id)
+    if job is None:
+        error_data = not_found_response("Job", job_id)
+        return JSONResponse(content=error_data, status_code=status.HTTP_404_NOT_FOUND)
+
+    status_payload = _get_zip_download_status_payload(current_user.id, job_id)
+    if redirect and status_payload["status"] == "ready" and status_payload.get("download_url"):
+        return RedirectResponse(url=status_payload["download_url"], status_code=status.HTTP_302_FOUND)
+
+    return success_response(
+        data=status_payload,
+        message="ZIP download status retrieved successfully"
+    )
 
 
 @router.delete("/files/{file_id}")

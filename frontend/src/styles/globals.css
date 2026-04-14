@@ -810,6 +810,79 @@ body {
   font-size: 0.875rem;
 }
 
+.zip-download-panel {
+  margin-bottom: var(--spacing-lg);
+  padding: var(--spacing-lg);
+  border: 1px solid var(--gray-200);
+  border-radius: var(--radius);
+  background: var(--bg-secondary);
+}
+
+.zip-download-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-md);
+  flex-wrap: wrap;
+  margin-bottom: var(--spacing-sm);
+}
+
+.zip-download-panel-body p {
+  margin: 0;
+  color: var(--gray-700);
+}
+
+.zip-download-actions {
+  display: flex;
+  gap: var(--spacing-sm);
+  flex-wrap: wrap;
+  margin-top: var(--spacing-md);
+}
+
+.zip-download-status {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.25rem 0.75rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.zip-download-status-queued,
+.zip-download-status-processing {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.zip-download-status-ready {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.zip-download-status-failed,
+.zip-download-status-expired {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.zip-download-status-idle {
+  background: var(--gray-100);
+  color: var(--gray-700);
+}
+
+.zip-download-filename {
+  margin-top: var(--spacing-sm) !important;
+  font-size: 0.875rem;
+  color: var(--gray-600) !important;
+  word-break: break-word;
+}
+
+.zip-download-error {
+  margin-top: var(--spacing-sm);
+  color: #b91c1c;
+  font-size: 0.875rem;
+}
+
 /* Pipeline Requirements */
 .pipeline-requirements-container {
   display: flex;

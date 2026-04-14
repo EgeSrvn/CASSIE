@@ -478,7 +478,8 @@ class MinIOClient:
         s3_key: str,
         expiration: int = 3600,
         username: Optional[str] = None,
-        http_method: str = 'GET'
+        http_method: str = 'GET',
+        response_content_disposition: Optional[str] = None
     ) -> str:
         """
         Generate a presigned URL for a file.
@@ -489,6 +490,7 @@ class MinIOClient:
             expiration: URL expiration time in seconds (default: 1 hour)
             username: Optional username (for backward compatibility)
             http_method: HTTP method (GET or PUT, default: GET)
+            response_content_disposition: Optional download filename/disposition for GET requests
         
         Returns:
             str: Presigned URL
@@ -499,12 +501,33 @@ class MinIOClient:
         bucket_name = self._get_bucket_name(user_id, username)
         
         try:
-            url = self.s3_client.generate_presigned_url(
+            params = {'Bucket': bucket_name, 'Key': s3_key}
+            if response_content_disposition and http_method.upper() == 'GET':
+                params['ResponseContentDisposition'] = response_content_disposition
+
+            presign_client = self.s3_client
+            minio_config = self._config.minio
+            if minio_config.public_endpoint and minio_config.public_endpoint != minio_config.endpoint:
+                presign_client = boto3.client(
+                    's3',
+                    aws_access_key_id=minio_config.access_key,
+                    aws_secret_access_key=minio_config.secret_key,
+                    region_name=minio_config.region,
+                    endpoint_url=minio_config.public_endpoint,
+                    config=Config(
+                        signature_version='s3v4',
+                        retries={'max_attempts': 3, 'mode': 'standard'},
+                        connect_timeout=10,
+                        read_timeout=10,
+                        max_pool_connections=10
+                    ),
+                )
+
+            url = presign_client.generate_presigned_url(
                 'get_object' if http_method.upper() == 'GET' else 'put_object',
-                Params={'Bucket': bucket_name, 'Key': s3_key},
+                Params=params,
                 ExpiresIn=expiration
             )
-            url = self._rewrite_url_base(url, self._config.minio.public_endpoint)
             
             self._logger.debug(f"Generated presigned URL for '{s3_key}' (expires in {expiration}s)")
             return url
