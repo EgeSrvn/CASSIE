@@ -28,6 +28,7 @@ from backend.api.services.job_execution_service import (
     get_job_execution_by_id
 )
 from backend.api.services.job_service import update_job
+from backend.api.services.job_archive_service import prewarm_job_outputs_zip
 from backend.api.services.storage_service import get_file_by_id, create_file_record
 from backend.api.models.pipeline_model import FileCreate, FileType
 from backend.api.services.minio_client import get_minio_client
@@ -860,6 +861,7 @@ class EmulatorPipelineRunner:
                 update_job_execution(execution_id, update_data)
                 from backend.api.models.job_model import JobUpdate
                 update_job(job_id, user_id, JobUpdate(status=JobStatus.COMPLETED))
+                prewarm_job_outputs_zip(job_id, user_id)
                 
                 self._logger.info(f"Job {job_id} marked as COMPLETED")
                 

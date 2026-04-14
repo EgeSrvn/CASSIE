@@ -15,7 +15,7 @@ import ReactFlow, {
 } from 'reactflow'
 import 'reactflow/dist/style.css'
 import { createPipeline, updatePipeline, getPipeline, Pipeline } from '../services/pipelineService'
-import { getToken } from '../services/authService'
+import { getToken, isTokenExpired, logout } from '../services/authService'
 import { StarterPipelineTemplate } from '../services/starterPipelines'
 import Navigation from '../components/Navigation'
 import './PipelineBuilder.css'
@@ -106,7 +106,22 @@ export default function PipelineBuilder() {
   const [pipelineDescription, setPipelineDescription] = useState('')
   const [saving, setSaving] = useState(false)
   const [loading, setLoading] = useState(false)
-  const isAuthenticated = !!getToken()
+  const [isAuthenticated, setIsAuthenticated] = useState(() => !!getToken())
+
+  useEffect(() => {
+    const syncAuthState = () => {
+      setIsAuthenticated(!!getToken())
+    }
+
+    syncAuthState()
+    window.addEventListener('auth-change', syncAuthState)
+    window.addEventListener('storage', syncAuthState)
+
+    return () => {
+      window.removeEventListener('auth-change', syncAuthState)
+      window.removeEventListener('storage', syncAuthState)
+    }
+  }, [])
 
   useEffect(() => {
     if (id) {
@@ -192,7 +207,17 @@ export default function PipelineBuilder() {
   }
 
   const handleSave = async () => {
-    if (!isAuthenticated) {
+    const currentToken = getToken()
+
+    if (!currentToken) {
+      alert('Please log in to save this pipeline.')
+      navigate('/login')
+      return
+    }
+
+    if (isTokenExpired(currentToken)) {
+      logout()
+      alert('Your session has expired. Please log in again to save this pipeline.')
       navigate('/login')
       return
     }
@@ -221,6 +246,11 @@ export default function PipelineBuilder() {
       navigate('/pipelines')
     } catch (err: any) {
       console.error('Failed to save pipeline:', err)
+      if (err.response?.status === 401) {
+        alert('Your session is no longer valid. Please log in again to save this pipeline.')
+        navigate('/login')
+        return
+      }
       alert(`Failed to save pipeline: ${err.message || 'Unknown error'}`)
     } finally {
       setSaving(false)
@@ -358,13 +388,25 @@ export default function PipelineBuilder() {
                   />
                 </div>
                 <div className="form-actions">
-                  <button
-                    onClick={handleSave}
-                    disabled={saving || !pipelineName.trim()}
-                    className="btn-primary"
-                  >
-                    {saving ? 'Saving...' : id ? 'Update Pipeline' : 'Save Pipeline'}
-                  </button>
+                  {isAuthenticated ? (
+                    <button
+                      onClick={handleSave}
+                      disabled={saving || !pipelineName.trim()}
+                      className="btn-primary"
+                    >
+                      {saving ? 'Saving...' : id ? 'Update Pipeline' : 'Save Pipeline'}
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => {
+                        alert('Please log in to save this pipeline.')
+                        navigate('/login')
+                      }}
+                      className="btn-primary"
+                    >
+                      Login to Save
+                    </button>
+                  )}
                   <button
                     onClick={() => navigate('/pipelines')}
                     className="btn-secondary"

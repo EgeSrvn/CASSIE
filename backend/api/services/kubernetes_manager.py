@@ -31,6 +31,7 @@ from backend.api.models.job_model import (
 )
 from backend.api.models.pipeline_model import FileCreate, FileType
 from backend.api.services.job_execution_service import create_job_execution, update_job_execution
+from backend.api.services.job_archive_service import prewarm_job_outputs_zip
 from backend.api.services.job_service import update_job, get_job_by_id
 from backend.api.services.minio_client import get_minio_client
 from backend.api.services.storage_service import create_file_record, get_file_by_id
@@ -202,6 +203,7 @@ class KubernetesPipelineRunner:
             from backend.api.models.job_model import JobUpdate
 
             update_job(job_id, user_id, JobUpdate(status=JobStatus.COMPLETED))
+            prewarm_job_outputs_zip(job_id, user_id)
         except Exception as exc:
             public_error = self._public_failure_message(str(exc))
             self._logger.error(

@@ -18,6 +18,7 @@ from backend.api.services.job_execution_service import (
     update_job_execution,
     get_job_execution_by_id
 )
+from backend.api.services.job_archive_service import prewarm_job_outputs_zip
 from backend.api.services.job_service import update_job
 from backend.api.models.job_model import (
     JobExecutionCreate,
@@ -133,6 +134,7 @@ class MockPipelineRunner:
                 # Update job status to completed
                 from backend.api.models.job_model import JobUpdate
                 update_job(job_id, 0, JobUpdate(status=JobStatus.COMPLETED))  # user_id=0 for system
+                prewarm_job_outputs_zip(job_id, 0)
                 
                 logger.info(f"Mock pipeline completed for job {job_id}, execution {execution_id}")
             else:
@@ -213,4 +215,3 @@ def get_mock_pipeline_runner() -> MockPipelineRunner:
     if _mock_runner_instance is None:
         _mock_runner_instance = MockPipelineRunner()
     return _mock_runner_instance
-

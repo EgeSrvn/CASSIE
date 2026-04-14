@@ -31,16 +31,16 @@ apiClient.interceptors.response.use(
   (response) => response,
   (error: AxiosError) => {
     if (error.response?.status === 401) {
-      clearToken()
-      // Only redirect to login if we're not already on a public page
-      // Public pages: /, /jobs, /pipelines, /community, /jobs/create, /pipelines/builder
-      const publicPaths = ['/', '/jobs', '/pipelines', '/community', '/jobs/create', '/pipelines/builder']
-      const currentPath = window.location.pathname
-      const isPublicPath = publicPaths.some(path => currentPath === path || currentPath.startsWith(path + '/'))
-      
-      // Don't auto-redirect on public pages - let the component handle it
-      if (!isPublicPath) {
-        window.location.href = '/login'
+      const hadToken = !!getToken()
+      const requestUrl = `${error.config?.url || ''}`
+      const isLoginRequest = requestUrl.includes('/api/auth/login')
+      const isRegisterRequest = requestUrl.includes('/api/auth/register')
+
+      if (hadToken && !isLoginRequest && !isRegisterRequest) {
+        clearToken()
+        if (window.location.pathname !== '/login') {
+          window.location.href = '/login'
+        }
       }
     }
     return Promise.reject(error)

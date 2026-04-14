@@ -35,11 +35,7 @@ export default function Community() {
   }
 
   const handleViewPipeline = (pipelineId: number) => {
-    if (isAuthenticated) {
-      navigate(`/pipelines/builder/${pipelineId}`)
-    } else {
-      navigate('/login')
-    }
+    navigate(`/pipelines/builder/${pipelineId}`)
   }
 
   const handleUseTemplate = (template: StarterPipelineTemplate) => {
@@ -251,16 +247,28 @@ export default function Community() {
                         </button>
                       </>
                     ) : (
+                      <>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            navigate('/login')
+                          }}
+                          className="btn-secondary"
+                          style={{ padding: '0.5rem 1rem', fontSize: '0.875rem' }}
+                        >
+                          Login to Save
+                        </button>
                       <button
                         onClick={(e) => {
                           e.stopPropagation()
-                          navigate('/login')
+                          handleViewPipeline(pipeline.id)
                         }}
                         className="btn-primary"
                         style={{ padding: '0.5rem 1rem', fontSize: '0.875rem' }}
                       >
-                        Login to View
+                        View
                       </button>
+                      </>
                     )}
                   </div>
                 </div>

@@ -1,6 +1,7 @@
 import apiClient from './apiClient'
 
 const TOKEN_KEY = 'cassie_token'
+const AUTH_CHANGE_EVENT = 'auth-change'
 
 export interface LoginRequest {
   username: string
@@ -82,16 +83,47 @@ export const getCurrentUser = async (): Promise<User> => {
 
 export const setToken = (token: string): void => {
   localStorage.setItem(TOKEN_KEY, token)
+  window.dispatchEvent(new Event(AUTH_CHANGE_EVENT))
 }
 
 export const getToken = (): string | null => {
   return localStorage.getItem(TOKEN_KEY)
 }
 
+export const isTokenExpired = (token: string | null = getToken()): boolean => {
+  if (!token) {
+    return true
+  }
+
+  try {
+    const payloadBase64 = token.split('.')[1]
+    if (!payloadBase64) {
+      return true
+    }
+
+    const normalized = payloadBase64.replace(/-/g, '+').replace(/_/g, '/')
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=')
+    const payload = JSON.parse(atob(padded)) as { exp?: number }
+
+    if (typeof payload.exp !== 'number') {
+      return false
+    }
+
+    return payload.exp <= Math.floor(Date.now() / 1000)
+  } catch {
+    return true
+  }
+}
+
 export const clearToken = (): void => {
   localStorage.removeItem(TOKEN_KEY)
+  window.dispatchEvent(new Event(AUTH_CHANGE_EVENT))
 }
 
 export const logout = (): void => {
   clearToken()
+}
+
+export const notifyAuthChange = (): void => {
+  window.dispatchEvent(new Event(AUTH_CHANGE_EVENT))
 }
