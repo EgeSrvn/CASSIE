@@ -24,8 +24,10 @@ from backend.api.services.intent_recommender import (
 )
 from tool_registry import (
     get_tool_by_index,
+    get_tool_by_id,
     get_tool_registry,
     get_tool_requirements as get_registry_tool_requirements,
+    tool_produces_requirement,
 )
 
 logger = get_logger(__name__)
@@ -149,17 +151,16 @@ async def get_tool_requirements(
             )
             return JSONResponse(content=error_data, status_code=400)
         
-        selected_tool_ids = {
-            tool["id"]
+        selected_tools = [
+            tool
             for idx in indices
             for tool in [get_tool_by_index(idx)]
             if tool
-        }
+        ]
+        selected_tool_ids = {tool["id"] for tool in selected_tools}
 
         # Get tools and their requirements
         tool_requirements = []
-        has_spades_selected = "SPADES" in selected_tool_ids
-        
         for idx in indices:
             tool = get_tool_by_index(idx)
             if not tool:
@@ -175,14 +176,17 @@ async def get_tool_requirements(
                 processed_requirements = []
                 for req in requirements:
                     req_copy = req.copy()
-                    
-                    # QUAST assembly comes from SPAdes whenever both are selected for the same workflow.
-                    # Tool ordering later normalizes execution order, so this should not depend on iteration order here.
-                    if tool_id == "QUAST" and req["type"] == "assembly" and has_spades_selected:
-                        req_copy["is_intermediate"] = True
-                        req_copy["source_tool"] = "SPAdes"
-                    else:
-                        req_copy["is_intermediate"] = False
+                    producer_name = None
+                    for candidate_tool in selected_tools:
+                        candidate_tool_id = candidate_tool["id"]
+                        if candidate_tool_id == tool_id:
+                            continue
+                        if tool_produces_requirement(candidate_tool, str(req.get("type") or "")):
+                            producer_name = candidate_tool.get("name") or get_tool_by_id(candidate_tool_id).get("name", candidate_tool_id)
+                            break
+                    req_copy["is_intermediate"] = producer_name is not None
+                    if producer_name:
+                        req_copy["source_tool"] = producer_name
                     
                     processed_requirements.append(req_copy)
                 

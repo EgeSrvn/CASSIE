@@ -101,7 +101,8 @@ class KubernetesConfig:
     def __init__(self):
         self.namespace = os.getenv("KUBERNETES_NAMESPACE", "default")
         self.image_pull_policy = os.getenv("KUBERNETES_IMAGE_PULL_POLICY", "IfNotPresent")
-        self.job_timeout_seconds = int(os.getenv("KUBERNETES_JOB_TIMEOUT_SECONDS", "3600"))
+        # Zero or a negative value means "no execution timeout".
+        self.job_timeout_seconds = int(os.getenv("KUBERNETES_JOB_TIMEOUT_SECONDS", "0"))
         self.poll_interval_seconds = int(os.getenv("KUBERNETES_POLL_INTERVAL_SECONDS", "5"))
         self.cluster_check_timeout_seconds = int(os.getenv("KUBERNETES_CLUSTER_CHECK_TIMEOUT_SECONDS", "60"))
         self.minio_endpoint = os.getenv("KUBERNETES_MINIO_ENDPOINT", "")

@@ -143,6 +143,28 @@ def _infer_file_formats(file_record) -> set[str]:
         formats.add("fastq")
     if filename.endswith((".fasta.gz", ".fa.gz", ".fna.gz", ".fasta", ".fa", ".fna")):
         formats.add("fasta")
+    if filename.endswith(".gff3"):
+        formats.update({"gff", "gff3"})
+    if filename.endswith(".gff"):
+        formats.add("gff")
+    if filename.endswith(".gtf"):
+        formats.add("gtf")
+    if filename.endswith(".hal"):
+        formats.add("hal")
+    if filename.endswith(".gfa"):
+        formats.add("gfa")
+    if filename.endswith((".cfg", ".conf", ".ini")):
+        formats.update({"cfg", "conf", "ini"})
+    if filename.endswith(".json"):
+        formats.add("json")
+    if filename.endswith(".txt"):
+        formats.add("txt")
+    if filename.endswith((".meryl", ".meryl.tar", ".meryl.tar.gz", ".meryl.tgz")):
+        formats.add("meryl")
+    if filename.endswith(".tgz"):
+        formats.add("tgz")
+    if filename.endswith((".tar", ".tar.gz")):
+        formats.add("tar")
 
     return formats
 

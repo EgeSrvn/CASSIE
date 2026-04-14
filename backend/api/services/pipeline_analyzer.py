@@ -8,7 +8,12 @@ import logging
 from typing import List, Dict, Any
 
 from backend.api.models.pipeline_model import PipelineInDB
-from tool_registry import get_tool_id_from_label, get_tool_requirements
+from tool_registry import (
+    get_tool_by_id,
+    get_tool_id_from_label,
+    get_tool_requirements,
+    tool_produces_requirement,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +86,14 @@ def _classify_explicit_input(node: Dict[str, Any]) -> Dict[str, Any] | None:
         return {"type": "fastq_input", "formats": ["fastq"]}
     if node_type == "fastainput" or "fasta" in label_lower or "fasta" in description_text or "reference" in label_lower:
         return {"type": "fasta_input", "formats": ["fasta"]}
+    if "gff" in label_lower or "gtf" in label_lower or "annotation" in label_lower:
+        return {"type": "annotation_input", "formats": ["gff", "gff3", "gtf"]}
+    if "hal" in label_lower:
+        return {"type": "hal_input", "formats": ["hal"]}
+    if "meryl" in label_lower:
+        return {"type": "meryl_input", "formats": ["meryl"]}
+    if "text" in label_lower or "txt" in label_lower or "name" in label_lower or "config" in label_lower:
+        return {"type": "text_input", "formats": ["txt"]}
     return None
 
 
@@ -166,11 +179,15 @@ def analyze_pipeline_requirements(pipeline: PipelineInDB) -> Dict[str, Any]:
                 processed_requirements = []
                 for req in get_tool_requirements(tool_id):
                     req_copy = dict(req)
-                    if tool_id == "QUAST" and req_copy.get("type") == "assembly" and "SPADES" in upstream_tool_ids:
-                        req_copy["is_intermediate"] = True
-                        req_copy["source_tool"] = "SPAdes"
-                    else:
-                        req_copy["is_intermediate"] = False
+                    producer_name = None
+                    for upstream_tool_id in upstream_tool_ids:
+                        if tool_produces_requirement(upstream_tool_id, str(req_copy.get("type") or "")):
+                            upstream_tool = get_tool_by_id(upstream_tool_id)
+                            producer_name = upstream_tool.get("name", upstream_tool_id) if upstream_tool else upstream_tool_id
+                            break
+                    req_copy["is_intermediate"] = producer_name is not None
+                    if producer_name:
+                        req_copy["source_tool"] = producer_name
                     processed_requirements.append(req_copy)
 
                 node_data = node.get("data") if isinstance(node.get("data"), dict) else {}
@@ -199,14 +216,9 @@ def analyze_pipeline_requirements(pipeline: PipelineInDB) -> Dict[str, Any]:
             if not target_node or _resolve_node_type(target_node).lower() != "tool":
                 continue
             tool_id = get_tool_id_from_label(_resolve_node_label(target_node))
-            if tool_id == "FASTQC":
-                downstream_tool_labels.append("FastQC")
-            elif tool_id == "SPADES":
-                downstream_tool_labels.append("SPAdes")
-            elif tool_id == "QUAST":
-                downstream_tool_labels.append("QUAST")
-            elif tool_id == "GENOMESCOPE2":
-                downstream_tool_labels.append("GenomeScope2")
+            tool = get_tool_by_id(tool_id) if tool_id else None
+            if tool:
+                downstream_tool_labels.append(tool["name"])
 
         explicit_input_requirements.append({
             "type": classification["type"],
@@ -226,62 +238,42 @@ def analyze_pipeline_requirements(pipeline: PipelineInDB) -> Dict[str, Any]:
             "has_genomescope2": "GENOMESCOPE2" in tools_in_pipeline,
         }
 
-    # Determine input requirements based on tools
     input_requirements = []
-    required_types = set()
-    
-    # Check for SPAdes (needs R1 and R2)
-    if "SPADES" in tools_in_pipeline:
-        input_requirements.extend(get_tool_requirements("SPADES"))
-        required_types.update(["forward_reads", "reverse_reads"])
-    
-    # Check for QUAST (needs assembly and reference)
-    if "QUAST" in tools_in_pipeline:
-        # If SPAdes is also present, assembly comes from SPAdes output
-        if "SPADES" not in tools_in_pipeline:
-            input_requirements.extend(get_tool_requirements("QUAST"))
-            required_types.update(["assembly", "reference"])
-        else:
-            # Only need reference, assembly comes from SPAdes
-            quast_requirements = get_tool_requirements("QUAST")
-            if len(quast_requirements) > 1:
-                input_requirements.append(quast_requirements[1])  # reference only
-            required_types.add("reference")
-    
-    # Check for FastQC or GenomeScope2 (need reads)
-    if "FASTQC" in tools_in_pipeline or "GENOMESCOPE2" in tools_in_pipeline:
-        # If SPAdes is present, reads are already covered
-        if "SPADES" not in tools_in_pipeline:
-            # Add generic reads requirement
-            if "reads" not in required_types:
-                fastqc_requirements = get_tool_requirements("FASTQC")
-                if fastqc_requirements:
-                    input_requirements.append(fastqc_requirements[0])
-                required_types.add("reads")
-    
-    # Remove duplicates while preserving order
+    seen_requirement_types: set[str] = set()
+    producer_tool_ids = set(tools_in_pipeline)
+
+    for tool_id in ordered_tools_in_pipeline:
+        tool = get_tool_by_id(tool_id)
+        tool_name = tool["name"] if tool else tool_id
+        for req in get_tool_requirements(tool_id):
+            req_type = str(req.get("type") or "").strip()
+            if not req_type:
+                continue
+
+            if any(
+                other_tool_id != tool_id and tool_produces_requirement(other_tool_id, req_type)
+                for other_tool_id in producer_tool_ids
+            ):
+                continue
+
+            req_copy = dict(req)
+            req_copy["used_by"] = [tool_name]
+            if req_type in seen_requirement_types:
+                for existing in input_requirements:
+                    if existing.get("type") == req_type and tool_name not in existing.get("used_by", []):
+                        existing.setdefault("used_by", []).append(tool_name)
+                continue
+
+            input_requirements.append(req_copy)
+            seen_requirement_types.add(req_type)
+
     seen = set()
     unique_requirements = []
     for req in input_requirements:
         req_key = (req["type"], req["label"])
         if req_key not in seen:
             seen.add(req_key)
-            req_copy = dict(req)
-            req_type = req_copy.get("type")
-            if req_type in {"forward_reads", "reverse_reads"}:
-                req_copy["used_by"] = ["SPAdes"]
-            elif req_type in {"assembly", "reference"}:
-                req_copy["used_by"] = ["QUAST"]
-            elif req_type == "reads":
-                used_by = []
-                if "FASTQC" in tools_in_pipeline:
-                    used_by.append("FastQC")
-                if "GENOMESCOPE2" in tools_in_pipeline:
-                    used_by.append("GenomeScope2")
-                req_copy["used_by"] = used_by or ["Read-based tools"]
-            else:
-                req_copy["used_by"] = ["Selected pipeline"]
-            unique_requirements.append(req_copy)
+            unique_requirements.append(dict(req))
     
     return {
         "input_requirements": unique_requirements,

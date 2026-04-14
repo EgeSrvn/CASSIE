@@ -306,6 +306,50 @@ export default function PipelineBuilder() {
                   </button>
                   <button
                     onClick={() =>
+                      addNode('input', 'GFF/GTF Input', [
+                        'Reference or lifted annotation',
+                        'Supports GFF, GFF3, and GTF files',
+                      ])
+                    }
+                    className="btn-primary"
+                  >
+                    GFF/GTF Input
+                  </button>
+                  <button
+                    onClick={() =>
+                      addNode('input', 'HAL Alignment Input', [
+                        'Whole-genome HAL alignment',
+                        'Used by CAT',
+                      ])
+                    }
+                    className="btn-primary"
+                  >
+                    HAL Input
+                  </button>
+                  <button
+                    onClick={() =>
+                      addNode('input', 'Reference Genome Name (TXT)', [
+                        'Plain text file with the HAL reference genome name',
+                        'Used by CAT',
+                      ])
+                    }
+                    className="btn-primary"
+                  >
+                    TXT Input
+                  </button>
+                  <button
+                    onClick={() =>
+                      addNode('input', 'Meryl DB Input', [
+                        'Upload a .meryl directory archive',
+                        'Used by Merqury',
+                      ])
+                    }
+                    className="btn-primary"
+                  >
+                    Meryl Input
+                  </button>
+                  <button
+                    onClick={() =>
                       addNode('tool', 'Read Quality (FastQC)', [
                         'Input: FASTQ',
                         'Output: QC reports (HTML/JSON)',
@@ -340,6 +384,39 @@ export default function PipelineBuilder() {
                   </button>
                   <button
                     onClick={() =>
+                      addNode('tool', 'Metagenome Assembly (metaSPAdes)', [
+                        'Input: paired metagenomic reads',
+                        'Output: metagenome contigs (FASTA)',
+                      ])
+                    }
+                    className="btn-secondary"
+                  >
+                    Metagenome Assembly (metaSPAdes)
+                  </button>
+                  <button
+                    onClick={() =>
+                      addNode('tool', 'Assembly (Hifiasm)', [
+                        'Input: PacBio HiFi reads (FASTQ/FASTA)',
+                        'Output: primary contigs and assembly graph',
+                      ])
+                    }
+                    className="btn-secondary"
+                  >
+                    Assembly (Hifiasm)
+                  </button>
+                  <button
+                    onClick={() =>
+                      addNode('tool', 'Assembly (Verkko)', [
+                        'Input: HiFi reads, optional ONT reads',
+                        'Output: phased assembly FASTA/GFA',
+                      ])
+                    }
+                    className="btn-secondary"
+                  >
+                    Assembly (Verkko)
+                  </button>
+                  <button
+                    onClick={() =>
                       addNode('tool', 'Quality Assessment for Assembly (QUAST)', [
                         'Input: assembly FASTA',
                         'Output: assembly metrics (TSV/HTML)',
@@ -348,6 +425,50 @@ export default function PipelineBuilder() {
                     className="btn-secondary"
                   >
                     Quality Assessment for Assembly (QUAST)
+                  </button>
+                  <button
+                    onClick={() =>
+                      addNode('tool', 'Annotation Lift Over (Liftoff)', [
+                        'Input: target FASTA, reference FASTA, annotation GFF/GTF',
+                        'Output: lifted annotation',
+                      ])
+                    }
+                    className="btn-secondary"
+                  >
+                    Annotation Lift Over (Liftoff)
+                  </button>
+                  <button
+                    onClick={() =>
+                      addNode('tool', 'Comparative Annotation Toolkit (CAT)', [
+                        'Input: HAL alignment, reference annotation, reference genome name',
+                        'Output: comparative annotations',
+                      ])
+                    }
+                    className="btn-secondary"
+                  >
+                    Comparative Annotation Toolkit (CAT)
+                  </button>
+                  <button
+                    onClick={() =>
+                      addNode('tool', 'Assembly Completeness (BUSCO)', [
+                        'Input: assembly or genome FASTA',
+                        'Output: completeness summaries',
+                      ])
+                    }
+                    className="btn-secondary"
+                  >
+                    Assembly Completeness (BUSCO)
+                  </button>
+                  <button
+                    onClick={() =>
+                      addNode('tool', 'Assembly k-mer Evaluation (Merqury)', [
+                        'Input: assembly FASTA and Meryl DB',
+                        'Output: reference-free assembly quality reports',
+                      ])
+                    }
+                    className="btn-secondary"
+                  >
+                    Assembly k-mer Evaluation (Merqury)
                   </button>
                   <button
                     onClick={() =>

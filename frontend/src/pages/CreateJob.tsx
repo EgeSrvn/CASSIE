@@ -366,9 +366,59 @@ export default function CreateJob() {
     const lower = filename.toLowerCase()
     if (lower.endsWith('.fastq') || lower.endsWith('.fastq.gz') || lower.endsWith('.fq') || lower.endsWith('.fq.gz')) return 'fastq'
     if (lower.endsWith('.fasta') || lower.endsWith('.fasta.gz') || lower.endsWith('.fa') || lower.endsWith('.fa.gz') || lower.endsWith('.fna') || lower.endsWith('.fna.gz')) return 'fasta'
+    if (lower.endsWith('.gff3')) return 'gff3'
+    if (lower.endsWith('.gff')) return 'gff'
+    if (lower.endsWith('.gtf')) return 'gtf'
+    if (lower.endsWith('.hal')) return 'hal'
+    if (lower.endsWith('.gfa')) return 'gfa'
+    if (lower.endsWith('.meryl') || lower.endsWith('.meryl.tar') || lower.endsWith('.meryl.tar.gz') || lower.endsWith('.meryl.tgz')) return 'meryl'
+    if (lower.endsWith('.cfg')) return 'cfg'
+    if (lower.endsWith('.conf')) return 'conf'
+    if (lower.endsWith('.ini')) return 'ini'
+    if (lower.endsWith('.json')) return 'json'
+    if (lower.endsWith('.tsv')) return 'tsv'
+    if (lower.endsWith('.csv')) return 'csv'
     if (lower.endsWith('.txt')) return 'txt'
     if (lower.endsWith('.html')) return 'html'
     return null
+  }
+
+  const normalizeFileFormats = (file: FileItem & { folderPath?: string }): string[] => {
+    const filename = (file.filename || '').toLowerCase()
+    const formats = new Set<string>()
+    const declared = (file.file_format || '').toLowerCase().replace(/^\./, '')
+    if (declared) formats.add(declared)
+
+    if (filename.endsWith('.fastq') || filename.endsWith('.fastq.gz') || filename.endsWith('.fq') || filename.endsWith('.fq.gz')) formats.add('fastq')
+    if (filename.endsWith('.fasta') || filename.endsWith('.fasta.gz') || filename.endsWith('.fa') || filename.endsWith('.fa.gz') || filename.endsWith('.fna') || filename.endsWith('.fna.gz')) formats.add('fasta')
+    if (filename.endsWith('.gff3')) {
+      formats.add('gff')
+      formats.add('gff3')
+    }
+    if (filename.endsWith('.gff')) formats.add('gff')
+    if (filename.endsWith('.gtf')) formats.add('gtf')
+    if (filename.endsWith('.hal')) formats.add('hal')
+    if (filename.endsWith('.gfa')) formats.add('gfa')
+    if (filename.endsWith('.meryl') || filename.endsWith('.meryl.tar') || filename.endsWith('.meryl.tar.gz') || filename.endsWith('.meryl.tgz')) formats.add('meryl')
+    if (filename.endsWith('.cfg')) formats.add('cfg')
+    if (filename.endsWith('.conf')) formats.add('conf')
+    if (filename.endsWith('.ini')) formats.add('ini')
+    if (filename.endsWith('.json')) formats.add('json')
+    if (filename.endsWith('.txt')) formats.add('txt')
+    if (filename.endsWith('.tsv')) formats.add('tsv')
+    if (filename.endsWith('.csv')) formats.add('csv')
+    if (filename.endsWith('.tar') || filename.endsWith('.tar.gz')) formats.add('tar')
+    if (filename.endsWith('.tgz')) formats.add('tgz')
+
+    return Array.from(formats)
+  }
+
+  const fileMatchesRequirement = (
+    file: FileItem & { folderPath?: string },
+    requirement: { formats: string[] }
+  ): boolean => {
+    const normalizedFormats = new Set(normalizeFileFormats(file))
+    return requirement.formats.some(format => normalizedFormats.has(format.toLowerCase()))
   }
 
   const getCombinedSelectableFiles = (): Array<FileItem & { folderPath?: string }> => {
@@ -393,12 +443,7 @@ export default function CreateJob() {
     requirement: { type: string; formats: string[] },
     candidateFiles: Array<FileItem & { folderPath?: string }>
   ): number[] => {
-    const compatibleFiles = candidateFiles.filter(file =>
-      requirement.formats.some(format =>
-        file.filename.toLowerCase().endsWith(`.${format}`) ||
-        file.filename.toLowerCase().endsWith(`.${format}.gz`)
-      )
-    )
+    const compatibleFiles = candidateFiles.filter(file => fileMatchesRequirement(file, requirement))
 
     if (requirement.type === 'forward_reads') {
       return compatibleFiles.slice(0, 1).map(file => file.id)
@@ -968,7 +1013,7 @@ export default function CreateJob() {
                         disabled={creating}
                         multiple
                         style={{ display: 'none' }}
-                        accept=".fastq,.fasta,.fq,.fa,.gz"
+                        accept=".fastq,.fastq.gz,.fq,.fq.gz,.fasta,.fasta.gz,.fa,.fa.gz,.fna,.fna.gz,.gff,.gff3,.gtf,.hal,.gfa,.meryl,.meryl.tar,.meryl.tar.gz,.meryl.tgz,.cfg,.conf,.ini,.json,.txt,.tsv,.csv,.gz"
                       />
                     </label>
                   </div>
@@ -1000,12 +1045,7 @@ export default function CreateJob() {
                               const mappedFileIds = toolFileMappings[toolKey]?.[req.type] || []
                               const selectedCount = mappedFileIds.length
                               // Filter files that match the requirement format
-                              const compatibleFiles = combinedFiles.filter(file => 
-                                req.formats.some(format => 
-                                  file.filename.toLowerCase().endsWith(`.${format}`) || 
-                                  file.filename.toLowerCase().endsWith(`.${format}.gz`)
-                                )
-                              )
+                              const compatibleFiles = combinedFiles.filter(file => fileMatchesRequirement(file, req))
                               
                               return (
                                 <div key={req.type} style={{ marginBottom: '1.5rem' }}>

@@ -79,7 +79,21 @@ build_with_logs "GenomeScope2" "genomescope2/Dockerfile" "genomescope2" "genomes
 
 build_with_logs "SPAdes" "spades/Dockerfile" "spades" "spades"
 
+build_with_logs "metaSPAdes" "metaspades/Dockerfile" "metaspades" "metaspades"
+
 build_with_logs "QUAST" "quast/Dockerfile" "quast" "quast"
+
+build_with_logs "Hifiasm" "hifiasm/Dockerfile" "hifiasm" "hifiasm"
+
+build_with_logs "Verkko" "verkko/Dockerfile" "verkko" "verkko"
+
+build_with_logs "Liftoff" "liftoff/Dockerfile" "liftoff" "liftoff"
+
+build_with_logs "CAT" "cat/Dockerfile" "cat-tool" "cat"
+
+build_with_logs "BUSCO" "busco/Dockerfile" "busco" "busco"
+
+build_with_logs "Merqury" "merqury/Dockerfile" "merqury" "merqury"
 
 log_build "[TOOLS] Verifying FastQC image..."
 docker run --rm fastqc:0.12.1 --version

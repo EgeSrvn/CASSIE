@@ -184,11 +184,13 @@ $env:CASSIE_MINIKUBE_MEMORY = Get-EnvValueOrDefault -Name "CASSIE_MINIKUBE_MEMOR
 $env:CASSIE_MINIKUBE_DISK_SIZE = Get-EnvValueOrDefault -Name "CASSIE_MINIKUBE_DISK_SIZE" -DefaultValue "15g"
 
 Reset-MinikubeCluster
-kubectl describe nodesEnsure-MinikubeRunning -CpuCount $env:CASSIE_MINIKUBE_CPUS -MemoryMb $env:CASSIE_MINIKUBE_MEMORY -DiskSize $env:CASSIE_MINIKUBE_DISK_SIZE
+Ensure-MinikubeRunning -CpuCount $env:CASSIE_MINIKUBE_CPUS -MemoryMb $env:CASSIE_MINIKUBE_MEMORY -DiskSize $env:CASSIE_MINIKUBE_DISK_SIZE
 
 if (-not $env:EXECUTION_BACKEND) {
     $env:EXECUTION_BACKEND = "kubernetes"
 }
+
+$env:KUBERNETES_JOB_TIMEOUT_SECONDS = Get-EnvValueOrDefault -Name "KUBERNETES_JOB_TIMEOUT_SECONDS" -DefaultValue "0"
 
 $minioApiPort = if ($env:MINIO_API_PORT) { $env:MINIO_API_PORT } else { "9010" }
 $minioConsolePort = if ($env:MINIO_CONSOLE_PORT) { $env:MINIO_CONSOLE_PORT } else { "9011" }
@@ -209,13 +211,33 @@ $env:SPADES_MEMORY_GB = Get-EnvValueOrDefault -Name "SPADES_MEMORY_GB" -DefaultV
 $env:SPADES_LOW_RESOURCE = Get-EnvValueOrDefault -Name "SPADES_LOW_RESOURCE" -DefaultValue "auto"
 $env:SPADES_KMERS = Get-EnvValueOrDefault -Name "SPADES_KMERS" -DefaultValue "auto"
 $env:SPADES_MEMORY_LIMIT = Get-EnvValueOrDefault -Name "SPADES_MEMORY_LIMIT" -DefaultValue "auto"
+$env:METASPADES_THREADS = Get-EnvValueOrDefault -Name "METASPADES_THREADS" -DefaultValue "auto"
+$env:METASPADES_MEMORY_GB = Get-EnvValueOrDefault -Name "METASPADES_MEMORY_GB" -DefaultValue "auto"
+$env:HIFIASM_THREADS = Get-EnvValueOrDefault -Name "HIFIASM_THREADS" -DefaultValue "auto"
+$env:HIFIASM_MEMORY_GB = Get-EnvValueOrDefault -Name "HIFIASM_MEMORY_GB" -DefaultValue "auto"
+$env:VERKKO_THREADS = Get-EnvValueOrDefault -Name "VERKKO_THREADS" -DefaultValue "auto"
+$env:VERKKO_MEMORY_GB = Get-EnvValueOrDefault -Name "VERKKO_MEMORY_GB" -DefaultValue "auto"
+$env:LIFTOFF_THREADS = Get-EnvValueOrDefault -Name "LIFTOFF_THREADS" -DefaultValue "auto"
+$env:CAT_THREADS = Get-EnvValueOrDefault -Name "CAT_THREADS" -DefaultValue "auto"
+$env:CAT_MEMORY_GB = Get-EnvValueOrDefault -Name "CAT_MEMORY_GB" -DefaultValue "auto"
+$env:BUSCO_THREADS = Get-EnvValueOrDefault -Name "BUSCO_THREADS" -DefaultValue "auto"
+$env:BUSCO_MEMORY_GB = Get-EnvValueOrDefault -Name "BUSCO_MEMORY_GB" -DefaultValue "auto"
+$env:MERQURY_THREADS = Get-EnvValueOrDefault -Name "MERQURY_THREADS" -DefaultValue "auto"
+$env:MERQURY_MEMORY_GB = Get-EnvValueOrDefault -Name "MERQURY_MEMORY_GB" -DefaultValue "auto"
 $env:QUAST_THREADS = Get-EnvValueOrDefault -Name "QUAST_THREADS" -DefaultValue "auto"
 
 $toolImages = @(
     @{ Image = "fastqc:0.12.1"; Context = "dockerized_tools/fastqc" },
     @{ Image = "spades:latest"; Context = "dockerized_tools/spades" },
+    @{ Image = "metaspades:latest"; Context = "dockerized_tools/metaspades" },
     @{ Image = "quast:latest"; Context = "dockerized_tools/quast" },
-    @{ Image = "genomescope2:latest"; Context = "dockerized_tools/genomescope2" }
+    @{ Image = "genomescope2:latest"; Context = "dockerized_tools/genomescope2" },
+    @{ Image = "hifiasm:latest"; Context = "dockerized_tools/hifiasm" },
+    @{ Image = "verkko:latest"; Context = "dockerized_tools/verkko" },
+    @{ Image = "liftoff:latest"; Context = "dockerized_tools/liftoff" },
+    @{ Image = "cat-tool:latest"; Context = "dockerized_tools/cat" },
+    @{ Image = "busco:latest"; Context = "dockerized_tools/busco" },
+    @{ Image = "merqury:latest"; Context = "dockerized_tools/merqury" }
 )
 
 foreach ($tool in $toolImages) {

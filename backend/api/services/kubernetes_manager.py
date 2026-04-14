@@ -39,7 +39,12 @@ from backend.api.services.storage_service import create_file_record, get_file_by
 from backend.api.services.vm_partition_service import get_vm_partition, get_vm_partitions
 from backend.api.utils.config_loader import get_config
 from backend.api.utils.logger import get_logger
-from tool_registry import get_tool_by_id, get_tool_id_from_label, get_tool_registry
+from tool_registry import (
+    get_tool_by_id,
+    get_tool_id_from_label,
+    get_tool_registry,
+    tool_produces_requirement as registry_tool_produces_requirement,
+)
 
 logger = get_logger(__name__)
 
@@ -402,6 +407,18 @@ class KubernetesPipelineRunner:
                 f"{detail}"
             )
 
+        timeout_markers = (
+            "exceeded timeout",
+            "timed out",
+            "timeout expired",
+        )
+        if any(marker in normalized for marker in timeout_markers):
+            return (
+                f"{prefix}the Kubernetes stage exceeded the configured execution timeout. "
+                "CASSIE is now configured to allow unlimited runtime by default, so retry the job after restarting the backend."
+                f"{detail}"
+            )
+
         first_line = self._first_meaningful_line(error_text)
         if first_line:
             return f"{prefix}{first_line}"
@@ -552,34 +569,22 @@ class KubernetesPipelineRunner:
         initial_inputs: List[Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
         specs: List[Dict[str, Any]] = []
-        classified_inputs = self._classify_inputs(initial_inputs)
 
         for stage_number, tool in enumerate(tools, start=1):
             stage_id = f"step-{stage_number}"
             dependency_ids: List[str] = []
 
-            if tool["id"] == "QUAST":
-                spades_dependencies = [
+            for requirement in tool.get("input_requirements", []) or []:
+                requirement_type = str(requirement.get("type") or "").strip().lower()
+                if not requirement_type:
+                    continue
+                producer_stage_ids = [
                     spec["stage_id"]
                     for spec in specs
-                    if spec["tool"]["id"] == "SPADES"
+                    if self._tool_produces_requirement(spec["tool"], requirement_type)
                 ]
-                if spades_dependencies:
-                    dependency_ids.extend(spades_dependencies)
-                elif len(classified_inputs["fasta"]) < 2:
-                    dependency_ids = []
-            else:
-                for requirement in tool.get("input_requirements", []) or []:
-                    requirement_type = str(requirement.get("type") or "").strip().lower()
-                    if requirement_type != "assembly":
-                        continue
-                    producer_stage_ids = [
-                        spec["stage_id"]
-                        for spec in specs
-                        if self._tool_produces_requirement(spec["tool"], requirement_type)
-                    ]
-                    if producer_stage_ids:
-                        dependency_ids.extend(producer_stage_ids)
+                if producer_stage_ids:
+                    dependency_ids.extend(producer_stage_ids)
 
             deduped_dependencies: List[str] = []
             seen_dependency_ids: set[str] = set()
@@ -601,13 +606,7 @@ class KubernetesPipelineRunner:
         return specs
 
     def _tool_produces_requirement(self, tool: Dict[str, Any], requirement_type: str) -> bool:
-        tool_id = str(tool.get("id") or "").strip().upper()
-        normalized_requirement = requirement_type.strip().lower()
-
-        if tool_id == "SPADES":
-            return normalized_requirement in {"assembly", "fasta"}
-
-        return False
+        return registry_tool_produces_requirement(tool, requirement_type)
 
     def _build_stage_specs_from_pipeline(self, pipeline_id: int, user_id: int) -> List[Dict[str, Any]]:
         from backend.api.services.pipeline_converter import extract_edges, extract_tool_nodes, topological_sort_tools
@@ -719,6 +718,7 @@ class KubernetesPipelineRunner:
                     "filename": file_record.filename,
                     "s3_key": file_record.s3_key,
                     "size_bytes": file_record.size_bytes or 0,
+                    "file_format": getattr(file_record, "file_format", None),
                     "source": "job-input",
                     "producer_tool_id": None,
                 }
@@ -998,6 +998,27 @@ class KubernetesPipelineRunner:
                 ]
             )
 
+        if tool["id"] == "METASPADES":
+            fastq_reads = self._select_fastq_inputs(classified["fastq"], required=2)
+            if len(fastq_reads) < 2:
+                raise ValueError("metaSPAdes requires paired-end reads (at least two FASTQ files)")
+            r1 = os.path.basename(fastq_reads[0]["filename"])
+            r2 = os.path.basename(fastq_reads[1]["filename"])
+            return self._wrap_tool_script(
+                [
+                    profile_note,
+                    "export TMPDIR=/workspace/tmp",
+                    "mkdir -p /workspace/tmp",
+                    f"mkdir -p {output_dir}/metaspades_out",
+                    (
+                        f'spades.py --meta --threads {tool_plan["threads"]} --memory {tool_plan["memory_gb"]} '
+                        f'--tmp-dir /workspace/tmp '
+                        f'-1 "{input_dir}/{r1}" -2 "{input_dir}/{r2}" '
+                        f'-o "{output_dir}/metaspades_out"'
+                    ),
+                ]
+            )
+
         if tool["id"] == "QUAST":
             assembly, reference = self._resolve_quast_inputs(classified["fasta"])
             threads = tool_plan["threads"]
@@ -1042,7 +1063,205 @@ class KubernetesPipelineRunner:
                 ]
             )
 
+        if tool["id"] == "HIFIASM":
+            hifi_reads = classified["reads_like"]
+            if not hifi_reads:
+                raise ValueError("Hifiasm requires HiFi reads in FASTQ or FASTA format")
+            hifiasm_inputs = self._quoted_input_paths(input_dir, hifi_reads)
+            hifiasm_out = f"{output_dir}/hifiasm_out"
+            prefix = f"{hifiasm_out}/assembly"
+            return self._wrap_tool_script(
+                [
+                    profile_note,
+                    f"mkdir -p {hifiasm_out}",
+                    (
+                        f'hifiasm -o "{prefix}" -t {tool_plan["threads"]} {hifiasm_inputs} '
+                        f'2> "{hifiasm_out}/hifiasm.log"'
+                    ),
+                    f'PRIMARY_GFA="$(find "{hifiasm_out}" -maxdepth 1 -type f \\( -name "assembly*.bp.p_ctg.gfa" -o -name "assembly*.p_ctg.gfa" \\) | head -n 1)"',
+                    'if [ -z "${PRIMARY_GFA}" ]; then echo "Could not find Hifiasm primary contig GFA output" >&2; exit 1; fi',
+                    f'awk \'/^S/{{print ">"$2;print $3}}\' "${{PRIMARY_GFA}}" > "{hifiasm_out}/assembly.primary.fasta"',
+                ]
+            )
+
+        if tool["id"] == "VERKKO":
+            hifi_reads, nano_reads = self._split_verkko_reads(classified["reads_like"])
+            if not hifi_reads:
+                raise ValueError("Verkko requires at least one HiFi long-read FASTQ/FASTA input")
+            verkko_out = f"{output_dir}/verkko_out"
+            hifi_args = self._quoted_input_paths(input_dir, hifi_reads)
+            nano_flag = ""
+            if nano_reads:
+                nano_flag = f" --nano {self._quoted_input_paths(input_dir, nano_reads)}"
+            return self._wrap_tool_script(
+                [
+                    profile_note,
+                    f"mkdir -p {verkko_out}",
+                    (
+                        f'verkko -d "{verkko_out}" --hifi {hifi_args}{nano_flag} '
+                        f'--snakeopts "--cores {tool_plan["threads"]}"'
+                    ),
+                ]
+            )
+
+        if tool["id"] == "LIFTOFF":
+            target, reference = self._resolve_target_reference_genomes(classified["fasta"])
+            annotation = self._resolve_annotation_input(classified["annotation"])
+            liftoff_out = f"{output_dir}/liftoff_out"
+            return self._wrap_tool_script(
+                [
+                    profile_note,
+                    f"mkdir -p {liftoff_out}",
+                    (
+                        f'liftoff -p {tool_plan["threads"]} '
+                        f'-g "{input_dir}/{os.path.basename(annotation["filename"])}" '
+                        f'-o "{liftoff_out}/liftoff.gff3" '
+                        f'"{input_dir}/{os.path.basename(target["filename"])}" '
+                        f'"{input_dir}/{os.path.basename(reference["filename"])}" '
+                        f'> "{liftoff_out}/liftoff.stdout.log" 2> "{liftoff_out}/liftoff.stderr.log"'
+                    ),
+                ]
+            )
+
+        if tool["id"] == "CAT":
+            hal_alignment = self._resolve_single_artifact(classified["hal"], "CAT requires a HAL alignment input")
+            annotation = self._resolve_annotation_input(classified["annotation"])
+            reference_name = self._resolve_single_artifact(
+                classified["text"],
+                "CAT requires a text file containing the reference genome name present in the HAL alignment",
+            )
+            cat_out = f"{output_dir}/cat_out"
+            cat_work = f"{output_dir}/cat_work"
+            cat_config = f"{output_dir}/generated.cat.ini"
+            return self._wrap_tool_script(
+                [
+                    profile_note,
+                    f"mkdir -p {cat_out} {cat_work}",
+                    f'REF_NAME="$(tr -d \'\\r\\n\' < "{input_dir}/{os.path.basename(reference_name["filename"])}")"',
+                    'if [ -z "${REF_NAME}" ]; then echo "CAT reference genome name file is empty" >&2; exit 1; fi',
+                    f'printf "[ANNOTATION]\\n%s = %s\\n" "${{REF_NAME}}" "{input_dir}/{os.path.basename(annotation["filename"])}" > "{cat_config}"',
+                    (
+                        f'luigi --module cat RunCat '
+                        f'--hal "{input_dir}/{os.path.basename(hal_alignment["filename"])}" '
+                        f'--ref-genome "${{REF_NAME}}" '
+                        f'--config "{cat_config}" '
+                        f'--binary-mode local '
+                        f'--workers {tool_plan["threads"]} '
+                        f'--out-dir "{cat_out}" '
+                        f'--work-dir "{cat_work}"'
+                    ),
+                ]
+            )
+
+        if tool["id"] == "BUSCO":
+            assembly = self._resolve_busco_input(classified["fasta"])
+            busco_out = f"{output_dir}/busco_out"
+            return self._wrap_tool_script(
+                [
+                    profile_note,
+                    f"mkdir -p {busco_out}",
+                    (
+                        f'cd "{busco_out}" && '
+                        f'busco -i "{input_dir}/{os.path.basename(assembly["filename"])}" '
+                        f'-m genome --auto-lineage -c {tool_plan["threads"]} -o busco_run'
+                    ),
+                ]
+            )
+
+        if tool["id"] == "MERQURY":
+            assembly = self._resolve_busco_input(classified["fasta"])
+            meryl_input = self._resolve_single_artifact(
+                classified["meryl"],
+                "Merqury requires a .meryl.tar.gz or .meryl.tgz database archive",
+            )
+            merqury_out = f"{output_dir}/merqury_out"
+            meryl_name = os.path.basename(meryl_input["filename"])
+            meryl_source = f"{input_dir}/{meryl_name}"
+            return self._wrap_tool_script(
+                [
+                    profile_note,
+                    f"mkdir -p {merqury_out} /workspace/meryl_db",
+                    f'MERYL_SRC="{meryl_source}"',
+                    'MERQURY_DB="${MERYL_SRC}"',
+                    'if [ ! -d "${MERQURY_DB}" ]; then',
+                    '  case "${MERYL_SRC}" in',
+                    '    *.tar.gz|*.tgz) tar -xzf "${MERYL_SRC}" -C /workspace/meryl_db ;;',
+                    '    *.tar) tar -xf "${MERYL_SRC}" -C /workspace/meryl_db ;;',
+                    '    *) echo "Unsupported Merqury database input. Upload a .meryl.tar.gz or .meryl.tgz archive." >&2; exit 1 ;;',
+                    '  esac',
+                    '  FOUND_DB="$(find /workspace/meryl_db -maxdepth 3 -type d -name "*.meryl" | head -n 1)"',
+                    '  if [ -n "${FOUND_DB}" ]; then MERQURY_DB="${FOUND_DB}"; fi',
+                    'fi',
+                    'if [ ! -d "${MERQURY_DB}" ]; then echo "Could not locate a .meryl database directory for Merqury" >&2; exit 1; fi',
+                    (
+                        f'merqury.sh "${{MERQURY_DB}}" '
+                        f'"{input_dir}/{os.path.basename(assembly["filename"])}" '
+                        f'"{merqury_out}"'
+                    ),
+                ]
+            )
+
         raise ValueError(f"Kubernetes runner does not yet support tool {tool['id']}")
+
+    def _quoted_input_paths(self, input_dir: str, artifacts: List[Dict[str, Any]]) -> str:
+        return " ".join(f'"{input_dir}/{os.path.basename(item["filename"])}"' for item in artifacts)
+
+    def _resolve_single_artifact(self, artifacts: List[Dict[str, Any]], error_message: str) -> Dict[str, Any]:
+        if not artifacts:
+            raise ValueError(error_message)
+        return artifacts[0]
+
+    def _is_assembly_artifact(self, artifact: Dict[str, Any]) -> bool:
+        filename = str(artifact.get("filename") or "").lower()
+        producer = str(artifact.get("producer_tool_id") or "").upper()
+        if producer in {"SPADES", "METASPADES", "HIFIASM", "VERKKO"}:
+            return True
+        return any(token in filename for token in ("contig", "scaffold", "assembly", "primary", "consensus"))
+
+    def _resolve_busco_input(self, fasta_files: List[Dict[str, Any]]) -> Dict[str, Any]:
+        if not fasta_files:
+            raise ValueError("This tool requires at least one FASTA assembly/genome input")
+        for artifact in fasta_files:
+            if self._is_assembly_artifact(artifact):
+                return artifact
+        return fasta_files[0]
+
+    def _resolve_target_reference_genomes(self, fasta_files: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        if len(fasta_files) < 2:
+            raise ValueError("This tool requires both a target genome FASTA and a reference genome FASTA")
+        target = self._resolve_busco_input(fasta_files)
+        reference = next((artifact for artifact in fasta_files if artifact["filename"] != target["filename"]), None)
+        if reference is None:
+            raise ValueError("Could not determine the reference genome FASTA input")
+        return target, reference
+
+    def _resolve_annotation_input(self, annotation_files: List[Dict[str, Any]]) -> Dict[str, Any]:
+        if not annotation_files:
+            raise ValueError("This tool requires an annotation file in GFF/GFF3/GTF format")
+        preferred = sorted(
+            annotation_files,
+            key=lambda item: (
+                0 if str(item.get("filename") or "").lower().endswith(".gff3") else 1,
+                str(item.get("filename") or "").lower(),
+            ),
+        )
+        return preferred[0]
+
+    def _split_verkko_reads(self, read_files: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        if not read_files:
+            return [], []
+        nano_reads: List[Dict[str, Any]] = []
+        hifi_reads: List[Dict[str, Any]] = []
+        for artifact in read_files:
+            lowered = str(artifact.get("filename") or "").lower()
+            if any(token in lowered for token in ("ont", "nano", "ultra", "ul_")):
+                nano_reads.append(artifact)
+            else:
+                hifi_reads.append(artifact)
+        if not hifi_reads:
+            hifi_reads = list(read_files)
+            nano_reads = []
+        return hifi_reads, nano_reads
 
     def _tool_threads(self, tool_id: str, default: int) -> int:
         raw_value = os.getenv(f"{tool_id}_THREADS", os.getenv("CASSIE_TOOL_THREADS", str(default))).strip()
@@ -1123,6 +1342,27 @@ class KubernetesPipelineRunner:
                 capacity=capacity,
             )
 
+        if tool_id == "METASPADES":
+            low_resource = memory_mib < 6144 or whole_cpus < 4
+            threads = self._tool_threads(tool_id, 1 if low_resource else min(4, whole_cpus))
+            memory_gb = min(
+                self._tool_memory_gb(tool_id, 2 if low_resource else min(10, max(4, tool_memory_budget_mib // 1024))),
+                max(1, tool_memory_budget_mib // 1024),
+            )
+            memory_limit = min(tool_memory_budget_mib, max((memory_gb * 1024) + 512, 2560 if low_resource else 5120))
+            return self._resource_plan(
+                tool_id=tool_id,
+                profile="low-resource" if low_resource else "full",
+                threads=threads,
+                memory_gb=memory_gb,
+                memory_limit_mib=memory_limit,
+                cpu_limit_millis=min(max(250, threads * 500), max(250, cpu_millis)),
+                low_resource=low_resource,
+                kmers="",
+                input_size_mib=input_size_mib,
+                capacity=capacity,
+            )
+
         if tool_id == "GENOMESCOPE2":
             default_threads = min(2, whole_cpus) if memory_mib >= 4096 else 1
             requested_threads = self._tool_threads(tool_id, default_threads)
@@ -1154,6 +1394,120 @@ class KubernetesPipelineRunner:
                 memory_gb=requested_memory_gb,
                 memory_limit_mib=memory_limit,
                 cpu_limit_millis=min(max(250, requested_threads * 500), max(250, cpu_millis)),
+                low_resource=memory_mib < 4096,
+                kmers="",
+                input_size_mib=input_size_mib,
+                capacity=capacity,
+            )
+
+        if tool_id == "HIFIASM":
+            low_resource = memory_mib < 8192 or whole_cpus < 4
+            threads = self._tool_threads(tool_id, min(4, whole_cpus) if not low_resource else min(2, whole_cpus))
+            memory_gb = min(
+                self._tool_memory_gb(tool_id, 4 if low_resource else min(12, max(6, tool_memory_budget_mib // 1024))),
+                max(1, tool_memory_budget_mib // 1024),
+            )
+            memory_limit = min(tool_memory_budget_mib, max((memory_gb * 1024) + 512, 4096))
+            return self._resource_plan(
+                tool_id=tool_id,
+                profile="adaptive",
+                threads=threads,
+                memory_gb=memory_gb,
+                memory_limit_mib=memory_limit,
+                cpu_limit_millis=min(max(500, threads * 750), max(250, cpu_millis)),
+                low_resource=low_resource,
+                kmers="",
+                input_size_mib=input_size_mib,
+                capacity=capacity,
+            )
+
+        if tool_id == "VERKKO":
+            low_resource = memory_mib < 8192 or whole_cpus < 4
+            threads = self._tool_threads(tool_id, min(4, whole_cpus) if not low_resource else min(2, whole_cpus))
+            memory_gb = min(
+                self._tool_memory_gb(tool_id, 6 if low_resource else min(14, max(8, tool_memory_budget_mib // 1024))),
+                max(1, tool_memory_budget_mib // 1024),
+            )
+            memory_limit = min(tool_memory_budget_mib, max((memory_gb * 1024) + 1024, 6144))
+            return self._resource_plan(
+                tool_id=tool_id,
+                profile="adaptive",
+                threads=threads,
+                memory_gb=memory_gb,
+                memory_limit_mib=memory_limit,
+                cpu_limit_millis=min(max(500, threads * 750), max(250, cpu_millis)),
+                low_resource=low_resource,
+                kmers="",
+                input_size_mib=input_size_mib,
+                capacity=capacity,
+            )
+
+        if tool_id == "LIFTOFF":
+            threads = self._tool_threads(tool_id, min(4, whole_cpus))
+            memory_gb = min(self._tool_memory_gb(tool_id, max(2, min(tool_memory_budget_mib // 1024, 4))), max(1, tool_memory_budget_mib // 1024))
+            memory_limit = min(tool_memory_budget_mib, max((memory_gb * 1024) + 256, 2048))
+            return self._resource_plan(
+                tool_id=tool_id,
+                profile="adaptive",
+                threads=threads,
+                memory_gb=memory_gb,
+                memory_limit_mib=memory_limit,
+                cpu_limit_millis=min(max(250, threads * 500), max(250, cpu_millis)),
+                low_resource=memory_mib < 4096,
+                kmers="",
+                input_size_mib=input_size_mib,
+                capacity=capacity,
+            )
+
+        if tool_id == "CAT":
+            low_resource = memory_mib < 6144
+            threads = self._tool_threads(tool_id, min(2, whole_cpus) if low_resource else min(4, whole_cpus))
+            memory_gb = min(
+                self._tool_memory_gb(tool_id, 4 if low_resource else min(8, max(6, tool_memory_budget_mib // 1024))),
+                max(1, tool_memory_budget_mib // 1024),
+            )
+            memory_limit = min(tool_memory_budget_mib, max((memory_gb * 1024) + 512, 4096))
+            return self._resource_plan(
+                tool_id=tool_id,
+                profile="adaptive",
+                threads=threads,
+                memory_gb=memory_gb,
+                memory_limit_mib=memory_limit,
+                cpu_limit_millis=min(max(500, threads * 500), max(250, cpu_millis)),
+                low_resource=low_resource,
+                kmers="",
+                input_size_mib=input_size_mib,
+                capacity=capacity,
+            )
+
+        if tool_id == "BUSCO":
+            threads = self._tool_threads(tool_id, min(4, whole_cpus))
+            memory_gb = min(self._tool_memory_gb(tool_id, max(2, min(tool_memory_budget_mib // 1024, 4))), max(1, tool_memory_budget_mib // 1024))
+            memory_limit = min(tool_memory_budget_mib, max((memory_gb * 1024) + 256, 2048))
+            return self._resource_plan(
+                tool_id=tool_id,
+                profile="adaptive",
+                threads=threads,
+                memory_gb=memory_gb,
+                memory_limit_mib=memory_limit,
+                cpu_limit_millis=min(max(250, threads * 500), max(250, cpu_millis)),
+                low_resource=memory_mib < 4096,
+                kmers="",
+                input_size_mib=input_size_mib,
+                capacity=capacity,
+            )
+
+        if tool_id == "MERQURY":
+            threads = self._tool_threads(tool_id, min(2, whole_cpus))
+            memory_gb = min(self._tool_memory_gb(tool_id, max(2, min(tool_memory_budget_mib // 1024, 4))), max(1, tool_memory_budget_mib // 1024))
+            memory_limit = min(tool_memory_budget_mib, max((memory_gb * 1024) + 256, 2048))
+            return self._resource_plan(
+                tool_id=tool_id,
+                profile="adaptive",
+                threads=threads,
+                memory_gb=memory_gb,
+                memory_limit_mib=memory_limit,
+                cpu_limit_millis=min(max(250, threads * 500), max(250, cpu_millis)),
                 low_resource=memory_mib < 4096,
                 kmers="",
                 input_size_mib=input_size_mib,
@@ -1268,10 +1622,25 @@ class KubernetesPipelineRunner:
         if tool_id == "SPADES":
             multiplier = 3 if low_resource else 5
             return max(4096, padded_input * multiplier + 2048)
+        if tool_id == "METASPADES":
+            multiplier = 3 if low_resource else 4
+            return max(4096, padded_input * multiplier + 2048)
+        if tool_id == "HIFIASM":
+            return max(4096, padded_input * 3 + 2048)
+        if tool_id == "VERKKO":
+            return max(6144, padded_input * 4 + 4096)
         if tool_id == "GENOMESCOPE2":
             return max(2048, padded_input + 2048)
         if tool_id == "QUAST":
             return max(1536, padded_input * 2 + 1024)
+        if tool_id == "LIFTOFF":
+            return max(2048, padded_input * 2 + 1024)
+        if tool_id == "CAT":
+            return max(4096, padded_input * 3 + 2048)
+        if tool_id == "BUSCO":
+            return max(2048, padded_input * 2 + 2048)
+        if tool_id == "MERQURY":
+            return max(3072, padded_input * 2 + 2048)
         return max(1024, padded_input + 1024)
 
     def _tool_storage_limit_mib(
@@ -1483,28 +1852,78 @@ class KubernetesPipelineRunner:
             return str(cpu_millis // 1000)
         return f"{cpu_millis}m"
 
-    def _classify_inputs(self, current_inputs: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
-        fastq_exts = (".fastq", ".fq", ".fastq.gz", ".fq.gz")
-        fasta_exts = (".fasta", ".fa", ".fna", ".fasta.gz", ".fa.gz", ".fna.gz")
+    def _artifact_formats(self, artifact: Dict[str, Any]) -> set[str]:
+        formats: set[str] = set()
+        declared_format = str(artifact.get("file_format") or "").strip().lower().lstrip(".")
+        if declared_format:
+            formats.add(declared_format)
 
+        filename = str(artifact.get("filename") or "").lower()
+        if filename.endswith((".fastq", ".fq", ".fastq.gz", ".fq.gz")):
+            formats.add("fastq")
+        if filename.endswith((".fasta", ".fa", ".fna", ".fasta.gz", ".fa.gz", ".fna.gz")):
+            formats.add("fasta")
+        if filename.endswith(".gff3"):
+            formats.update({"gff", "gff3"})
+        if filename.endswith(".gff"):
+            formats.add("gff")
+        if filename.endswith(".gtf"):
+            formats.add("gtf")
+        if filename.endswith(".hal"):
+            formats.add("hal")
+        if filename.endswith(".gfa"):
+            formats.add("gfa")
+        if filename.endswith((".meryl", ".meryl.tar", ".meryl.tar.gz", ".meryl.tgz")):
+            formats.add("meryl")
+        if filename.endswith((".txt", ".cfg", ".conf", ".ini", ".json")):
+            formats.add("txt")
+        if filename.endswith(".json"):
+            formats.add("json")
+        return formats
+
+    def _classify_inputs(self, current_inputs: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
         fastq: List[Dict[str, Any]] = []
         fasta: List[Dict[str, Any]] = []
         reads_like: List[Dict[str, Any]] = []
+        annotation: List[Dict[str, Any]] = []
+        hal: List[Dict[str, Any]] = []
+        meryl: List[Dict[str, Any]] = []
+        text: List[Dict[str, Any]] = []
 
         for artifact in current_inputs:
-            filename = artifact["filename"].lower()
-            if filename.endswith(fastq_exts):
+            formats = self._artifact_formats(artifact)
+            if "fastq" in formats:
                 fastq.append(artifact)
                 reads_like.append(artifact)
-            elif filename.endswith(fasta_exts):
+            if "fasta" in formats:
                 fasta.append(artifact)
                 reads_like.append(artifact)
+            if formats.intersection({"gff", "gff3", "gtf"}):
+                annotation.append(artifact)
+            if "hal" in formats:
+                hal.append(artifact)
+            if "meryl" in formats:
+                meryl.append(artifact)
+            if formats.intersection({"txt", "json", "cfg", "conf", "ini"}):
+                text.append(artifact)
 
         fastq.sort(key=lambda item: item["filename"].lower())
         fasta.sort(key=lambda item: item["filename"].lower())
         reads_like.sort(key=lambda item: item["filename"].lower())
+        annotation.sort(key=lambda item: item["filename"].lower())
+        hal.sort(key=lambda item: item["filename"].lower())
+        meryl.sort(key=lambda item: item["filename"].lower())
+        text.sort(key=lambda item: item["filename"].lower())
 
-        return {"fastq": fastq, "fasta": fasta, "reads_like": reads_like}
+        return {
+            "fastq": fastq,
+            "fasta": fasta,
+            "reads_like": reads_like,
+            "annotation": annotation,
+            "hal": hal,
+            "meryl": meryl,
+            "text": text,
+        }
 
     def _resolve_quast_inputs(self, fasta_files: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         if len(fasta_files) < 2:
@@ -1515,7 +1934,7 @@ class KubernetesPipelineRunner:
 
         for artifact in fasta_files:
             filename = artifact["filename"].lower()
-            if artifact.get("producer_tool_id") == "SPADES" or any(
+            if self._is_assembly_artifact(artifact) or any(
                 token in filename for token in ("contig", "scaffold", "assembly")
             ):
                 assembly = artifact
@@ -1558,11 +1977,11 @@ class KubernetesPipelineRunner:
         namespace = self._config.kubernetes.namespace
         timeout_seconds = self._config.kubernetes.job_timeout_seconds
         poll_interval = max(1, self._config.kubernetes.poll_interval_seconds)
-        deadline = time.time() + timeout_seconds
+        deadline = time.time() + timeout_seconds if timeout_seconds > 0 else None
 
         pod_name = ""
 
-        while time.time() < deadline:
+        while deadline is None or time.time() < deadline:
             pod_name = self._get_job_pod_name(job_name)
             if pod_name:
                 pod_result = self._run_kubectl(
@@ -1673,7 +2092,10 @@ class KubernetesPipelineRunner:
 
             time.sleep(poll_interval)
 
-        raise TimeoutError(f"Kubernetes Job {job_name} exceeded timeout of {timeout_seconds} seconds")
+        if timeout_seconds > 0:
+            raise TimeoutError(f"Kubernetes Job {job_name} exceeded timeout of {timeout_seconds} seconds")
+
+        raise RuntimeError(f"Kubernetes Job {job_name} stopped waiting unexpectedly without a timeout configuration")
 
     def _get_job_pod_name(self, job_name: str) -> str:
         namespace = self._config.kubernetes.namespace
@@ -1802,7 +2224,7 @@ class KubernetesPipelineRunner:
                             filename=safe_filename,
                             s3_key=s3_key,
                             file_type=FileType.OUTPUT,
-                            file_format=Path(filename).suffix.lstrip(".") or "dat",
+                            file_format=self._infer_output_file_format(filename),
                             size_bytes=upload_result["size"],
                             checksum=upload_result["checksum"],
                         )
@@ -1950,6 +2372,41 @@ class KubernetesPipelineRunner:
         max_base_length = max(12, max_length - len(suffix))
         shortened_base = self._shorten_middle(base_name, max_base_length)
         return f"{shortened_base}{suffix}"
+
+    def _infer_output_file_format(self, filename: str) -> str:
+        lower_name = filename.lower()
+        if lower_name.endswith((".fastq.gz", ".fq.gz", ".fastq", ".fq")):
+            return "fastq"
+        if lower_name.endswith((".fasta.gz", ".fa.gz", ".fna.gz", ".fasta", ".fa", ".fna")):
+            return "fasta"
+        if lower_name.endswith(".gff3"):
+            return "gff3"
+        if lower_name.endswith(".gff"):
+            return "gff"
+        if lower_name.endswith(".gtf"):
+            return "gtf"
+        if lower_name.endswith(".hal"):
+            return "hal"
+        if lower_name.endswith(".gfa"):
+            return "gfa"
+        if lower_name.endswith((".meryl", ".meryl.tar", ".meryl.tar.gz", ".meryl.tgz")):
+            return "meryl"
+        if lower_name.endswith(".txt"):
+            return "txt"
+        if lower_name.endswith(".json"):
+            return "json"
+        if lower_name.endswith(".html"):
+            return "html"
+        if lower_name.endswith(".tsv"):
+            return "tsv"
+        if lower_name.endswith(".csv"):
+            return "csv"
+        if lower_name.endswith(".zip"):
+            return "zip"
+        if lower_name.endswith(".pdf"):
+            return "pdf"
+        suffix = Path(filename).suffix.lstrip(".")
+        return suffix or "dat"
 
     def _get_job_logs(self, job_name: str) -> str:
         namespace = self._config.kubernetes.namespace

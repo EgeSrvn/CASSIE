@@ -20,6 +20,7 @@ TOOL_REGISTRY: List[Dict[str, Any]] = [
         "name": "FastQC",
         "type": "qc",
         "description": "Quality control for raw sequence data",
+        "produces": ["qc_report"],
         "node_labels": [
             "Read Quality (FastQC)",
             "FastQC",
@@ -72,6 +73,7 @@ process FASTQC {
         "name": "SPAdes",
         "type": "transform",
         "description": "Genome assembler",
+        "produces": ["assembly"],
         "node_labels": [
             "Assembly (Spades)",
             "SPAdes",
@@ -148,6 +150,7 @@ process SPADES {
         "name": "QUAST",
         "type": "qc",
         "description": "Assembly quality assessment",
+        "produces": ["qc_report"],
         "node_labels": [
             "Quality Assessment for Assembly (QUAST)",
             "QUAST",
@@ -221,6 +224,7 @@ process QUAST {
         "name": "GenomeScope2",
         "type": "qc",
         "description": "Reference-free profiling",
+        "produces": ["kmer_profile"],
         "node_labels": [
             "Genomic Property Estimation (GenomeScope2)",
             "GenomeScope2",
@@ -285,6 +289,264 @@ process GENOMESCOPE2 {
 }
 ''',
     },
+    {
+        "id": "METASPADES",
+        "name": "metaSPAdes",
+        "type": "transform",
+        "description": "Metagenome assembly from paired short reads",
+        "produces": ["assembly"],
+        "node_labels": [
+            "Metagenome Assembly (metaSPAdes)",
+            "metaSPAdes",
+            "MetaSPAdes",
+        ],
+        "input_requirements": [
+            {
+                "type": "forward_reads",
+                "label": "Forward Reads (R1)",
+                "formats": ["fastq"],
+            },
+            {
+                "type": "reverse_reads",
+                "label": "Reverse Reads (R2)",
+                "formats": ["fastq"],
+            },
+        ],
+        "docker": {
+            "image": "metaspades:latest",
+            "dockerfile": "dockerized_tools/metaspades/Dockerfile",
+            "context_dir": "dockerized_tools/metaspades",
+            "runner_script": "dockerized_tools/runmetaspades.sh",
+        },
+        "kubernetes": {
+            "command": ["bash", "-lc"],
+            "args_template": [
+                "spades.py --meta -1 /data/<reads_1.fastq> -2 /data/<reads_2.fastq> -o /data/metaspades_out"
+            ],
+            "expected_outputs": ["metaspades_out/contigs.fasta", "metaspades_out/spades.log"],
+        },
+    },
+    {
+        "id": "HIFIASM",
+        "name": "Hifiasm",
+        "type": "transform",
+        "description": "HiFi long-read genome assembly",
+        "produces": ["assembly"],
+        "node_labels": [
+            "Assembly (Hifiasm)",
+            "Hifiasm",
+            "hifiasm",
+        ],
+        "input_requirements": [
+            {
+                "type": "hifi_reads",
+                "label": "HiFi Reads (FASTQ/FASTA)",
+                "formats": ["fastq", "fasta"],
+            }
+        ],
+        "docker": {
+            "image": "hifiasm:latest",
+            "dockerfile": "dockerized_tools/hifiasm/Dockerfile",
+            "context_dir": "dockerized_tools/hifiasm",
+            "runner_script": "dockerized_tools/runhifiasm.sh",
+        },
+        "kubernetes": {
+            "command": ["bash", "-lc"],
+            "args_template": [
+                "hifiasm -o /data/hifiasm_out/assembly -t 4 /data/<reads.fastq>"
+            ],
+            "expected_outputs": [
+                "hifiasm_out/assembly.bp.p_ctg.gfa",
+                "hifiasm_out/assembly.primary.fasta",
+                "hifiasm_out/assembly.log",
+            ],
+        },
+    },
+    {
+        "id": "VERKKO",
+        "name": "Verkko",
+        "type": "transform",
+        "description": "Telomere-to-telomere long-read assembly pipeline",
+        "produces": ["assembly"],
+        "node_labels": [
+            "Assembly (Verkko)",
+            "Verkko",
+            "verkko",
+        ],
+        "input_requirements": [
+            {
+                "type": "hifi_reads",
+                "label": "HiFi Reads (FASTQ/FASTA)",
+                "formats": ["fastq", "fasta"],
+            }
+        ],
+        "docker": {
+            "image": "verkko:latest",
+            "dockerfile": "dockerized_tools/verkko/Dockerfile",
+            "context_dir": "dockerized_tools/verkko",
+            "runner_script": "dockerized_tools/runverkko.sh",
+        },
+        "kubernetes": {
+            "command": ["bash", "-lc"],
+            "args_template": [
+                "verkko -d /data/verkko_out --hifi /data/<reads.fastq>"
+            ],
+            "expected_outputs": ["verkko_out/assembly.fasta", "verkko_out/assembly.gfa"],
+        },
+    },
+    {
+        "id": "LIFTOFF",
+        "name": "Liftoff",
+        "type": "annotation",
+        "description": "Lift annotations from a reference genome to a target assembly",
+        "produces": ["annotation"],
+        "node_labels": [
+            "Annotation Lift Over (Liftoff)",
+            "Liftoff",
+            "liftoff",
+        ],
+        "input_requirements": [
+            {
+                "type": "target_genome",
+                "label": "Target Genome (FASTA)",
+                "formats": ["fasta"],
+            },
+            {
+                "type": "reference_genome",
+                "label": "Reference Genome (FASTA)",
+                "formats": ["fasta"],
+            },
+            {
+                "type": "annotation",
+                "label": "Reference Annotation (GFF/GTF)",
+                "formats": ["gff", "gff3", "gtf"],
+            },
+        ],
+        "docker": {
+            "image": "liftoff:latest",
+            "dockerfile": "dockerized_tools/liftoff/Dockerfile",
+            "context_dir": "dockerized_tools/liftoff",
+            "runner_script": "dockerized_tools/runliftoff.sh",
+        },
+        "kubernetes": {
+            "command": ["bash", "-lc"],
+            "args_template": [
+                "liftoff -g /data/<annotation.gff3> -o /data/liftoff_out/liftoff.gff3 /data/<target.fasta> /data/<reference.fasta>"
+            ],
+            "expected_outputs": ["liftoff_out/liftoff.gff3", "liftoff_out/liftoff_unmapped.txt"],
+        },
+    },
+    {
+        "id": "CAT",
+        "name": "CAT",
+        "type": "annotation",
+        "description": "Comparative Annotation Toolkit on HAL alignments",
+        "produces": ["annotation"],
+        "node_labels": [
+            "Comparative Annotation Toolkit (CAT)",
+            "Comparative Annotation Toolkit",
+            "CAT",
+        ],
+        "input_requirements": [
+            {
+                "type": "hal_alignment",
+                "label": "HAL Alignment",
+                "formats": ["hal"],
+            },
+            {
+                "type": "reference_annotation",
+                "label": "Reference Annotation (GFF/GTF)",
+                "formats": ["gff", "gff3", "gtf"],
+            },
+            {
+                "type": "reference_genome_name",
+                "label": "Reference Genome Name (TXT)",
+                "formats": ["txt"],
+            },
+        ],
+        "docker": {
+            "image": "cat-tool:latest",
+            "dockerfile": "dockerized_tools/cat/Dockerfile",
+            "context_dir": "dockerized_tools/cat",
+            "runner_script": "dockerized_tools/runcat.sh",
+        },
+        "kubernetes": {
+            "command": ["bash", "-lc"],
+            "args_template": [
+                "luigi --module cat RunCat --hal=/data/<alignment.hal> --ref-genome=$(cat /data/<reference_name.txt>) --config=/data/generated.cat.ini --out-dir=/data/cat_out --work-dir=/data/cat_work"
+            ],
+            "expected_outputs": ["cat_out", "cat_work"],
+        },
+    },
+    {
+        "id": "BUSCO",
+        "name": "BUSCO",
+        "type": "qc",
+        "description": "Assembly completeness assessment using conserved orthologs",
+        "produces": ["qc_report"],
+        "node_labels": [
+            "Assembly Completeness (BUSCO)",
+            "BUSCO",
+            "Busco",
+        ],
+        "input_requirements": [
+            {
+                "type": "assembly",
+                "label": "Assembly or Genome (FASTA)",
+                "formats": ["fasta"],
+            }
+        ],
+        "docker": {
+            "image": "busco:latest",
+            "dockerfile": "dockerized_tools/busco/Dockerfile",
+            "context_dir": "dockerized_tools/busco",
+            "runner_script": "dockerized_tools/runbusco.sh",
+        },
+        "kubernetes": {
+            "command": ["bash", "-lc"],
+            "args_template": [
+                "busco -i /data/<assembly.fasta> -m genome --auto-lineage -o busco_out"
+            ],
+            "expected_outputs": ["busco_out/short_summary.txt", "busco_out/short_summary.json"],
+        },
+    },
+    {
+        "id": "MERQURY",
+        "name": "Merqury",
+        "type": "qc",
+        "description": "Reference-free k-mer-based assembly evaluation",
+        "produces": ["qc_report"],
+        "node_labels": [
+            "Assembly k-mer Evaluation (Merqury)",
+            "Merqury",
+            "merqury",
+        ],
+        "input_requirements": [
+            {
+                "type": "assembly",
+                "label": "Assembly (FASTA)",
+                "formats": ["fasta"],
+            },
+            {
+                "type": "read_kmer_db",
+                "label": "Read k-mer DB Archive (.meryl.tar.gz or .meryl.tgz)",
+                "formats": ["meryl"],
+            },
+        ],
+        "docker": {
+            "image": "merqury:latest",
+            "dockerfile": "dockerized_tools/merqury/Dockerfile",
+            "context_dir": "dockerized_tools/merqury",
+            "runner_script": "dockerized_tools/runmerqury.sh",
+        },
+        "kubernetes": {
+            "command": ["bash", "-lc"],
+            "args_template": [
+                "merqury.sh /data/<reads.meryl.tar.gz> /data/<assembly.fasta> /data/merqury_out"
+            ],
+            "expected_outputs": ["merqury_out", "merqury_out.qv"],
+        },
+    },
 ]
 
 
@@ -322,6 +584,29 @@ def get_tool_requirements(tool_id: str) -> List[Dict[str, Any]]:
     if not tool:
         return []
     return deepcopy(tool.get("input_requirements", []))
+
+
+def get_tool_outputs(tool_id: str) -> List[str]:
+    """Return logical artifact types produced by a tool."""
+    tool = get_tool_by_id(tool_id)
+    if not tool:
+        return []
+    return list(tool.get("produces", []))
+
+
+def tool_produces_requirement(tool_or_id: Dict[str, Any] | str, requirement_type: str) -> bool:
+    """Return True when a tool can satisfy a logical input requirement."""
+    if isinstance(tool_or_id, dict):
+        produced = tool_or_id.get("produces", [])
+    else:
+        produced = get_tool_outputs(str(tool_or_id))
+
+    normalized_requirement = str(requirement_type or "").strip().lower()
+    return normalized_requirement in {
+        str(item).strip().lower()
+        for item in produced
+        if str(item).strip()
+    }
 
 
 def get_tool_id_from_label(label: str) -> Optional[str]:

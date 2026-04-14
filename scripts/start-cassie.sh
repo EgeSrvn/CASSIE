@@ -48,6 +48,7 @@ if [[ -z "${KUBE_CONFIG_DIR:-}" ]]; then
 fi
 
 export EXECUTION_BACKEND="${EXECUTION_BACKEND:-kubernetes}"
+export KUBERNETES_JOB_TIMEOUT_SECONDS="${KUBERNETES_JOB_TIMEOUT_SECONDS:-0}"
 
 MINIO_API_PORT="${MINIO_API_PORT:-9010}"
 MINIO_CONSOLE_PORT="${MINIO_CONSOLE_PORT:-9011}"
@@ -234,6 +235,7 @@ export NO_PROXY="${KUBERNETES_NO_PROXY:-$NO_PROXY_VALUE}"
 export no_proxy="${NO_PROXY}"
 
 set_dotenv_value ".env" "EXECUTION_BACKEND" "${EXECUTION_BACKEND}"
+set_dotenv_value ".env" "KUBERNETES_JOB_TIMEOUT_SECONDS" "${KUBERNETES_JOB_TIMEOUT_SECONDS}"
 if [[ -n "${KUBE_CONFIG_DIR:-}" ]]; then
   set_dotenv_value ".env" "KUBE_CONFIG_DIR" "${KUBE_CONFIG_DIR}"
 fi
@@ -255,13 +257,33 @@ set_dotenv_value ".env" "SPADES_MEMORY_GB" "auto"
 set_dotenv_value ".env" "SPADES_LOW_RESOURCE" "auto"
 set_dotenv_value ".env" "SPADES_KMERS" "auto"
 set_dotenv_value ".env" "SPADES_MEMORY_LIMIT" "auto"
+set_dotenv_value ".env" "METASPADES_THREADS" "auto"
+set_dotenv_value ".env" "METASPADES_MEMORY_GB" "auto"
+set_dotenv_value ".env" "HIFIASM_THREADS" "auto"
+set_dotenv_value ".env" "HIFIASM_MEMORY_GB" "auto"
+set_dotenv_value ".env" "VERKKO_THREADS" "auto"
+set_dotenv_value ".env" "VERKKO_MEMORY_GB" "auto"
+set_dotenv_value ".env" "LIFTOFF_THREADS" "auto"
+set_dotenv_value ".env" "CAT_THREADS" "auto"
+set_dotenv_value ".env" "CAT_MEMORY_GB" "auto"
+set_dotenv_value ".env" "BUSCO_THREADS" "auto"
+set_dotenv_value ".env" "BUSCO_MEMORY_GB" "auto"
+set_dotenv_value ".env" "MERQURY_THREADS" "auto"
+set_dotenv_value ".env" "MERQURY_MEMORY_GB" "auto"
 set_dotenv_value ".env" "QUAST_THREADS" "auto"
 
 TOOL_IMAGES=(
   "fastqc:0.12.1 dockerized_tools/fastqc"
   "spades:latest dockerized_tools/spades"
+  "metaspades:latest dockerized_tools/metaspades"
   "quast:latest dockerized_tools/quast"
   "genomescope2:latest dockerized_tools/genomescope2"
+  "hifiasm:latest dockerized_tools/hifiasm"
+  "verkko:latest dockerized_tools/verkko"
+  "liftoff:latest dockerized_tools/liftoff"
+  "cat-tool:latest dockerized_tools/cat"
+  "busco:latest dockerized_tools/busco"
+  "merqury:latest dockerized_tools/merqury"
 )
 
 for tool_spec in "${TOOL_IMAGES[@]}"; do

@@ -44,7 +44,9 @@ ALLOWED_FILE_EXTENSIONS = {
     ".fasta", ".fa", ".fa.gz", ".fas",
     ".sam", ".bam", ".cram",
     ".vcf", ".gff", ".gff3", ".gtf",
-    ".bed", ".gfa"
+    ".bed", ".gfa", ".hal", ".txt",
+    ".cfg", ".conf", ".ini", ".json",
+    ".meryl", ".tar", ".tar.gz", ".tgz"
 }
 
 # Username allowed characters: alphanumeric, underscore, hyphen
@@ -256,8 +258,9 @@ def validate_file_format(file_format: Optional[str]) -> Tuple[bool, str]:
     valid_formats = [
         'fastq', 'fq', 'fasta', 'fa', 'fa.gz', 'fasta.gz',
         'sam', 'bam', 'cram', 'vcf', 'bcf', 'gff', 'gtf',
-        'bed', 'wig', 'bigwig', 'bigbed', 'tsv', 'csv',
-        'txt', 'json', 'xml', 'h5', 'hdf5', 'bw', 'bb'
+        'gff3', 'bed', 'wig', 'bigwig', 'bigbed', 'tsv', 'csv',
+        'txt', 'json', 'xml', 'h5', 'hdf5', 'bw', 'bb',
+        'hal', 'gfa', 'cfg', 'conf', 'ini', 'meryl', 'tar', 'tgz'
     ]
     
     file_format_lower = file_format.lower().strip()

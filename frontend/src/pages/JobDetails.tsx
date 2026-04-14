@@ -318,12 +318,26 @@ export default function JobDetails() {
       // Determine tool family based on filename patterns
       if (filename.includes('fastqc')) {
         family = 'FastQC'
+      } else if (filename.includes('metaspades')) {
+        family = 'metaSPAdes'
       } else if (filename.includes('spades') || filename.includes('contigs') || filename.includes('scaffolds')) {
         family = 'SPAdes'
+      } else if (filename.includes('hifiasm')) {
+        family = 'Hifiasm'
+      } else if (filename.includes('verkko')) {
+        family = 'Verkko'
       } else if (filename.includes('quast')) {
         family = 'QUAST'
       } else if (filename.includes('genomescope') || filename.includes('genomescope2')) {
         family = 'GenomeScope2'
+      } else if (filename.includes('liftoff')) {
+        family = 'Liftoff'
+      } else if (filename.includes('cat_') || filename.includes('/cat') || filename.includes('comparative')) {
+        family = 'CAT'
+      } else if (filename.includes('busco')) {
+        family = 'BUSCO'
+      } else if (filename.includes('merqury') || filename.includes('.qv')) {
+        family = 'Merqury'
       }
       
       if (!groups[family]) {
@@ -574,6 +588,13 @@ export default function JobDetails() {
     if (req.used_by && req.used_by.length > 0) return req.used_by
     if (req.type === 'forward_reads' || req.type === 'reverse_reads') return ['SPAdes']
     if (req.type === 'assembly' || req.type === 'reference') return ['QUAST']
+    if (req.type === 'annotation') return ['Liftoff', 'CAT']
+    if (req.type === 'hal_alignment') return ['CAT']
+    if (req.type === 'reference_annotation') return ['CAT']
+    if (req.type === 'reference_genome_name') return ['CAT']
+    if (req.type === 'read_kmer_db') return ['Merqury']
+    if (req.type === 'target_genome' || req.type === 'reference_genome') return ['Liftoff']
+    if (req.type === 'hifi_reads') return ['Hifiasm', 'Verkko']
     if (req.type === 'reads') {
       const tools: string[] = []
       if (pipelineRequirements?.has_fastqc) tools.push('FastQC')

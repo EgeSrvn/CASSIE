@@ -4,7 +4,7 @@ This folder contains the Docker build contexts and wrapper scripts for each bioi
 
 ## Current Layout
 
-- `fastqc/`, `genomescope2/`, `quast/`, `spades/`: Docker build contexts.
+- `fastqc/`, `genomescope2/`, `quast/`, `spades/`, `metaspades/`, `hifiasm/`, `verkko/`, `liftoff/`, `cat/`, `busco/`, `merqury/`: Docker build contexts.
 - `buildtools.sh`: builds the tool images used by the emulator.
 - `runfastqc.sh`, `rungenomescope2.sh`, `runquast.sh`, `runspades.sh`: wrapper scripts called by Nextflow and tenant containers.
 - `templates/new-tool/`: scaffold files for onboarding a new tool.
