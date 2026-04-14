@@ -41,6 +41,7 @@ from backend.api.services.job_launch_service import (
     get_auto_start_payload,
     start_job_execution_task,
 )
+from backend.api.services.vm_queue_service import queue_or_start_job
 from backend.api.services.job_execution_service import get_executions_by_job
 from backend.api.services.kubernetes_manager import get_kubernetes_pipeline_runner, kubernetes_is_available
 from backend.api.services.vm_partition_service import get_vm_partitions, get_vm_partition
@@ -659,21 +660,27 @@ async def execute_job(
             )
             return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
 
-        background_tasks.add_task(
-            start_job_execution_task,
-            job_id,
-            current_user.id,
-            job.workflow_id,
-            input_file_ids,
+        launch_result = await queue_or_start_job(
+            job_id=job_id,
+            user_id=current_user.id,
+            workflow_id=job.workflow_id,
+            input_file_ids=input_file_ids,
         )
-        
+        queue_position = launch_result.get("queue_position")
+        queued = launch_result.get("state") == "queued"
+
         return success_response(
             data={
                 "job_id": job_id,
-                "status": "running",
-                "message": "Job execution started successfully"
+                "status": "pending" if queued else "running",
+                "queue_position": queue_position,
+                "message": (
+                    f"Job is queued on {job.vm_name} at position {queue_position}"
+                    if queued
+                    else "Job execution started successfully"
+                ),
             },
-            message="Job execution started"
+            message="Job queued successfully" if queued else "Job execution started"
         )
         
     except Exception as e:

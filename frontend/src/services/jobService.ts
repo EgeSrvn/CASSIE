@@ -32,16 +32,22 @@ export interface Job {
 }
 
 export interface JobExecutionStage {
+  stage_id?: string
   stage_number: number
   tool_id: string
   tool_name: string
   kubernetes_job_name?: string
   pod_name?: string
+  dependency_stage_ids?: string[]
   status: 'pending' | 'running' | 'completed' | 'failed' | string
   started_at?: string
   completed_at?: string
   output_count?: number
   error?: string
+  resource_profile?: string
+  threads?: number
+  memory_limit_mib?: number
+  storage_limit_mib?: number
 }
 
 export interface JobExecution {
@@ -59,6 +65,8 @@ export interface JobExecution {
     namespace?: string
     workflow_id?: number
     tool_sequence?: string[]
+    queue_state?: string
+    queue_position?: number | null
     stages?: JobExecutionStage[]
     [key: string]: unknown
   } | null
@@ -158,7 +166,14 @@ export const deleteJob = async (jobId: number): Promise<void> => {
   await apiClient.delete(`/api/jobs/${jobId}`)
 }
 
-export const executeJob = async (jobId: number, authToken?: string): Promise<void> => {
+export interface ExecuteJobResult {
+  job_id: number
+  status: 'pending' | 'running'
+  queue_position?: number | null
+  message: string
+}
+
+export const executeJob = async (jobId: number, authToken?: string): Promise<ExecuteJobResult> => {
   try {
     const response = await apiClient.post<{ success: boolean; data: any; message?: string }>(
       `/api/jobs/${jobId}/execute`,
@@ -170,6 +185,7 @@ export const executeJob = async (jobId: number, authToken?: string): Promise<voi
     if (!response.data.success) {
       throw new Error(response.data.message || 'Failed to execute job')
     }
+    return response.data.data as ExecuteJobResult
   } catch (error: any) {
     if (error.response?.data) {
       const errorData = error.response.data
@@ -214,7 +230,10 @@ export const addFilesToJob = async (
 export interface VM {
   name: string
   display_name: string
+  max_jobs: number
   max_pods: number
+  running_jobs: number
+  available_job_slots: number
   available_cpu_millis: number
   available_memory_mib: number
   available_storage_mib: number

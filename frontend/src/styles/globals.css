@@ -796,6 +796,7 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: var(--spacing-md);
   padding: var(--spacing-sm) var(--spacing-md);
   background-color: var(--bg-secondary);
   border-radius: var(--radius);
@@ -1007,6 +1008,7 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: var(--spacing-md);
   padding: var(--spacing-md);
   background-color: var(--bg-secondary);
   border-radius: var(--radius);
@@ -1025,12 +1027,15 @@ body {
   flex-direction: column;
   gap: var(--spacing-xs);
   flex: 1;
+  min-width: 0;
 }
 
 .file-info strong {
   color: var(--gray-900);
   font-weight: 600;
   font-size: 0.9375rem;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .file-info span {

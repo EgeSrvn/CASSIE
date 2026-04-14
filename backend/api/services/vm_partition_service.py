@@ -24,13 +24,13 @@ VM_PARTITION_CONFIG_PATH = PROJECT_ROOT / "vm_partitions.json"
 class VMPartition:
     name: str
     display_name: str
-    max_pods: int
+    max_jobs: int
 
 
 DEFAULT_VM_PARTITIONS: List[VMPartition] = [
-    VMPartition(name="vm1", display_name="VM1", max_pods=1),
-    VMPartition(name="vm2", display_name="VM2", max_pods=2),
-    VMPartition(name="vm3", display_name="VM3", max_pods=3),
+    VMPartition(name="vm1", display_name="VM1", max_jobs=1),
+    VMPartition(name="vm2", display_name="VM2", max_jobs=2),
+    VMPartition(name="vm3", display_name="VM3", max_jobs=4),
 ]
 
 
@@ -40,17 +40,17 @@ def _normalize_vm_partition(raw: object) -> Optional[VMPartition]:
 
     name = str(raw.get("name") or "").strip()
     display_name = str(raw.get("display_name") or name.upper()).strip()
-    max_pods_raw = raw.get("max_pods")
+    max_jobs_raw = raw.get("max_jobs", raw.get("max_pods"))
 
     try:
-        max_pods = max(1, int(max_pods_raw))
+        max_jobs = max(1, int(max_jobs_raw))
     except (TypeError, ValueError):
         return None
 
     if not name:
         return None
 
-    return VMPartition(name=name, display_name=display_name or name.upper(), max_pods=max_pods)
+    return VMPartition(name=name, display_name=display_name or name.upper(), max_jobs=max_jobs)
 
 
 def get_vm_partitions() -> List[VMPartition]:

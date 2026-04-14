@@ -112,21 +112,22 @@ def get_job_execution_readiness(job, user_id: int) -> Tuple[List[int], Optional[
 
 
 async def start_job_execution_task(job_id: int, user_id: int, workflow_id: int, input_file_ids: List[int]) -> None:
-    from backend.api.services.kubernetes_manager import get_pipeline_runner
+    from backend.api.services.vm_queue_service import queue_or_start_job
 
     try:
-        logger.info(f"Starting pipeline execution for job {job_id}")
-        runner = get_pipeline_runner()
-        execution = await runner.start_pipeline(
+        logger.info(f"Starting or queueing pipeline execution for job {job_id}")
+        result = await queue_or_start_job(
             job_id=job_id,
             user_id=user_id,
             workflow_id=workflow_id,
-            input_files=input_file_ids,
-            execution_number=1,
+            input_file_ids=input_file_ids,
         )
         logger.info(
-            f"Pipeline execution started for job {job_id}: "
-            f"execution_id={execution.get('execution_id') if isinstance(execution, dict) else 'N/A'}"
+            "Pipeline execution decision for job %s: state=%s execution_id=%s queue_position=%s",
+            job_id,
+            result.get("state"),
+            result.get("execution_id"),
+            result.get("queue_position"),
         )
     except Exception as exc:
         logger.error(f"Error starting pipeline for job {job_id}: {exc}", exc_info=True)

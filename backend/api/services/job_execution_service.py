@@ -239,7 +239,11 @@ def update_job_execution(execution_id: int, update_data: JobExecutionUpdate) -> 
             if update_data.error_message is not None:
                 updates.append("error_message = %s")
                 params.append(update_data.error_message)
-            
+
+            if update_data.started_at is not None:
+                updates.append("started_at = %s")
+                params.append(update_data.started_at)
+
             if update_data.completed_at is not None:
                 updates.append("completed_at = %s")
                 params.append(update_data.completed_at)
@@ -345,4 +349,3 @@ def get_running_executions() -> List[JobExecutionInDB]:
             return executions
         finally:
             cur.close()
-

@@ -3,17 +3,17 @@
     {
       "name": "vm1",
       "display_name": "VM1",
-      "max_pods": 1
+      "max_jobs": 1
     },
     {
       "name": "vm2",
       "display_name": "VM2",
-      "max_pods": 2
+      "max_jobs": 2
     },
     {
       "name": "vm3",
       "display_name": "VM3",
-      "max_pods": 3
+      "max_jobs": 4
     }
   ]
 }

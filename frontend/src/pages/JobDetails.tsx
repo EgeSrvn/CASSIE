@@ -28,6 +28,7 @@ const ZIP_PANEL_STORAGE_KEY = 'cassie-zip-download-panel-jobs'
 const formatVmCpu = (cpuMillis: number): string => `${(cpuMillis / 1000).toFixed(2)} cores`
 const formatVmMemory = (memoryMib: number): string => `${(memoryMib / 1024).toFixed(2)} GiB`
 const formatVmStorage = (storageMib: number): string => storageMib > 0 ? `${(storageMib / 1024).toFixed(2)} GiB` : 'Auto'
+const formatVmSlots = (vm: VM): string => `${vm.available_job_slots}/${vm.max_jobs} jobs available`
 
 const readZipPanelVisibilityMap = (): Record<string, boolean> => {
   if (typeof window === 'undefined') return {}
@@ -180,8 +181,11 @@ export default function JobDetails() {
     if (!jobId) return
 
     const hasActiveExecution = job?.status === 'running' || executions.some(execution => execution.status === 'running')
+    const hasQueuedExecution = executions.some(execution =>
+      execution.status === 'pending' && String(execution.parameters_used?.queue_state || '').trim().toLowerCase() === 'waiting_for_vm_slot'
+    )
     const hasActiveUpload = !!jobUploadStatus
-    if (!hasActiveExecution && !hasActiveUpload) return
+    if (!hasActiveExecution && !hasQueuedExecution && !hasActiveUpload) return
 
     const poller = window.setInterval(() => {
       loadJob()
@@ -273,6 +277,12 @@ export default function JobDetails() {
   const outputFiles = (files || []).filter(f => f && f.file_type === 'output')
   const visibleInputCount = inputFiles.length + pendingQueuedFiles.length
   const selectedVMDetails = job?.vm_name ? availableVMs.find(vm => vm.name === job.vm_name) || null : null
+  const latestExecution = executions.length > 0 ? executions[0] : null
+  const latestQueuePosition = (
+    latestExecution?.status === 'pending' &&
+    String(latestExecution.parameters_used?.queue_state || '').trim().toLowerCase() === 'waiting_for_vm_slot' &&
+    typeof latestExecution.parameters_used?.queue_position === 'number'
+  ) ? latestExecution.parameters_used.queue_position : null
 
   const fileMatchesRequirement = (
     filename: string,
@@ -486,7 +496,31 @@ export default function JobDetails() {
       case 'running': return 'status-running'
       case 'failed': return 'status-failed'
       case 'pending': return 'status-pending'
+      case 'waiting_for_dependencies': return 'status-pending'
+      case 'waiting_for_resources': return 'status-pending'
       default: return ''
+    }
+  }
+
+  const formatExecutionStatusLabel = (execution: JobExecution) => {
+    const queueState = String(execution.parameters_used?.queue_state || '').trim().toLowerCase()
+    const queuePosition = execution.parameters_used?.queue_position
+    if (execution.status === 'pending' && queueState === 'waiting_for_vm_slot') {
+      return typeof queuePosition === 'number' && queuePosition > 0
+        ? `queued (#${queuePosition})`
+        : 'queued'
+    }
+    return execution.status
+  }
+
+  const formatStageStatusLabel = (status: string) => {
+    switch (status) {
+      case 'waiting_for_dependencies':
+        return 'waiting for dependencies'
+      case 'waiting_for_resources':
+        return 'waiting for resources'
+      default:
+        return status
     }
   }
 
@@ -494,6 +528,12 @@ export default function JobDetails() {
     const stages = execution.parameters_used?.stages || []
     const runningStage = stages.find(stage => stage.status === 'running')
     if (runningStage) return runningStage
+
+    const resourceWaitingStage = stages.find(stage => stage.status === 'waiting_for_resources')
+    if (resourceWaitingStage) return resourceWaitingStage
+
+    const dependencyWaitingStage = stages.find(stage => stage.status === 'waiting_for_dependencies')
+    if (dependencyWaitingStage) return dependencyWaitingStage
 
     if (execution.status === 'running') {
       const pendingStage = stages.find(stage => stage.status === 'pending')
@@ -509,10 +549,21 @@ export default function JobDetails() {
 
   const getCurrentStageLabel = (execution: JobExecution) => {
     const stage = getCurrentStage(execution)
-    if (!stage) return null
+    if (!stage) {
+      const queueState = String(execution.parameters_used?.queue_state || '').trim().toLowerCase()
+      const queuePosition = execution.parameters_used?.queue_position
+      if (execution.status === 'pending' && queueState === 'waiting_for_vm_slot') {
+        return typeof queuePosition === 'number' && queuePosition > 0
+          ? `Queued on ${job?.vm_name || 'selected VM'} at position ${queuePosition}`
+          : 'Queued for the selected VM'
+      }
+      return null
+    }
 
     const toolName = stage.tool_name || stage.tool_id
     if (stage.status === 'running') return `Current Tool: ${toolName}`
+    if (stage.status === 'waiting_for_resources') return `Waiting for resources to run: ${toolName}`
+    if (stage.status === 'waiting_for_dependencies') return `Waiting for previous tools before: ${toolName}`
     if (stage.status === 'pending') return `Next Tool: ${toolName}`
     if (stage.status === 'failed') return `Failed Tool: ${toolName}`
     if (stage.status === 'completed' && execution.status === 'completed') return `Last Completed Tool: ${toolName}`
@@ -616,6 +667,17 @@ export default function JobDetails() {
                   <span className={`status-badge ${getStatusColor(job.status)}`}>
                     {job.status}
                   </span>
+                  {latestQueuePosition && (
+                    <span
+                      className="inline-upload-status"
+                      style={{
+                        backgroundColor: '#fef3c7',
+                        color: '#92400e',
+                      }}
+                    >
+                      Queued #{latestQueuePosition}
+                    </span>
+                  )}
                   {jobUploadStatus && (
                     <span
                       className="inline-upload-status"
@@ -639,11 +701,11 @@ export default function JobDetails() {
                           try {
                             setExecuting(true)
                             setError('')
-                            await executeJob(parseInt(jobId))
+                            const result = await executeJob(parseInt(jobId))
                             await loadJob()
                             await loadFiles() // Refresh files after execution
                             await loadExecutions()
-                            alert('Job execution started successfully!')
+                            alert(result.message || 'Job execution started successfully!')
                           } catch (err: any) {
                             setError(err.message || 'Failed to execute job')
                           } finally {
@@ -668,7 +730,10 @@ export default function JobDetails() {
               </div>
               <div><strong>Workflow ID:</strong> {job.workflow_id}</div>
               {job.vm_name && (
-                <div><strong>Virtual Machine:</strong> {job.vm_name}</div>
+                <div>
+                  <strong>Virtual Machine:</strong> {job.vm_name}
+                  {selectedVMDetails ? ` (${formatVmSlots(selectedVMDetails)})` : ''}
+                </div>
               )}
               <div><strong>Created:</strong> {formatLocalDateTime(job.created_at)}</div>
               <div><strong>Updated:</strong> {formatLocalDateTime(job.updated_at)}</div>
@@ -684,9 +749,11 @@ export default function JobDetails() {
             {selectedVMDetails && (
               <div style={{ marginTop: '1rem', padding: '0.875rem 1rem', borderRadius: '8px', backgroundColor: '#f8fafc', border: '1px solid #e2e8f0' }}>
                 <div style={{ fontWeight: 600, color: '#0f172a', marginBottom: '0.35rem' }}>
-                  Max resource limits for {selectedVMDetails.display_name}
+                  Per-job resource limits for {selectedVMDetails.display_name}
                 </div>
                 <div style={{ color: '#475569', fontSize: '0.95rem', lineHeight: 1.6 }}>
+                  Available slots: {selectedVMDetails.available_job_slots}/{selectedVMDetails.max_jobs}
+                  {' | '}
                   CPU: {formatVmCpu(selectedVMDetails.available_cpu_millis)}
                   {' | '}
                   Memory: {formatVmMemory(selectedVMDetails.available_memory_mib)}
@@ -694,7 +761,7 @@ export default function JobDetails() {
                   Storage: {formatVmStorage(selectedVMDetails.available_storage_mib)}
                 </div>
                 <div style={{ color: '#64748b', fontSize: '0.875rem', marginTop: '0.35rem' }}>
-                  Hard limit per job on this VM profile: total resources / number of VMs / max pods on this VM.
+                  Hard limit per job on this VM profile: total resources / number of VMs / max concurrent jobs on this VM.
                 </div>
               </div>
             )}
@@ -728,7 +795,7 @@ export default function JobDetails() {
                         <div>
                           <strong>Status:</strong>{' '}
                           <span className={`status-badge ${getStatusColor(execution.status)}`}>
-                            {execution.status}
+                            {formatExecutionStatusLabel(execution)}
                           </span>
                         </div>
                         {elapsed && <div><strong>Elapsed:</strong> {elapsed}</div>}
@@ -781,7 +848,7 @@ export default function JobDetails() {
                                 </div>
                                 <div>
                                   <span className={`status-badge ${getStatusColor(stage.status)}`}>
-                                    {stage.status}
+                                    {formatStageStatusLabel(stage.status)}
                                   </span>
                                 </div>
                               </div>

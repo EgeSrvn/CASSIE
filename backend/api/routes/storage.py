@@ -10,8 +10,10 @@ This module provides:
 """
 
 import os
+import time
 import tempfile
 import hashlib
+from fastapi.concurrency import run_in_threadpool
 from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, status, Query, BackgroundTasks
 from fastapi.responses import JSONResponse, StreamingResponse, RedirectResponse
 from typing import Optional, List
@@ -129,119 +131,131 @@ async def upload_file(
             return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
     
     # Save uploaded file to temporary location
-    temp_file = None
+    temp_path: Optional[str] = None
     try:
-        # Create temporary file
+        hash_md5 = hashlib.md5()
+        file_size = 0
+        chunk_size = 8 * 1024 * 1024
+
         with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as temp_file:
             temp_path = temp_file.name
-            
-            # Write uploaded content to temp file
-            content = await file.read()
-            temp_file.write(content)
-            temp_file.flush()
-            
-            # Calculate file size and checksum
-            file_size = len(content)
-            hash_md5 = hashlib.md5()
-            hash_md5.update(content)
-            checksum = hash_md5.hexdigest()
-            
-            # Generate S3 key (path within user's bucket)
-            if job_id:
-                s3_key = f"jobs/{job_id}/{file_type.value}/{file.filename}"
-            else:
-                # Store in staging area for later job association
-                s3_key = f"staging/{current_user.id}/{int(time.time())}_{file.filename}"
-            
-            # Ensure user bucket exists
-            minio_client.ensure_user_bucket(user_id=current_user.id, username=current_user.username)
-            
-            # Upload to MinIO/S3
-            upload_result = minio_client.upload_file(
-                user_id=current_user.id,
-                local_path=temp_path,
-                s3_key=s3_key,
-                username=current_user.username
-            )
-            
-            # Create file record in database (job_id can be None for staging)
-            file_data = FileCreate(
-                job_id=job_id,  # Can be None for pre-upload
-                filename=file.filename,
-                s3_key=s3_key,
-                file_type=file_type,
-                file_format=file_format,
-                size_bytes=file_size,
-                checksum=checksum
-            )
-            
-            file_record = create_file_record(file_data)
-            
-            if job_id and file_type == FileType.INPUT:
-                try:
-                    expected_total_input_files = auth_context.expected_total_input_files
-                    if expected_total_input_files:
-                        current_job_input_files = get_files_by_user(
-                            user_id=current_user.id,
-                            job_id=job_id,
-                            file_type=FileType.INPUT,
-                            limit=expected_total_input_files + 5,
-                            offset=0,
-                        )
-                        current_input_count = len(current_job_input_files)
-                        if current_input_count < expected_total_input_files:
-                            logger.info(
-                                f"Input file uploaded to pending job {job_id}, but waiting for more files before auto-start. "
-                                f"Currently have {current_input_count}/{expected_total_input_files} input file(s)."
-                            )
-                            ready_job = None
-                            input_file_ids = None
-                            readiness_error = (
-                                f"Waiting for all queued uploads ({current_input_count}/{expected_total_input_files} received)"
-                            )
-                        else:
-                            ready_job, input_file_ids, readiness_error = get_auto_start_payload(job_id, current_user.id)
-                    else:
-                        ready_job, input_file_ids, readiness_error = get_auto_start_payload(job_id, current_user.id)
 
-                    if ready_job and input_file_ids:
-                        background_tasks.add_task(
-                            start_job_execution_task,
-                            ready_job.id,
-                            current_user.id,
-                            ready_job.workflow_id,
-                            input_file_ids,
-                        )
-                        logger.info(
-                            f"Input file uploaded to pending job {job_id}. "
-                            f"Found {len(input_file_ids)} input file(s). Job will start automatically."
-                        )
-                    elif readiness_error:
-                        logger.info(f"Job {job_id} not auto-started after upload: {readiness_error}")
-                except Exception as pipeline_error:
-                    # Don't fail file upload if pipeline start fails
-                    logger.warning(
-                        f"Failed to start pipeline for job {job_id} after file upload: {pipeline_error}",
-                        exc_info=True
+            while True:
+                chunk = await file.read(chunk_size)
+                if not chunk:
+                    break
+                file_size += len(chunk)
+                hash_md5.update(chunk)
+                temp_file.write(chunk)
+
+            temp_file.flush()
+
+        checksum = hash_md5.hexdigest()
+
+        if job_id:
+            s3_key = f"jobs/{job_id}/{file_type.value}/{file.filename}"
+        else:
+            s3_key = f"staging/{current_user.id}/{int(time.time())}_{file.filename}"
+
+        await run_in_threadpool(
+            minio_client.ensure_user_bucket,
+            current_user.id,
+            current_user.username,
+        )
+
+        upload_result = await run_in_threadpool(
+            minio_client.upload_file,
+            current_user.id,
+            temp_path,
+            s3_key,
+            current_user.username,
+        )
+
+        file_data = FileCreate(
+            job_id=job_id,
+            filename=file.filename,
+            s3_key=s3_key,
+            file_type=file_type,
+            file_format=file_format,
+            size_bytes=file_size,
+            checksum=checksum
+        )
+
+        file_record = await run_in_threadpool(create_file_record, file_data)
+
+        if job_id and file_type == FileType.INPUT:
+            try:
+                expected_total_input_files = auth_context.expected_total_input_files
+                if expected_total_input_files:
+                    current_job_input_files = await run_in_threadpool(
+                        get_files_by_user,
+                        current_user.id,
+                        job_id,
+                        FileType.INPUT,
+                        expected_total_input_files + 5,
+                        0,
                     )
-            
-            response_data = success_response(
-                data=FileResponse(
-                    id=file_record.id,
-                    job_id=file_record.job_id,
-                    filename=file_record.filename,
-                    s3_key=file_record.s3_key,
-                    file_type=file_record.file_type,
-                    file_format=file_record.file_format,
-                    size_bytes=file_record.size_bytes,
-                    checksum=file_record.checksum,
-                    uploaded_at=file_record.uploaded_at,
-                    created_at=file_record.created_at
-                ).model_dump(mode='json'),
-                message="File uploaded successfully",
-                status_code=status.HTTP_201_CREATED
-            )
-            return JSONResponse(content=response_data, status_code=status.HTTP_201_CREATED)
+                    current_input_count = len(current_job_input_files)
+                    if current_input_count < expected_total_input_files:
+                        logger.info(
+                            f"Input file uploaded to pending job {job_id}, but waiting for more files before auto-start. "
+                            f"Currently have {current_input_count}/{expected_total_input_files} input file(s)."
+                        )
+                        ready_job = None
+                        input_file_ids = None
+                        readiness_error = (
+                            f"Waiting for all queued uploads ({current_input_count}/{expected_total_input_files} received)"
+                        )
+                    else:
+                        ready_job, input_file_ids, readiness_error = await run_in_threadpool(
+                            get_auto_start_payload,
+                            job_id,
+                            current_user.id,
+                        )
+                else:
+                    ready_job, input_file_ids, readiness_error = await run_in_threadpool(
+                        get_auto_start_payload,
+                        job_id,
+                        current_user.id,
+                    )
+
+                if ready_job and input_file_ids:
+                    background_tasks.add_task(
+                        start_job_execution_task,
+                        ready_job.id,
+                        current_user.id,
+                        ready_job.workflow_id,
+                        input_file_ids,
+                    )
+                    logger.info(
+                        f"Input file uploaded to pending job {job_id}. "
+                        f"Found {len(input_file_ids)} input file(s). Job will start automatically."
+                    )
+                elif readiness_error:
+                    logger.info(f"Job {job_id} not auto-started after upload: {readiness_error}")
+            except Exception as pipeline_error:
+                logger.warning(
+                    f"Failed to start pipeline for job {job_id} after file upload: {pipeline_error}",
+                    exc_info=True
+                )
+
+        response_data = success_response(
+            data=FileResponse(
+                id=file_record.id,
+                job_id=file_record.job_id,
+                filename=file_record.filename,
+                s3_key=file_record.s3_key,
+                file_type=file_record.file_type,
+                file_format=file_record.file_format,
+                size_bytes=file_record.size_bytes,
+                checksum=file_record.checksum,
+                uploaded_at=file_record.uploaded_at,
+                created_at=file_record.created_at
+            ).model_dump(mode='json'),
+            message="File uploaded successfully",
+            status_code=status.HTTP_201_CREATED
+        )
+        return JSONResponse(content=response_data, status_code=status.HTTP_201_CREATED)
             
     except ValueError as e:
         error_data = error_response(
@@ -259,8 +273,8 @@ async def upload_file(
         )
         return JSONResponse(content=error_data, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
     finally:
-        # Clean up temporary file
-        if temp_file and os.path.exists(temp_path):
+        await file.close()
+        if temp_path and os.path.exists(temp_path):
             try:
                 os.unlink(temp_path)
             except Exception as e:

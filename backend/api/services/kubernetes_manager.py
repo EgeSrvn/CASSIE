@@ -16,6 +16,7 @@ import os
 import re
 import shutil
 import subprocess
+import tarfile
 import tempfile
 import time
 from datetime import datetime
@@ -38,13 +39,13 @@ from backend.api.services.storage_service import create_file_record, get_file_by
 from backend.api.services.vm_partition_service import get_vm_partition, get_vm_partitions
 from backend.api.utils.config_loader import get_config
 from backend.api.utils.logger import get_logger
-from tool_registry import get_tool_by_id, get_tool_registry
+from tool_registry import get_tool_by_id, get_tool_id_from_label, get_tool_registry
 
 logger = get_logger(__name__)
 
 
 class KubernetesPipelineRunner:
-    """Run CASSIE pipelines as sequential Kubernetes Jobs."""
+    """Run CASSIE pipelines as Kubernetes Jobs with DAG-aware scheduling."""
 
     def __init__(self):
         self._config = get_config()
@@ -58,39 +59,63 @@ class KubernetesPipelineRunner:
         workflow_id: int,
         input_files: List[int],
         execution_number: int = 1,
+        execution_id: Optional[int] = None,
+        parameters_used: Optional[Dict[str, Any]] = None,
+        vm_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Create an execution record and schedule the Kubernetes pipeline.
         """
         namespace = self._config.kubernetes.namespace
         job = get_job_by_id(job_id, user_id=user_id)
-        selected_vm_name = job.vm_name if job else None
+        selected_vm_name = vm_name or (job.vm_name if job else None)
         run_id = f"k8s-{job_id}-{execution_number}-{int(datetime.now().timestamp())}"
         work_dir = f"k8s://{namespace}/jobs/{run_id}"
         output_dir = f"{work_dir}/output"
 
-        initial_parameters: Dict[str, Any] = {
-            "backend": "kubernetes",
-            "namespace": namespace,
-            "workflow_id": workflow_id,
-            "input_files": input_files,
-            "vm_name": selected_vm_name,
-            "stages": [],
-        }
-
-        execution_data = JobExecutionCreate(
-            job_id=job_id,
-            execution_number=execution_number,
-            status=ExecutionStatus.RUNNING,
-            nextflow_run_id=run_id,
-            work_dir=work_dir,
-            output_dir=output_dir,
-            process_id=None,
-            tool_versions={},
-            parameters_used=initial_parameters,
-            started_at=datetime.now(),
+        initial_parameters: Dict[str, Any] = dict(parameters_used or {})
+        initial_parameters.update(
+            {
+                "backend": "kubernetes",
+                "namespace": namespace,
+                "workflow_id": workflow_id,
+                "input_files": list(input_files or []),
+                "vm_name": selected_vm_name,
+                "queue_state": "running",
+                "queue_position": None,
+                "stages": list(initial_parameters.get("stages") or []),
+            }
         )
-        execution = create_job_execution(execution_data)
+
+        if execution_id is not None:
+            update_job_execution(
+                execution_id,
+                JobExecutionUpdate(
+                    status=ExecutionStatus.RUNNING,
+                    nextflow_run_id=run_id,
+                    work_dir=work_dir,
+                    output_dir=output_dir,
+                    parameters_used=initial_parameters,
+                    started_at=datetime.now(),
+                    completed_at=None,
+                    error_message=None,
+                ),
+            )
+        else:
+            execution_data = JobExecutionCreate(
+                job_id=job_id,
+                execution_number=execution_number,
+                status=ExecutionStatus.RUNNING,
+                nextflow_run_id=run_id,
+                work_dir=work_dir,
+                output_dir=output_dir,
+                process_id=None,
+                tool_versions={},
+                parameters_used=initial_parameters,
+                started_at=datetime.now(),
+            )
+            execution = create_job_execution(execution_data)
+            execution_id = execution.id
 
         from backend.api.models.job_model import JobUpdate
 
@@ -98,7 +123,7 @@ class KubernetesPipelineRunner:
 
         asyncio.create_task(
             self._run_pipeline_async(
-                execution_id=execution.id,
+                execution_id=execution_id,
                 job_id=job_id,
                 user_id=user_id,
                 workflow_id=workflow_id,
@@ -109,8 +134,8 @@ class KubernetesPipelineRunner:
         )
 
         return {
-            "execution_id": execution.id,
-            "status": execution.status.value,
+            "execution_id": execution_id,
+            "status": ExecutionStatus.RUNNING.value,
             "backend": "kubernetes",
             "namespace": namespace,
             "run_id": run_id,
@@ -126,70 +151,154 @@ class KubernetesPipelineRunner:
         parameters_used: Dict[str, Any],
         vm_name: Optional[str],
     ) -> None:
+        from backend.api.services.vm_queue_service import schedule_queued_jobs
+
         try:
             self._ensure_cluster_available()
 
+            job = get_job_by_id(job_id, user_id=user_id)
             workflow = self._get_workflow(workflow_id, user_id)
-            tools = self._resolve_workflow_tools(workflow)
-            if not tools:
-                raise ValueError(f"No valid tools found in workflow {workflow_id}")
-
-            parameters_used["tool_sequence"] = [tool["id"] for tool in tools]
-            self._persist_execution_state(execution_id, parameters_used)
-
             current_inputs = self._build_initial_inputs(user_id, input_files)
             if not current_inputs:
                 raise ValueError("No input files available for Kubernetes execution")
 
-            tool_versions: Dict[str, str] = {}
+            stage_specs = self._build_stage_specs(job, workflow, user_id, current_inputs)
+            if not stage_specs:
+                raise ValueError(f"No valid tools found in workflow {workflow_id}")
 
-            for stage_number, tool in enumerate(tools, start=1):
-                stage_job_name = self._make_job_name(job_id, execution_id, stage_number, tool["id"])
-                stage_info: Dict[str, Any] = {
-                    "stage_number": stage_number,
-                    "tool_id": tool["id"],
-                    "tool_name": tool["name"],
-                    "kubernetes_job_name": stage_job_name,
-                    "status": "pending",
-                    "started_at": datetime.now().isoformat(),
+            parameters_used["tool_sequence"] = [spec["tool"]["id"] for spec in stage_specs]
+            parameters_used["execution_mode"] = "parallel-dag" if getattr(job, "pipeline_id", None) else "sequential"
+            parameters_used["stages"] = []
+            for spec in stage_specs:
+                stage_info = {
+                    "stage_id": spec["stage_id"],
+                    "stage_number": spec["stage_number"],
+                    "tool_id": spec["tool"]["id"],
+                    "tool_name": spec["tool"]["name"],
+                    "dependency_stage_ids": list(spec["dependency_ids"]),
+                    "status": "waiting_for_dependencies" if spec["dependency_ids"] else "pending",
                 }
-                parameters_used.setdefault("stages", []).append(stage_info)
-                self._persist_execution_state(execution_id, parameters_used)
+                spec["stage_info"] = stage_info
+                parameters_used["stages"].append(stage_info)
+            self._persist_execution_state(execution_id, parameters_used)
 
-                tool_version = str(tool.get("docker", {}).get("image", "unknown"))
-                tool_versions[tool["id"]] = tool_version
+            tool_versions: Dict[str, str] = {}
+            outputs_by_stage: Dict[str, List[Dict[str, Any]]] = {}
+            completed_stage_ids: set[str] = set()
+            running_stages: Dict[str, Dict[str, Any]] = {}
+            job_budget = self._detect_effective_cluster_capacity(vm_name=vm_name)
+            reserved = {"cpu_millis": 0, "memory_mib": 0, "storage_mib": 0}
+            loop = asyncio.get_event_loop()
 
-                try:
-                    stage_outputs = await asyncio.get_event_loop().run_in_executor(
-                        None,
-                        lambda: self._run_stage(
-                            job_id=job_id,
-                            execution_id=execution_id,
-                            user_id=user_id,
-                            stage_number=stage_number,
-                            tool=tool,
-                            stage_job_name=stage_job_name,
-                            current_inputs=current_inputs,
-                            vm_name=vm_name,
-                            stage_info=stage_info,
-                            parameters_used=parameters_used,
-                        ),
-                    )
-                except Exception as exc:
-                    public_error = self._public_failure_message(str(exc), tool_name=tool.get("name"))
-                    stage_info["status"] = "failed"
-                    stage_info["completed_at"] = datetime.now().isoformat()
-                    stage_info["error"] = public_error
+            while len(completed_stage_ids) < len(stage_specs):
+                launched_any = False
+                ready_without_capacity = False
+
+                for spec in stage_specs:
+                    stage_id = spec["stage_id"]
+                    stage_info = spec["stage_info"]
+                    if stage_id in completed_stage_ids or stage_id in running_stages:
+                        continue
+
+                    dependencies_met = all(dep_id in completed_stage_ids for dep_id in spec["dependency_ids"])
+                    if not dependencies_met:
+                        if stage_info.get("status") not in {"completed", "running", "failed"}:
+                            stage_info["status"] = "waiting_for_dependencies"
+                        continue
+
+                    stage_inputs = self._collect_stage_inputs(spec, current_inputs, outputs_by_stage)
+                    tool_plan = self._plan_tool_resources(spec["tool"]["id"], stage_inputs, vm_name=vm_name)
+                    spec["current_inputs"] = stage_inputs
+                    spec["tool_plan"] = tool_plan
+
+                    fits_budget = self._fits_job_budget(job_budget, reserved, tool_plan)
+                    if fits_budget or (not running_stages and not launched_any):
+                        stage_job_name = self._make_job_name(job_id, execution_id, spec["stage_number"], spec["tool"]["id"])
+                        stage_info["status"] = "running"
+                        stage_info["started_at"] = datetime.now().isoformat()
+                        stage_info["kubernetes_job_name"] = stage_job_name
+                        stage_info["resource_profile"] = tool_plan["profile"]
+                        stage_info["threads"] = tool_plan["threads"]
+                        stage_info["memory_limit_mib"] = tool_plan["memory_limit_mib"]
+                        stage_info["storage_limit_mib"] = tool_plan["storage_limit_mib"]
+
+                        self._reserve_plan_resources(reserved, tool_plan, direction=1)
+                        running_stages[stage_id] = {
+                            "spec": spec,
+                            "usage": self._plan_usage(tool_plan),
+                            "task": loop.run_in_executor(
+                                None,
+                                lambda spec=spec, stage_job_name=stage_job_name, stage_info=stage_info: self._run_stage(
+                                    job_id=job_id,
+                                    execution_id=execution_id,
+                                    user_id=user_id,
+                                    stage_number=spec["stage_number"],
+                                    tool=spec["tool"],
+                                    stage_job_name=stage_job_name,
+                                    current_inputs=spec["current_inputs"],
+                                    vm_name=vm_name,
+                                    stage_info=stage_info,
+                                    parameters_used=parameters_used,
+                                    tool_plan=spec["tool_plan"],
+                                ),
+                            ),
+                        }
+                        tool_versions[spec["tool"]["id"]] = str(spec["tool"].get("docker", {}).get("image", "unknown"))
+                        launched_any = True
+                    else:
+                        ready_without_capacity = True
+                        stage_info["status"] = "waiting_for_resources"
+
+                if launched_any:
                     self._persist_execution_state(execution_id, parameters_used, tool_versions=tool_versions)
-                    raise RuntimeError(public_error) from exc
 
-                stage_info["status"] = "completed"
-                stage_info["completed_at"] = datetime.now().isoformat()
-                stage_info["output_count"] = len(stage_outputs)
+                if not running_stages:
+                    if ready_without_capacity:
+                        raise RuntimeError("Pipeline scheduling stalled because no stage could fit inside the selected VM job budget.")
+                    raise RuntimeError("Pipeline scheduling deadlocked. Check the pipeline dependency graph.")
+
+                done, _ = await asyncio.wait(
+                    [entry["task"] for entry in running_stages.values()],
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+
+                failed_error: Optional[RuntimeError] = None
+                finished_stage_ids: List[str] = []
+                for stage_id, entry in list(running_stages.items()):
+                    if entry["task"] not in done:
+                        continue
+
+                    spec = entry["spec"]
+                    stage_info = spec["stage_info"]
+                    self._reserve_plan_resources(reserved, spec["tool_plan"], direction=-1)
+                    finished_stage_ids.append(stage_id)
+
+                    try:
+                        stage_outputs = entry["task"].result()
+                    except Exception as exc:
+                        public_error = self._public_failure_message(str(exc), tool_name=spec["tool"].get("name"))
+                        stage_info["status"] = "failed"
+                        stage_info["completed_at"] = datetime.now().isoformat()
+                        stage_info["error"] = public_error
+                        failed_error = RuntimeError(public_error)
+                    else:
+                        outputs_by_stage[stage_id] = stage_outputs
+                        completed_stage_ids.add(stage_id)
+                        stage_info["status"] = "completed"
+                        stage_info["completed_at"] = datetime.now().isoformat()
+                        stage_info["output_count"] = len(stage_outputs)
+
+                for stage_id in finished_stage_ids:
+                    running_stages.pop(stage_id, None)
+
                 self._persist_execution_state(execution_id, parameters_used, tool_versions=tool_versions)
 
-                if tool.get("type") == "transform":
-                    current_inputs = current_inputs + stage_outputs
+                if failed_error is not None:
+                    for entry in running_stages.values():
+                        stage_job_name = str(entry["spec"]["stage_info"].get("kubernetes_job_name") or "").strip()
+                        if stage_job_name:
+                            self._terminate_stage_job(stage_job_name)
+                    raise failed_error
 
             update_job_execution(
                 execution_id,
@@ -222,6 +331,16 @@ class KubernetesPipelineRunner:
             from backend.api.models.job_model import JobUpdate
 
             update_job(job_id, user_id, JobUpdate(status=JobStatus.FAILED))
+        finally:
+            try:
+                await schedule_queued_jobs(vm_name)
+            except Exception as queue_error:
+                self._logger.warning(
+                    "Failed to schedule queued jobs after execution %s on %s: %s",
+                    execution_id,
+                    vm_name,
+                    queue_error,
+                )
 
     def _public_failure_message(self, raw_error: str, tool_name: Optional[str] = None) -> str:
         """Convert raw Kubernetes/tool output into a short user-facing cause."""
@@ -384,6 +503,211 @@ class KubernetesPipelineRunner:
 
         return resolved
 
+    def _build_stage_specs(
+        self,
+        job: Optional[Any],
+        workflow: Dict[str, Any],
+        user_id: int,
+        initial_inputs: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        if getattr(job, "pipeline_id", None):
+            pipeline_specs = self._build_stage_specs_from_pipeline(job.pipeline_id, user_id)
+            if pipeline_specs:
+                return pipeline_specs
+
+        workflow_specs = self._build_stage_specs_from_workflow(workflow)
+        if workflow_specs and any(spec.get("dependency_ids") for spec in workflow_specs):
+            return workflow_specs
+
+        tools = self._resolve_workflow_tools(workflow)
+        if workflow_specs:
+            tools = [spec["tool"] for spec in workflow_specs]
+        return self._infer_stage_specs_from_tools(tools, initial_inputs)
+
+    def _build_stage_specs_from_workflow(self, workflow: Dict[str, Any]) -> List[Dict[str, Any]]:
+        specs: List[Dict[str, Any]] = []
+
+        for stage_number, step in enumerate(workflow.get("workflow_steps", []) or [], start=1):
+            tool_id = str(step.get("tool") or "").strip().upper()
+            tool = get_tool_by_id(tool_id) if tool_id else None
+            if not tool:
+                continue
+
+            stage_id = str(step.get("stage_id") or step.get("id") or f"step-{stage_number}")
+            dependency_ids = [str(dep).strip() for dep in (step.get("dependency_ids") or []) if str(dep).strip()]
+            specs.append(
+                {
+                    "stage_id": stage_id,
+                    "stage_number": stage_number,
+                    "tool": tool,
+                    "dependency_ids": dependency_ids,
+                }
+            )
+
+        return specs
+
+    def _infer_stage_specs_from_tools(
+        self,
+        tools: List[Dict[str, Any]],
+        initial_inputs: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        specs: List[Dict[str, Any]] = []
+        classified_inputs = self._classify_inputs(initial_inputs)
+
+        for stage_number, tool in enumerate(tools, start=1):
+            stage_id = f"step-{stage_number}"
+            dependency_ids: List[str] = []
+
+            if tool["id"] == "QUAST":
+                spades_dependencies = [
+                    spec["stage_id"]
+                    for spec in specs
+                    if spec["tool"]["id"] == "SPADES"
+                ]
+                if spades_dependencies:
+                    dependency_ids.extend(spades_dependencies)
+                elif len(classified_inputs["fasta"]) < 2:
+                    dependency_ids = []
+            else:
+                for requirement in tool.get("input_requirements", []) or []:
+                    requirement_type = str(requirement.get("type") or "").strip().lower()
+                    if requirement_type != "assembly":
+                        continue
+                    producer_stage_ids = [
+                        spec["stage_id"]
+                        for spec in specs
+                        if self._tool_produces_requirement(spec["tool"], requirement_type)
+                    ]
+                    if producer_stage_ids:
+                        dependency_ids.extend(producer_stage_ids)
+
+            deduped_dependencies: List[str] = []
+            seen_dependency_ids: set[str] = set()
+            for dependency_id in dependency_ids:
+                if dependency_id in seen_dependency_ids:
+                    continue
+                deduped_dependencies.append(dependency_id)
+                seen_dependency_ids.add(dependency_id)
+
+            specs.append(
+                {
+                    "stage_id": stage_id,
+                    "stage_number": stage_number,
+                    "tool": tool,
+                    "dependency_ids": deduped_dependencies,
+                }
+            )
+
+        return specs
+
+    def _tool_produces_requirement(self, tool: Dict[str, Any], requirement_type: str) -> bool:
+        tool_id = str(tool.get("id") or "").strip().upper()
+        normalized_requirement = requirement_type.strip().lower()
+
+        if tool_id == "SPADES":
+            return normalized_requirement in {"assembly", "fasta"}
+
+        return False
+
+    def _build_stage_specs_from_pipeline(self, pipeline_id: int, user_id: int) -> List[Dict[str, Any]]:
+        from backend.api.services.pipeline_converter import extract_edges, extract_tool_nodes, topological_sort_tools
+        from backend.api.services.pipeline_service import get_pipeline_by_id
+
+        pipeline = get_pipeline_by_id(pipeline_id, user_id)
+        if not pipeline:
+            return []
+
+        tool_nodes = extract_tool_nodes(pipeline.nodes)
+        if not tool_nodes:
+            return []
+
+        edges = extract_edges(pipeline.edges)
+        dependency_map: Dict[str, List[str]] = {node_id: [] for node_id in tool_nodes}
+        for edge in edges:
+            source = str(edge.get("source") or "").strip()
+            target = str(edge.get("target") or "").strip()
+            if source in tool_nodes and target in tool_nodes and source not in dependency_map[target]:
+                dependency_map[target].append(source)
+
+        ordered_node_ids = topological_sort_tools(tool_nodes, edges)
+        specs: List[Dict[str, Any]] = []
+        stage_number = 1
+        for node_id in ordered_node_ids:
+            node = tool_nodes.get(node_id)
+            if not node:
+                continue
+            tool_id = get_tool_id_from_label(str(node.get("label") or ""))
+            tool = get_tool_by_id(tool_id) if tool_id else None
+            if not tool:
+                continue
+            specs.append(
+                {
+                    "stage_id": node_id,
+                    "stage_number": stage_number,
+                    "tool": tool,
+                    "dependency_ids": list(dependency_map.get(node_id, [])),
+                }
+            )
+            stage_number += 1
+
+        return specs
+
+    def _collect_stage_inputs(
+        self,
+        spec: Dict[str, Any],
+        initial_inputs: List[Dict[str, Any]],
+        outputs_by_stage: Dict[str, List[Dict[str, Any]]],
+    ) -> List[Dict[str, Any]]:
+        artifacts: List[Dict[str, Any]] = [dict(item) for item in initial_inputs]
+        seen_keys = {
+            (str(item.get("s3_key") or ""), str(item.get("filename") or ""))
+            for item in artifacts
+        }
+
+        for dependency_id in spec.get("dependency_ids", []):
+            for artifact in outputs_by_stage.get(dependency_id, []) or []:
+                dedupe_key = (str(artifact.get("s3_key") or ""), str(artifact.get("filename") or ""))
+                if dedupe_key in seen_keys:
+                    continue
+                artifacts.append(dict(artifact))
+                seen_keys.add(dedupe_key)
+
+        return artifacts
+
+    def _plan_usage(self, tool_plan: Dict[str, Any]) -> Dict[str, int]:
+        return {
+            "cpu_millis": int(tool_plan.get("cpu_limit_millis") or 0),
+            "memory_mib": int(tool_plan.get("memory_limit_mib") or 0),
+            "storage_mib": int(tool_plan.get("storage_limit_mib") or 0),
+        }
+
+    def _fits_job_budget(
+        self,
+        job_budget: Dict[str, int],
+        reserved: Dict[str, int],
+        tool_plan: Dict[str, Any],
+    ) -> bool:
+        usage = self._plan_usage(tool_plan)
+        return (
+            reserved["cpu_millis"] + usage["cpu_millis"] <= job_budget["cpu_millis"]
+            and reserved["memory_mib"] + usage["memory_mib"] <= job_budget["memory_mib"]
+            and (
+                job_budget.get("storage_mib", 0) <= 0
+                or reserved["storage_mib"] + usage["storage_mib"] <= job_budget["storage_mib"]
+            )
+        )
+
+    def _reserve_plan_resources(
+        self,
+        reserved: Dict[str, int],
+        tool_plan: Dict[str, Any],
+        direction: int,
+    ) -> None:
+        usage = self._plan_usage(tool_plan)
+        reserved["cpu_millis"] = max(0, reserved["cpu_millis"] + direction * usage["cpu_millis"])
+        reserved["memory_mib"] = max(0, reserved["memory_mib"] + direction * usage["memory_mib"])
+        reserved["storage_mib"] = max(0, reserved["storage_mib"] + direction * usage["storage_mib"])
+
     def _build_initial_inputs(self, user_id: int, input_files: List[int]) -> List[Dict[str, Any]]:
         artifacts: List[Dict[str, Any]] = []
         for file_id in input_files:
@@ -413,17 +737,19 @@ class KubernetesPipelineRunner:
         vm_name: Optional[str],
         stage_info: Dict[str, Any],
         parameters_used: Dict[str, Any],
+        tool_plan: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         manifest = self._build_manifest(
             job_id=job_id,
-                execution_id=execution_id,
-                user_id=user_id,
-                stage_number=stage_number,
-                tool=tool,
-                stage_job_name=stage_job_name,
-                current_inputs=current_inputs,
-                vm_name=vm_name,
-            )
+            execution_id=execution_id,
+            user_id=user_id,
+            stage_number=stage_number,
+            tool=tool,
+            stage_job_name=stage_job_name,
+            current_inputs=current_inputs,
+            vm_name=vm_name,
+            tool_plan=tool_plan,
+        )
         namespace = self._config.kubernetes.namespace
 
         temp_manifest = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8")
@@ -472,13 +798,14 @@ class KubernetesPipelineRunner:
         stage_job_name: str,
         current_inputs: List[Dict[str, Any]],
         vm_name: Optional[str],
+        tool_plan: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         config = self._config
         namespace = config.kubernetes.namespace
         minio_client = get_minio_client()
         bucket_name = minio_client.ensure_user_bucket(user_id=user_id)
         download_script = self._build_init_download_script(bucket_name, current_inputs)
-        tool_plan = self._plan_tool_resources(tool["id"], current_inputs, vm_name=vm_name)
+        tool_plan = tool_plan or self._plan_tool_resources(tool["id"], current_inputs, vm_name=vm_name)
         tool_script = self._build_tool_script(tool, current_inputs, tool_plan)
         artifact_grace_seconds = self._env_int("CASSIE_ARTIFACT_SIDECAR_GRACE_SECONDS") or 600
 
@@ -767,7 +1094,6 @@ class KubernetesPipelineRunner:
             default_memory_gb = 2 if low_resource else min(12, max(4, (tool_memory_budget_mib - 512) // 1024))
             default_kmers = "21" if low_resource else ""
             profile = "low-resource" if low_resource else "full"
-            memory_limit = tool_memory_budget_mib
 
             if self._tool_flag("SPADES_REQUIRE_FULL", default=False) and low_resource:
                 raise RuntimeError(
@@ -777,7 +1103,11 @@ class KubernetesPipelineRunner:
                 )
 
             threads = self._tool_threads(tool_id, default_threads)
-            memory_gb = min(self._tool_memory_gb(tool_id, default_memory_gb), max(1, memory_limit // 1024))
+            memory_gb = min(self._tool_memory_gb(tool_id, default_memory_gb), max(1, tool_memory_budget_mib // 1024))
+            memory_limit = min(
+                tool_memory_budget_mib,
+                max((memory_gb * 1024) + 512, 2560 if low_resource else 6144),
+            )
             kmers = self._env_value_or_default("SPADES_KMERS", default_kmers)
 
             return self._resource_plan(
@@ -786,7 +1116,7 @@ class KubernetesPipelineRunner:
                 threads=threads,
                 memory_gb=memory_gb,
                 memory_limit_mib=memory_limit,
-                cpu_limit_millis=min(max(1000, threads * 1000), max(1000, cpu_millis)),
+                cpu_limit_millis=min(max(250, threads * 500), max(250, cpu_millis)),
                 low_resource=low_resource,
                 kmers=kmers,
                 input_size_mib=input_size_mib,
@@ -795,14 +1125,16 @@ class KubernetesPipelineRunner:
 
         if tool_id == "GENOMESCOPE2":
             default_threads = min(2, whole_cpus) if memory_mib >= 4096 else 1
-            memory_limit = tool_memory_budget_mib
+            requested_threads = self._tool_threads(tool_id, default_threads)
+            requested_memory_gb = max(1, min(tool_memory_budget_mib // 1024, 4 if memory_mib >= 4096 else 2))
+            memory_limit = min(tool_memory_budget_mib, max(2048, requested_memory_gb * 1024))
             return self._resource_plan(
                 tool_id=tool_id,
                 profile="adaptive",
-                threads=self._tool_threads(tool_id, default_threads),
-                memory_gb=max(1, memory_limit // 1024),
+                threads=requested_threads,
+                memory_gb=requested_memory_gb,
                 memory_limit_mib=memory_limit,
-                cpu_limit_millis=min(max(1000, default_threads * 1000), max(1000, cpu_millis)),
+                cpu_limit_millis=min(max(250, requested_threads * 500), max(250, cpu_millis)),
                 low_resource=memory_mib < 4096,
                 kmers="",
                 input_size_mib=input_size_mib,
@@ -812,14 +1144,16 @@ class KubernetesPipelineRunner:
 
         if tool_id == "QUAST":
             default_threads = min(2, whole_cpus) if memory_mib >= 4096 else 1
-            memory_limit = tool_memory_budget_mib
+            requested_threads = self._tool_threads(tool_id, default_threads)
+            requested_memory_gb = max(1, min(tool_memory_budget_mib // 1024, 3 if memory_mib >= 4096 else 2))
+            memory_limit = min(tool_memory_budget_mib, max(1536, requested_memory_gb * 1024))
             return self._resource_plan(
                 tool_id=tool_id,
                 profile="adaptive",
-                threads=self._tool_threads(tool_id, default_threads),
-                memory_gb=max(1, memory_limit // 1024),
+                threads=requested_threads,
+                memory_gb=requested_memory_gb,
                 memory_limit_mib=memory_limit,
-                cpu_limit_millis=min(max(1000, default_threads * 1000), max(1000, cpu_millis)),
+                cpu_limit_millis=min(max(250, requested_threads * 500), max(250, cpu_millis)),
                 low_resource=memory_mib < 4096,
                 kmers="",
                 input_size_mib=input_size_mib,
@@ -827,14 +1161,16 @@ class KubernetesPipelineRunner:
             )
 
         default_threads = min(2, whole_cpus) if memory_mib >= 4096 else 1
-        memory_limit = tool_memory_budget_mib
+        requested_threads = self._tool_threads(tool_id, default_threads)
+        requested_memory_gb = max(1, min(tool_memory_budget_mib // 1024, 2))
+        memory_limit = min(tool_memory_budget_mib, max(1024, requested_memory_gb * 1024))
         return self._resource_plan(
             tool_id=tool_id,
             profile="adaptive",
-            threads=self._tool_threads(tool_id, default_threads),
-            memory_gb=max(1, memory_limit // 1024),
+            threads=requested_threads,
+            memory_gb=requested_memory_gb,
             memory_limit_mib=memory_limit,
-            cpu_limit_millis=min(max(1000, default_threads * 1000), max(1000, cpu_millis)),
+            cpu_limit_millis=min(max(250, requested_threads * 500), max(250, cpu_millis)),
             low_resource=False,
             kmers="",
             input_size_mib=input_size_mib,
@@ -883,6 +1219,8 @@ class KubernetesPipelineRunner:
             "profile": profile,
             "threads": max(1, threads),
             "memory_gb": max(1, memory_gb),
+            "memory_limit_mib": memory_limit_mib,
+            "cpu_limit_millis": cpu_limit_millis,
             "low_resource": low_resource,
             "kmers": kmers,
             "input_size_mib": input_size_mib,
@@ -1018,28 +1356,34 @@ class KubernetesPipelineRunner:
 
         selected_partition = get_vm_partition(vm_name) or partitions[0]
         partition_count = max(1, len(partitions))
-        max_pods = max(1, selected_partition.max_pods)
+        max_jobs = max(1, selected_partition.max_jobs)
 
         partition_capacity = dict(cluster_capacity)
-        partition_capacity["cpu_millis"] = max(250, cluster_capacity["cpu_millis"] // partition_count // max_pods)
-        partition_capacity["memory_mib"] = max(768, cluster_capacity["memory_mib"] // partition_count // max_pods)
+        partition_capacity["cpu_millis"] = max(250, cluster_capacity["cpu_millis"] // partition_count // max_jobs)
+        partition_capacity["memory_mib"] = max(768, cluster_capacity["memory_mib"] // partition_count // max_jobs)
 
         storage_mib = cluster_capacity.get("storage_mib", 0)
         if storage_mib > 0:
-            partition_capacity["storage_mib"] = max(1024, storage_mib // partition_count // max_pods)
+            partition_capacity["storage_mib"] = max(1024, storage_mib // partition_count // max_jobs)
         return partition_capacity
 
     def get_vm_capacity_summary(self) -> List[Dict[str, Any]]:
+        from backend.api.services.vm_queue_service import get_vm_slot_usage
+
         total_capacity = self._detect_total_cluster_capacity()
         summaries: List[Dict[str, Any]] = []
 
         for partition in get_vm_partitions():
             capacity = self._capacity_for_vm_partition(total_capacity, partition.name)
+            slot_usage = get_vm_slot_usage(partition.name)
             summaries.append(
                 {
                     "name": partition.name,
                     "display_name": partition.display_name,
-                    "max_pods": partition.max_pods,
+                    "max_jobs": partition.max_jobs,
+                    "max_pods": partition.max_jobs,
+                    "running_jobs": slot_usage["running_jobs"],
+                    "available_job_slots": slot_usage["available_job_slots"],
                     "available_cpu_millis": capacity["cpu_millis"],
                     "available_memory_mib": capacity["memory_mib"],
                     "available_storage_mib": capacity.get("storage_mib", 0),
@@ -1352,15 +1696,72 @@ class KubernetesPipelineRunner:
         temp_dir = tempfile.mkdtemp(prefix=f"cassie_k8s_{tool_id.lower()}_")
         destination = Path(temp_dir) / "output"
         destination.mkdir(parents=True, exist_ok=True)
-        copy_result = self._run_kubectl(
-            ["cp", "-n", namespace, "-c", "artifacts", f"{pod_name}:/workspace/output/.", "output"],
-            timeout=120,
-            cwd=temp_dir,
-        )
-        if copy_result.returncode != 0:
+        copy_error = self._stream_copy_job_outputs(namespace, pod_name, destination, timeout=180)
+        if copy_error:
             shutil.rmtree(temp_dir, ignore_errors=True)
-            raise RuntimeError(f"Failed to copy outputs from pod {pod_name}: {copy_result.stderr.strip()}")
+            raise RuntimeError(f"Failed to copy outputs from pod {pod_name}: {copy_error}")
         return str(destination)
+
+    def _stream_copy_job_outputs(
+        self,
+        namespace: str,
+        pod_name: str,
+        destination: Path,
+        timeout: int = 180,
+    ) -> str:
+        cmd = [
+            "kubectl",
+            "exec",
+            "-n",
+            namespace,
+            "-c",
+            "artifacts",
+            pod_name,
+            "--",
+            "tar",
+            "cf",
+            "-",
+            "-C",
+            "/workspace/output",
+            ".",
+        ]
+        self._logger.info("Running kubectl command: %s", " ".join(cmd))
+
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=str(destination.parent),
+            env=_kubectl_env(),
+        )
+        try:
+            assert process.stdout is not None
+            with tarfile.open(fileobj=process.stdout, mode="r|*") as tar:
+                for member in tar:
+                    member_name = member.name or ""
+                    resolved_target = (destination / member_name).resolve()
+                    try:
+                        resolved_target.relative_to(destination.resolve())
+                    except ValueError:
+                        process.kill()
+                        process.communicate()
+                        return f"Refused to extract unsafe archive path: {member_name}"
+                    tar.extract(member, path=destination, filter="data")
+            _, stderr = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            _, stderr = process.communicate()
+            return (stderr or b"").decode("utf-8", errors="replace").strip() or "timed out while streaming outputs"
+        except tarfile.TarError as exc:
+            process.kill()
+            _, stderr = process.communicate()
+            stderr_text = (stderr or b"").decode("utf-8", errors="replace").strip()
+            return stderr_text or str(exc)
+
+        if process.returncode != 0:
+            return (stderr or b"").decode("utf-8", errors="replace").strip() or f"kubectl exec exited with code {process.returncode}"
+
+        return ""
 
     def _upload_stage_outputs(
         self,
@@ -1426,42 +1827,129 @@ class KubernetesPipelineRunner:
         rel_path: str,
         current_inputs: List[Dict[str, Any]],
     ) -> str:
-        base_name = rel_path.replace("/", "_")
-        if tool.get("id") != "GENOMESCOPE2":
-            return base_name
+        normalized_rel = rel_path.replace("\\", "/").strip("/")
+        path_parts = [part for part in normalized_rel.split("/") if part and part != "."]
+        if not path_parts:
+            return "output.dat"
 
-        fastq_names = [
-            self._compact_filename_label(os.path.basename(artifact.get("filename", "")))
-            for artifact in self._classify_inputs(current_inputs)["fastq"]
-            if artifact.get("filename")
+        tool_slug = self._tool_output_slug(tool)
+        filename = path_parts[-1]
+        parent_parts = [
+            self._apply_input_aliases(self._normalize_output_segment(part), current_inputs)
+            for part in path_parts[:-1]
         ]
-        fastq_names = [name for name in fastq_names if name]
-        if not fastq_names:
-            return base_name
+        parent_parts = [
+            part for part in parent_parts
+            if part and part not in {"output", f"{tool_slug}_out", tool_slug}
+        ][-2:]
 
-        prefix = "__".join(fastq_names)
-        if len(prefix) > 140:
-            visible = fastq_names[:2]
-            remaining = len(fastq_names) - len(visible)
-            prefix = "__".join(visible)
-            if remaining > 0:
-                prefix = f"{prefix}__plus_{remaining}_more"
+        file_label = self._normalize_output_filename(tool_slug, filename, current_inputs)
+        display_name = "__".join(part for part in [tool_slug, *parent_parts, file_label] if part)
 
-        return f"{prefix}__{base_name}"
+        if len(display_name) > 120:
+            display_name = self._shorten_filename_preserving_suffixes(display_name, max_length=120)
 
-    def _compact_filename_label(self, filename: str) -> str:
-        name = filename.strip()
-        if not name:
-            return ""
+        return display_name
 
-        lowered = name.lower()
-        for suffix in (".fastq.gz", ".fq.gz", ".fastq", ".fq", ".fasta.gz", ".fa.gz", ".fna.gz", ".fasta", ".fa", ".fna"):
-            if lowered.endswith(suffix):
-                name = name[: -len(suffix)]
-                break
+    def _tool_output_slug(self, tool: Dict[str, Any]) -> str:
+        return self._normalize_output_segment(str(tool.get("id") or tool.get("name") or "output")) or "output"
 
-        compact = re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("._-")
-        return compact[:60]
+    def _normalize_output_filename(self, tool_slug: str, filename: str, current_inputs: List[Dict[str, Any]]) -> str:
+        base_name, suffix = self._split_filename_suffix(filename)
+        normalized_base = self._normalize_output_segment(base_name) or "output"
+        normalized_base = self._apply_input_aliases(normalized_base, current_inputs)
+
+        if tool_slug == "fastqc" and normalized_base.lower().endswith("_fastqc"):
+            normalized_base = normalized_base[:-7].rstrip("._-") or "report"
+
+        if normalized_base.lower().startswith(f"{tool_slug}_"):
+            normalized_base = normalized_base[len(tool_slug) + 1:] or normalized_base
+
+        normalized_base = self._shorten_middle(normalized_base, 56)
+        return f"{normalized_base}{suffix}"
+
+    def _normalize_output_segment(self, value: str) -> str:
+        return re.sub(r"[^A-Za-z0-9._-]+", "_", value.strip()).strip("._-").lower()
+
+    def _apply_input_aliases(self, value: str, current_inputs: List[Dict[str, Any]]) -> str:
+        normalized_value = value.strip().lower()
+        if not normalized_value:
+            return normalized_value
+
+        for input_stem, alias in self._input_display_aliases(current_inputs):
+            if normalized_value == input_stem:
+                return alias
+            normalized_value = re.sub(
+                rf"(^|[_\-.]){re.escape(input_stem)}(?=$|[_\-.])",
+                lambda match: f"{match.group(1)}{alias}",
+                normalized_value,
+            )
+
+        normalized_value = re.sub(r"__+", "_", normalized_value).strip("._-")
+        return normalized_value or value
+
+    def _input_display_aliases(self, current_inputs: List[Dict[str, Any]]) -> List[Tuple[str, str]]:
+        aliases: List[Tuple[str, str]] = []
+        seen_stems: set[str] = set()
+        read_index = 0
+        ref_index = 0
+        input_index = 0
+
+        for artifact in current_inputs:
+            filename = os.path.basename(str(artifact.get("filename", "") or ""))
+            if not filename:
+                continue
+
+            stem, _ = self._split_filename_suffix(filename)
+            normalized_stem = self._normalize_output_segment(stem)
+            if not normalized_stem or normalized_stem in seen_stems:
+                continue
+
+            lowered = filename.lower()
+            if lowered.endswith((".fastq.gz", ".fq.gz", ".fastq", ".fq")):
+                read_index += 1
+                alias = f"read{read_index:02d}"
+            elif lowered.endswith((".fasta.gz", ".fa.gz", ".fna.gz", ".fasta", ".fa", ".fna")):
+                ref_index += 1
+                alias = f"ref{ref_index:02d}"
+            else:
+                input_index += 1
+                alias = f"input{input_index:02d}"
+
+            seen_stems.add(normalized_stem)
+            aliases.append((normalized_stem, alias))
+
+        aliases.sort(key=lambda item: len(item[0]), reverse=True)
+        return aliases
+
+    def _split_filename_suffix(self, filename: str) -> Tuple[str, str]:
+        lower_name = filename.lower()
+        for compound_suffix in (".fastq.gz", ".fq.gz", ".fasta.gz", ".fa.gz", ".fna.gz", ".tar.gz"):
+            if lower_name.endswith(compound_suffix):
+                return filename[: -len(compound_suffix)], filename[-len(compound_suffix):]
+
+        path = Path(filename)
+        suffix = "".join(path.suffixes)
+        if suffix:
+            return filename[: -len(suffix)], suffix
+        return filename, ""
+
+    def _shorten_middle(self, value: str, max_length: int) -> str:
+        if len(value) <= max_length:
+            return value
+
+        keep_left = max(8, (max_length - 3) // 2)
+        keep_right = max(8, max_length - 3 - keep_left)
+        return f"{value[:keep_left]}...{value[-keep_right:]}"
+
+    def _shorten_filename_preserving_suffixes(self, filename: str, max_length: int) -> str:
+        if len(filename) <= max_length:
+            return filename
+
+        base_name, suffix = self._split_filename_suffix(filename)
+        max_base_length = max(12, max_length - len(suffix))
+        shortened_base = self._shorten_middle(base_name, max_base_length)
+        return f"{shortened_base}{suffix}"
 
     def _get_job_logs(self, job_name: str) -> str:
         namespace = self._config.kubernetes.namespace
@@ -1521,6 +2009,13 @@ class KubernetesPipelineRunner:
                 parameters_used=parameters_used,
                 tool_versions=tool_versions,
             ),
+        )
+
+    def _terminate_stage_job(self, stage_job_name: str) -> None:
+        namespace = self._config.kubernetes.namespace
+        self._run_kubectl(
+            ["delete", "job", stage_job_name, "-n", namespace, "--ignore-not-found=true", "--cascade=foreground"],
+            timeout=60,
         )
 
     def terminate_job_stages(self, job_id: int, executions: List[Any]) -> Dict[str, Any]:

@@ -3,30 +3,18 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
-function Set-DotEnvValue {
+function Get-EnvValueOrDefault {
     param(
-        [string]$FilePath,
-        [string]$Key,
-        [string]$Value
+        [string]$Name,
+        [string]$DefaultValue
     )
 
-    if (-not (Test-Path $FilePath)) {
-        return
+    $value = [Environment]::GetEnvironmentVariable($Name)
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        return $DefaultValue
     }
 
-    $raw = Get-Content $FilePath -Raw
-    $escapedKey = [regex]::Escape($Key)
-    $replacementLine = "$Key=$Value"
-
-    if ($raw -match "(?m)^$escapedKey=") {
-        $updated = [regex]::Replace($raw, "(?m)^$escapedKey=.*$", $replacementLine)
-    }
-    else {
-        $separator = if ($raw.EndsWith("`n") -or [string]::IsNullOrEmpty($raw)) { "" } else { "`r`n" }
-        $updated = "$raw$separator$replacementLine`r`n"
-    }
-
-    Set-Content -Path $FilePath -Value $updated
+    return $value
 }
 
 function Require-Command {
@@ -48,7 +36,28 @@ function Test-DockerComposeV2 {
     return ($LASTEXITCODE -eq 0)
 }
 
+function Reset-MinikubeCluster {
+    $minikubeCommand = Get-Command minikube -ErrorAction SilentlyContinue
+    if (-not $minikubeCommand) {
+        return
+    }
+
+    Write-Host "Removing existing Minikube clusters to avoid stale state ..."
+    & minikube delete --all --purge | Out-Host
+
+    $runtimeDir = Join-Path $root ".cassie\kube"
+    if (Test-Path $runtimeDir) {
+        Remove-Item -LiteralPath $runtimeDir -Recurse -Force
+    }
+}
+
 function Ensure-MinikubeRunning {
+    param(
+        [string]$CpuCount,
+        [string]$MemoryMb,
+        [string]$DiskSize
+    )
+
     $null = Require-Command -Name "kubectl" -InstallHint "Install kubectl, for example with: choco install kubernetes-cli -y"
     $null = Require-Command -Name "minikube" -InstallHint (
         "Install Minikube, for example with one of:`n" +
@@ -70,6 +79,14 @@ function Ensure-MinikubeRunning {
         $statusOutput = (& minikube status 2>&1 | Out-String)
     }
 
+    $minikubeArgs = @(
+        "start"
+        "--driver=docker"
+        "--cpus=$CpuCount"
+        "--memory=${MemoryMb}mb"
+        "--disk-size=$DiskSize"
+    )
+
     if (
         ($statusOutput -match "host:\s+Stopped") -or
         ($statusOutput -match "kubelet:\s+Stopped") -or
@@ -80,9 +97,13 @@ function Ensure-MinikubeRunning {
         ($statusOutput -match "unknown state") -or
         ($statusOutput -match "GUEST_STATUS")
     ) {
-        Write-Host "Starting Minikube with the Docker driver ..."
-        & minikube start --driver=docker | Out-Host
+        Write-Host "Starting Minikube with the Docker driver ($CpuCount CPU, ${MemoryMb}MB RAM, disk $DiskSize) ..."
     }
+    else {
+        Write-Host "Ensuring Minikube is sized at $CpuCount CPU, ${MemoryMb}MB RAM, disk $DiskSize ..."
+    }
+
+    & minikube @minikubeArgs | Out-Host
 
     & minikube update-context | Out-Host
     & kubectl config use-context minikube | Out-Host
@@ -151,10 +172,6 @@ function Load-ToolImagesIntoMinikube {
     }
 }
 
-if (-not (Test-Path ".env") -and (Test-Path ".env.example")) {
-    Copy-Item ".env.example" ".env"
-}
-
 $null = Require-Command -Name "docker" -InstallHint "Docker is required but was not found in PATH."
 
 $useComposeV2 = Test-DockerComposeV2
@@ -162,7 +179,12 @@ if (-not $useComposeV2) {
     $null = Require-Command -Name "docker-compose" -InstallHint "Docker Compose is required but was not found."
 }
 
-Ensure-MinikubeRunning
+$env:CASSIE_MINIKUBE_CPUS = Get-EnvValueOrDefault -Name "CASSIE_MINIKUBE_CPUS" -DefaultValue "4"
+$env:CASSIE_MINIKUBE_MEMORY = Get-EnvValueOrDefault -Name "CASSIE_MINIKUBE_MEMORY" -DefaultValue "7800"
+$env:CASSIE_MINIKUBE_DISK_SIZE = Get-EnvValueOrDefault -Name "CASSIE_MINIKUBE_DISK_SIZE" -DefaultValue "15g"
+
+Reset-MinikubeCluster
+kubectl describe nodesEnsure-MinikubeRunning -CpuCount $env:CASSIE_MINIKUBE_CPUS -MemoryMb $env:CASSIE_MINIKUBE_MEMORY -DiskSize $env:CASSIE_MINIKUBE_DISK_SIZE
 
 if (-not $env:EXECUTION_BACKEND) {
     $env:EXECUTION_BACKEND = "kubernetes"
@@ -179,41 +201,15 @@ $env:NO_PROXY = "localhost,127.0.0.1,host.docker.internal,kubernetes.docker.inte
 $env:no_proxy = $env:NO_PROXY
 $env:KUBERNETES_MINIO_ENDPOINT = "http://host.docker.internal:$minioApiPort"
 $env:KUBE_CONFIG_DIR = Prepare-ContainerKubeconfig
-
-$minikubeLimits = (& docker inspect minikube --format "{{.HostConfig.Memory}} {{.HostConfig.NanoCpus}}" 2>$null)
-if ($LASTEXITCODE -eq 0 -and $minikubeLimits) {
-    $limitParts = $minikubeLimits.Trim().Split(" ", [System.StringSplitOptions]::RemoveEmptyEntries)
-    if ($limitParts.Count -eq 2) {
-        $memoryBytes = [int64]$limitParts[0]
-        $nanoCpus = [int64]$limitParts[1]
-        if ($memoryBytes -gt 0) {
-            $env:CASSIE_CLUSTER_MEMORY_MIB = [string][math]::Floor($memoryBytes / 1MB)
-        }
-        if ($nanoCpus -gt 0) {
-            $env:CASSIE_CLUSTER_CPU_MILLIS = [string][math]::Floor($nanoCpus / 1000000)
-        }
-    }
-}
-
-Set-DotEnvValue -FilePath ".env" -Key "EXECUTION_BACKEND" -Value $env:EXECUTION_BACKEND
-Set-DotEnvValue -FilePath ".env" -Key "KUBE_CONFIG_DIR" -Value $env:KUBE_CONFIG_DIR
-Set-DotEnvValue -FilePath ".env" -Key "KUBERNETES_MINIO_ENDPOINT" -Value $env:KUBERNETES_MINIO_ENDPOINT
-Set-DotEnvValue -FilePath ".env" -Key "KUBERNETES_NO_PROXY" -Value $env:NO_PROXY
-if ($env:CASSIE_CLUSTER_MEMORY_MIB) {
-    Set-DotEnvValue -FilePath ".env" -Key "CASSIE_CLUSTER_MEMORY_MIB" -Value $env:CASSIE_CLUSTER_MEMORY_MIB
-}
-if ($env:CASSIE_CLUSTER_CPU_MILLIS) {
-    Set-DotEnvValue -FilePath ".env" -Key "CASSIE_CLUSTER_CPU_MILLIS" -Value $env:CASSIE_CLUSTER_CPU_MILLIS
-}
-Set-DotEnvValue -FilePath ".env" -Key "CASSIE_CLUSTER_STORAGE_RESERVE_MIB" -Value "2048"
-Set-DotEnvValue -FilePath ".env" -Key "FASTQC_THREADS" -Value "auto"
-Set-DotEnvValue -FilePath ".env" -Key "GENOMESCOPE2_THREADS" -Value "auto"
-Set-DotEnvValue -FilePath ".env" -Key "SPADES_THREADS" -Value "auto"
-Set-DotEnvValue -FilePath ".env" -Key "SPADES_MEMORY_GB" -Value "auto"
-Set-DotEnvValue -FilePath ".env" -Key "SPADES_LOW_RESOURCE" -Value "auto"
-Set-DotEnvValue -FilePath ".env" -Key "SPADES_KMERS" -Value "auto"
-Set-DotEnvValue -FilePath ".env" -Key "SPADES_MEMORY_LIMIT" -Value "auto"
-Set-DotEnvValue -FilePath ".env" -Key "QUAST_THREADS" -Value "auto"
+$env:CASSIE_CLUSTER_STORAGE_RESERVE_MIB = Get-EnvValueOrDefault -Name "CASSIE_CLUSTER_STORAGE_RESERVE_MIB" -DefaultValue "2048"
+$env:FASTQC_THREADS = Get-EnvValueOrDefault -Name "FASTQC_THREADS" -DefaultValue "auto"
+$env:GENOMESCOPE2_THREADS = Get-EnvValueOrDefault -Name "GENOMESCOPE2_THREADS" -DefaultValue "auto"
+$env:SPADES_THREADS = Get-EnvValueOrDefault -Name "SPADES_THREADS" -DefaultValue "auto"
+$env:SPADES_MEMORY_GB = Get-EnvValueOrDefault -Name "SPADES_MEMORY_GB" -DefaultValue "auto"
+$env:SPADES_LOW_RESOURCE = Get-EnvValueOrDefault -Name "SPADES_LOW_RESOURCE" -DefaultValue "auto"
+$env:SPADES_KMERS = Get-EnvValueOrDefault -Name "SPADES_KMERS" -DefaultValue "auto"
+$env:SPADES_MEMORY_LIMIT = Get-EnvValueOrDefault -Name "SPADES_MEMORY_LIMIT" -DefaultValue "auto"
+$env:QUAST_THREADS = Get-EnvValueOrDefault -Name "QUAST_THREADS" -DefaultValue "auto"
 
 $toolImages = @(
     @{ Image = "fastqc:0.12.1"; Context = "dockerized_tools/fastqc" },
@@ -245,3 +241,4 @@ Write-Host "MinIO UI:   http://localhost:$minioConsolePort"
 Write-Host "Backend:    $($env:EXECUTION_BACKEND) execution backend"
 Write-Host "Kubeconfig: $($env:KUBE_CONFIG_DIR)"
 Write-Host "K8s MinIO:  $($env:KUBERNETES_MINIO_ENDPOINT)"
+Write-Host "Minikube:   $($env:CASSIE_MINIKUBE_CPUS) CPU, $($env:CASSIE_MINIKUBE_MEMORY)MB RAM, disk $($env:CASSIE_MINIKUBE_DISK_SIZE)"
