@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useMemo } from 'react'
 import { useNavigate, useParams, useLocation } from 'react-router-dom'
 import ReactFlow, {
   Background,
@@ -24,6 +24,202 @@ import '../styles/globals.css'
 interface NodeData {
   label: string
   description?: string[]
+}
+
+const INPUT_NODE_TYPES = new Set(['fastqinput', 'fastainput', 'input', 'inputnode', 'start'])
+const RESULT_NODE_TYPES = new Set(['result', 'end'])
+
+const createUniqueNodeId = () => {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return `node-${crypto.randomUUID()}`
+  }
+  return `node-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+}
+
+const createUniqueEdgeId = () => {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return `edge-${crypto.randomUUID()}`
+  }
+  return `edge-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+}
+
+const clonePipelineGraph = (
+  rawNodes: unknown[],
+  rawEdges: unknown[],
+  remapIds = true
+): { nodes: Node<NodeData>[]; edges: Edge[] } => {
+  const idMap = new Map<string, string>()
+
+  const normalizedNodes = (rawNodes as Node<NodeData>[]).map((node, index) => {
+    const originalId = String(node.id ?? `node-${index + 1}`)
+    const normalizedId = remapIds ? createUniqueNodeId() : originalId
+    idMap.set(originalId, normalizedId)
+
+    return {
+      ...node,
+      id: normalizedId,
+      data: {
+        ...(node.data || { label: 'Node' }),
+        description: Array.isArray(node.data?.description) ? [...node.data.description] : node.data?.description,
+      },
+      position: {
+        x: Number(node.position?.x ?? 0),
+        y: Number(node.position?.y ?? 0),
+      },
+      style: node.style ? { ...node.style } : node.style,
+    }
+  })
+
+  const normalizedEdges = (rawEdges as Edge[]).map((edge) => ({
+    ...edge,
+    id: remapIds || !edge.id ? createUniqueEdgeId() : String(edge.id),
+    source: idMap.get(String(edge.source)) || String(edge.source),
+    target: idMap.get(String(edge.target)) || String(edge.target),
+    data: edge.data ? { ...edge.data } : edge.data,
+    markerEnd:
+      edge.markerEnd && typeof edge.markerEnd === 'object'
+        ? { ...edge.markerEnd }
+        : edge.markerEnd,
+    markerStart:
+      edge.markerStart && typeof edge.markerStart === 'object'
+        ? { ...edge.markerStart }
+        : edge.markerStart,
+    style: edge.style ? { ...edge.style } : edge.style,
+  }))
+
+  return { nodes: normalizedNodes, edges: normalizedEdges }
+}
+
+const validatePipelineGraph = (nodes: Node<NodeData>[], edges: Edge[]) => {
+  const errors: string[] = []
+  const incoming = new Map<string, string[]>()
+  const outgoing = new Map<string, string[]>()
+
+  edges.forEach((edge) => {
+    if (!edge.source || !edge.target) {
+      return
+    }
+    outgoing.set(edge.source, [...(outgoing.get(edge.source) || []), edge.target])
+    incoming.set(edge.target, [...(incoming.get(edge.target) || []), edge.source])
+  })
+
+  const inputs = nodes.filter((node) => INPUT_NODE_TYPES.has(String(node.type || '').toLowerCase()))
+  const tools = nodes.filter((node) => String(node.type || '').toLowerCase() === 'tool')
+  const results = nodes.filter((node) => RESULT_NODE_TYPES.has(String(node.type || '').toLowerCase()))
+
+  if (nodes.length === 0) {
+    errors.push('Add at least one node to the pipeline.')
+  }
+  if (tools.length === 0) {
+    errors.push('Add at least one tool node.')
+  }
+  if (inputs.length === 0) {
+    errors.push('Add at least one input node.')
+  }
+  if (results.length === 0) {
+    errors.push('Add at least one result node.')
+  }
+  if (edges.length === 0) {
+    errors.push('Connect the nodes before saving the pipeline.')
+  }
+
+  inputs.forEach((node) => {
+    const label = node.data?.label || 'Input'
+    if ((incoming.get(node.id) || []).length > 0) {
+      errors.push(`"${label}" is an input node and cannot have incoming connections.`)
+    }
+    if ((outgoing.get(node.id) || []).length === 0) {
+      errors.push(`"${label}" is not connected to any downstream tool.`)
+    }
+  })
+
+  tools.forEach((node) => {
+    const label = node.data?.label || 'Tool'
+    if ((incoming.get(node.id) || []).length === 0) {
+      errors.push(`Tool "${label}" must have at least one incoming connection.`)
+    }
+    if ((outgoing.get(node.id) || []).length === 0) {
+      errors.push(`Tool "${label}" must connect to another tool or a result node.`)
+    }
+  })
+
+  results.forEach((node) => {
+    const label = node.data?.label || 'Result'
+    if ((incoming.get(node.id) || []).length === 0) {
+      errors.push(`"${label}" is not connected to any upstream tool.`)
+    }
+    if ((outgoing.get(node.id) || []).length > 0) {
+      errors.push(`"${label}" is a result node and cannot have outgoing connections.`)
+    }
+  })
+
+  const reachableFromInputs = new Set<string>()
+  const stack = inputs.map((node) => node.id)
+  while (stack.length > 0) {
+    const current = stack.pop() as string
+    if (reachableFromInputs.has(current)) {
+      continue
+    }
+    reachableFromInputs.add(current)
+    ;(outgoing.get(current) || []).forEach((target) => {
+      if (!reachableFromInputs.has(target)) {
+        stack.push(target)
+      }
+    })
+  }
+
+  tools.forEach((node) => {
+    if (!reachableFromInputs.has(node.id)) {
+      errors.push(`Tool "${node.data?.label || 'Tool'}" is not reachable from any input node.`)
+    }
+  })
+
+  const reachableToResults = new Set<string>()
+  const reverseStack = results.map((node) => node.id)
+  while (reverseStack.length > 0) {
+    const current = reverseStack.pop() as string
+    if (reachableToResults.has(current)) {
+      continue
+    }
+    reachableToResults.add(current)
+    ;(incoming.get(current) || []).forEach((source) => {
+      if (!reachableToResults.has(source)) {
+        reverseStack.push(source)
+      }
+    })
+  }
+
+  tools.forEach((node) => {
+    if (!reachableToResults.has(node.id)) {
+      errors.push(`Tool "${node.data?.label || 'Tool'}" does not lead to a result node.`)
+    }
+  })
+
+  const visiting = new Set<string>()
+  const visited = new Set<string>()
+  const hasCycle = (nodeId: string): boolean => {
+    if (visiting.has(nodeId)) {
+      return true
+    }
+    if (visited.has(nodeId)) {
+      return false
+    }
+    visiting.add(nodeId)
+    for (const next of outgoing.get(nodeId) || []) {
+      if (hasCycle(next)) {
+        return true
+      }
+    }
+    visiting.delete(nodeId)
+    visited.add(nodeId)
+    return false
+  }
+
+  if (nodes.some((node) => hasCycle(node.id))) {
+    errors.push('Pipeline cycles are not allowed.')
+  }
+
+  return Array.from(new Set(errors))
 }
 
 const NodeBox = ({
@@ -107,6 +303,17 @@ export default function PipelineBuilder() {
   const [saving, setSaving] = useState(false)
   const [loading, setLoading] = useState(false)
   const [isAuthenticated, setIsAuthenticated] = useState(() => !!getToken())
+  const validationErrors = useMemo(() => validatePipelineGraph(nodes, edges), [nodes, edges])
+  const canSavePipeline = pipelineName.trim().length > 0 && validationErrors.length === 0
+  const validationHeadline = useMemo(() => {
+    if (validationErrors.length === 0) {
+      return ''
+    }
+
+    const firstError = validationErrors[0]
+    const shortened = firstError.length > 110 ? `${firstError.slice(0, 107)}...` : firstError
+    return validationErrors.length > 1 ? `${shortened} (+${validationErrors.length - 1})` : shortened
+  }, [validationErrors])
 
   useEffect(() => {
     const syncAuthState = () => {
@@ -135,10 +342,15 @@ export default function PipelineBuilder() {
       return
     }
 
+    const { nodes: templateNodes, edges: templateEdges } = clonePipelineGraph(
+      starterTemplate.nodes,
+      starterTemplate.edges
+    )
+
     setPipelineName(starterTemplate.name)
     setPipelineDescription(starterTemplate.description)
-    setNodes(starterTemplate.nodes as Node<NodeData>[])
-    setEdges(starterTemplate.edges as Edge[])
+    setNodes(templateNodes)
+    setEdges(templateEdges)
   }, [id, location.state, setEdges, setNodes])
 
   useEffect(() => {
@@ -153,14 +365,14 @@ export default function PipelineBuilder() {
             const nodeList = Array.isArray(pipeline.nodes)
               ? pipeline.nodes
               : (pipeline.nodes as { nodes?: unknown[] }).nodes || Object.values(pipeline.nodes)
-            setNodes(nodeList as Node<NodeData>[])
-          }
-
-          if (pipeline.edges) {
-            const edgeList = Array.isArray(pipeline.edges)
-              ? pipeline.edges
-              : (pipeline.edges as { edges?: unknown[] }).edges || Object.values(pipeline.edges)
-            setEdges(edgeList as Edge[])
+            const edgeList = pipeline.edges
+              ? Array.isArray(pipeline.edges)
+                ? pipeline.edges
+                : (pipeline.edges as { edges?: unknown[] }).edges || Object.values(pipeline.edges)
+              : []
+            const { nodes: clonedNodes, edges: clonedEdges } = clonePipelineGraph(nodeList, edgeList)
+            setNodes(clonedNodes)
+            setEdges(clonedEdges)
           }
         })
         .catch((err: any) => {
@@ -194,7 +406,7 @@ export default function PipelineBuilder() {
 
   const addNode = (type: string, label: string, description: string[] = []) => {
     const newNode: Node<NodeData> = {
-      id: `${nodes.length + 1}`,
+      id: createUniqueNodeId(),
       type,
       data: { label, description },
       position: {
@@ -224,6 +436,11 @@ export default function PipelineBuilder() {
 
     if (!pipelineName.trim()) {
       alert('Please enter a pipeline name')
+      return
+    }
+
+    if (validationErrors.length > 0) {
+      alert(`This pipeline is not valid yet:\n\n- ${validationErrors.join('\n- ')}`)
       return
     }
 
@@ -271,7 +488,18 @@ export default function PipelineBuilder() {
       <Navigation />
       <div className="page-content">
         <div className="pipeline-builder">
-          <h1 className="page-title">Visual Pipeline Builder</h1>
+          <div className="page-header" style={{ alignItems: 'center' }}>
+            <h1 className="page-title">Visual Pipeline Builder</h1>
+            {validationHeadline && (
+              <span
+                className="status-badge status-failed"
+                title={validationErrors.join(' | ')}
+                style={{ maxWidth: '460px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+              >
+                Pipeline validation: {validationHeadline}
+              </span>
+            )}
+          </div>
 
           <div className="pipeline-builder-grid">
             <div className="pipeline-sidebar">
@@ -508,11 +736,11 @@ export default function PipelineBuilder() {
                     rows={3}
                   />
                 </div>
-                <div className="form-actions">
-                  {isAuthenticated ? (
-                    <button
+              <div className="form-actions">
+                {isAuthenticated ? (
+                  <button
                       onClick={handleSave}
-                      disabled={saving || !pipelineName.trim()}
+                      disabled={saving || !canSavePipeline}
                       className="btn-primary"
                     >
                       {saving ? 'Saving...' : id ? 'Update Pipeline' : 'Save Pipeline'}

@@ -70,6 +70,106 @@ BEGIN
 END $$;
 
 -- ============================================================================
+-- Table 15: Forum Threads
+-- ============================================================================
+-- Purpose: Public question threads for the CASSIE forum
+
+CREATE TABLE IF NOT EXISTS forum_threads (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    title VARCHAR(200) NOT NULL,
+    body TEXT NOT NULL,
+    image_keys JSONB DEFAULT '[]'::jsonb,
+    view_count INTEGER DEFAULT 0,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL
+);
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'forum_threads' AND column_name = 'image_keys'
+    ) THEN
+        ALTER TABLE forum_threads ADD COLUMN image_keys JSONB DEFAULT '[]'::jsonb;
+    END IF;
+END $$;
+
+CREATE INDEX IF NOT EXISTS idx_forum_threads_user_id ON forum_threads(user_id);
+CREATE INDEX IF NOT EXISTS idx_forum_threads_created_at ON forum_threads(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_forum_threads_updated_at ON forum_threads(updated_at DESC);
+
+-- ============================================================================
+-- Table 16: Forum Answers
+-- ============================================================================
+-- Purpose: Answers posted on forum threads
+
+CREATE TABLE IF NOT EXISTS forum_answers (
+    id SERIAL PRIMARY KEY,
+    thread_id INTEGER NOT NULL REFERENCES forum_threads(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    body TEXT NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_forum_answers_thread_id ON forum_answers(thread_id);
+CREATE INDEX IF NOT EXISTS idx_forum_answers_user_id ON forum_answers(user_id);
+CREATE INDEX IF NOT EXISTS idx_forum_answers_created_at ON forum_answers(created_at ASC);
+
+-- ============================================================================
+-- Table 17: Forum Comments
+-- ============================================================================
+-- Purpose: General thread comments and replies to specific answers
+
+CREATE TABLE IF NOT EXISTS forum_comments (
+    id SERIAL PRIMARY KEY,
+    thread_id INTEGER NOT NULL REFERENCES forum_threads(id) ON DELETE CASCADE,
+    answer_id INTEGER REFERENCES forum_answers(id) ON DELETE CASCADE,
+    parent_comment_id INTEGER REFERENCES forum_comments(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    body TEXT NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL
+);
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'forum_comments' AND column_name = 'parent_comment_id'
+    ) THEN
+        ALTER TABLE forum_comments ADD COLUMN parent_comment_id INTEGER REFERENCES forum_comments(id) ON DELETE CASCADE;
+    END IF;
+END $$;
+
+CREATE INDEX IF NOT EXISTS idx_forum_comments_thread_id ON forum_comments(thread_id);
+CREATE INDEX IF NOT EXISTS idx_forum_comments_answer_id ON forum_comments(answer_id);
+CREATE INDEX IF NOT EXISTS idx_forum_comments_parent_comment_id ON forum_comments(parent_comment_id);
+CREATE INDEX IF NOT EXISTS idx_forum_comments_user_id ON forum_comments(user_id);
+CREATE INDEX IF NOT EXISTS idx_forum_comments_created_at ON forum_comments(created_at ASC);
+
+-- Forum triggers are declared here because the forum tables are created after the
+-- main trigger block above in this legacy schema file.
+DROP TRIGGER IF EXISTS trigger_update_forum_threads_updated_at ON forum_threads;
+CREATE TRIGGER trigger_update_forum_threads_updated_at
+    BEFORE UPDATE ON forum_threads
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+DROP TRIGGER IF EXISTS trigger_update_forum_answers_updated_at ON forum_answers;
+CREATE TRIGGER trigger_update_forum_answers_updated_at
+    BEFORE UPDATE ON forum_answers
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+DROP TRIGGER IF EXISTS trigger_update_forum_comments_updated_at ON forum_comments;
+CREATE TRIGGER trigger_update_forum_comments_updated_at
+    BEFORE UPDATE ON forum_comments
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+-- ============================================================================
 -- Table 2: Workflows
 -- ============================================================================
 -- Purpose: Store Nextflow pipeline definitions (workflows) that orchestrate bioinformatics tools

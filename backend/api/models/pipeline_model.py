@@ -174,9 +174,20 @@ class PipelineInDB(PipelineBase):
         from_attributes = True
 
 
+class PipelinePublisherResponse(BaseModel):
+    """Public publisher metadata attached to shared pipelines."""
+    id: int
+    username: str
+    display_name: Optional[str] = None
+    affiliation: Optional[str] = None
+    job_title: Optional[str] = None
+    avatar_url: Optional[str] = None
+
+
 class PipelineResponse(PipelineInDB):
     """Pipeline model for API responses."""
-    pass
+    publisher: Optional[PipelinePublisherResponse] = None
+    tool_labels: List[str] = Field(default_factory=list)
 
 
 # ============================================================================
@@ -404,4 +415,3 @@ class ExecutionDatasetInDB(ExecutionDatasetBase):
 class ExecutionDatasetResponse(ExecutionDatasetInDB):
     """Execution dataset model for API responses."""
     pass
-

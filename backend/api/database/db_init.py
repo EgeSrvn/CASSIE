@@ -38,6 +38,9 @@ EXPECTED_TABLES = [
     'workflows',
     'pipeline_configs',
     'pipelines',  # User-created visual pipelines
+    'forum_threads',
+    'forum_answers',
+    'forum_comments',
     'folders',  # User-managed folder structure
     'jobs',
     'job_executions',

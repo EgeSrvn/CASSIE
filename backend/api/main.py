@@ -376,7 +376,7 @@ async def general_exception_handler(request: Request, exc: Exception):
 from fastapi import APIRouter
 
 # Import route modules
-from backend.api.routes import auth, jobs, storage, pipelines, folders, data_files
+from backend.api.routes import auth, jobs, storage, pipelines, folders, data_files, forum
 from backend.api.routes.admin_panel import router as admin_panel_router
 from backend.api.routes.estimator import router as estimator_router
 from backend.api.routes import tools
@@ -390,6 +390,7 @@ app.include_router(folders.router, prefix=config.api.prefix)
 app.include_router(data_files.router, prefix=config.api.prefix)
 app.include_router(estimator_router, prefix=config.api.prefix)
 app.include_router(tools.router, prefix=config.api.prefix)
+app.include_router(forum.router, prefix=config.api.prefix)
 app.include_router(admin_panel_router)
 
 

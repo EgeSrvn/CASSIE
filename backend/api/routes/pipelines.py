@@ -6,7 +6,7 @@ Pipelines are visual representations (nodes/edges) created using ReactFlow.
 """
 
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import JSONResponse
 
 from backend.api.models.pipeline_model import (
@@ -109,7 +109,9 @@ async def create_pipeline_endpoint(
 
 
 @router.get("/shared", response_model=dict)
-async def list_shared_pipelines():
+async def list_shared_pipelines(
+    q: Optional[str] = Query(None, description="Partial search text for pipeline names or contained tool labels")
+):
     """
     List all shared pipelines (public access, no authentication required).
     
@@ -117,7 +119,7 @@ async def list_shared_pipelines():
         JSONResponse: List of shared pipelines
     """
     try:
-        pipelines = get_shared_pipelines()
+        pipelines = get_shared_pipelines(search_query=q)
         pipeline_responses = [PipelineResponse.model_validate(p) for p in pipelines]
         
         return success_response(
@@ -186,7 +188,15 @@ async def update_pipeline_endpoint(
     Returns:
         JSONResponse: Updated pipeline
     """
-    pipeline = update_pipeline(pipeline_id, current_user.id, pipeline_data)
+    try:
+        pipeline = update_pipeline(pipeline_id, current_user.id, pipeline_data)
+    except ValueError as e:
+        error_data = error_response(
+            error_code=ErrorCode.VALIDATION_ERROR,
+            message=str(e),
+            status_code=status.HTTP_400_BAD_REQUEST
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
     
     if not pipeline:
         error_data = not_found_response("Pipeline", pipeline_id)

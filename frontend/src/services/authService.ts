@@ -30,6 +30,20 @@ export interface User {
   updated_at?: string
 }
 
+export interface PublicProfileUser {
+  id: number
+  username: string
+  display_name?: string | null
+  bio?: string | null
+  affiliation?: string | null
+  job_title?: string | null
+  location?: string | null
+  website_url?: string | null
+  avatar_url?: string | null
+  created_at?: string | null
+  updated_at?: string | null
+}
+
 export interface AuthResponse {
   access_token: string
   user: User
@@ -44,8 +58,9 @@ export interface CommunityEntry {
 }
 
 export interface ProfileResponse {
-  user: User
+  user: User | PublicProfileUser
   community_entries: CommunityEntry[]
+  is_public_profile?: boolean
 }
 
 export interface ProfileUpdateRequest {
@@ -133,6 +148,14 @@ export const getProfile = async (): Promise<ProfileResponse> => {
     return response.data.data
   }
   throw new Error('Failed to get profile')
+}
+
+export const getPublicProfile = async (userId: number): Promise<ProfileResponse> => {
+  const response = await apiClient.get<{ success: boolean; data: ProfileResponse }>(`/api/auth/profile/${userId}`)
+  if (response.data.success) {
+    return response.data.data
+  }
+  throw new Error('Failed to get public profile')
 }
 
 export const updateProfile = async (payload: ProfileUpdateRequest): Promise<User> => {

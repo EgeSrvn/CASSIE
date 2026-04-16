@@ -10,6 +10,15 @@ export interface Pipeline {
   edges: any
   saved_at: string
   is_shared?: boolean
+  tool_labels?: string[]
+  publisher?: {
+    id: number
+    username: string
+    display_name?: string | null
+    affiliation?: string | null
+    job_title?: string | null
+    avatar_url?: string | null
+  } | null
 }
 
 export interface PipelineCreate {
@@ -102,8 +111,10 @@ export const getPipelineRequirements = async (id: number): Promise<PipelineRequi
   throw new Error(response.data.message || 'Failed to fetch pipeline requirements')
 }
 
-export const getSharedPipelines = async (): Promise<Pipeline[]> => {
-  const response = await apiClient.get<PipelineListResponse>('/api/pipelines/shared')
+export const getSharedPipelines = async (query?: string): Promise<Pipeline[]> => {
+  const response = await apiClient.get<PipelineListResponse>('/api/pipelines/shared', {
+    params: query && query.trim() ? { q: query.trim() } : undefined,
+  })
   if (response.data.success) {
     return response.data.data
   }

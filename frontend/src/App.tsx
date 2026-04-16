@@ -10,6 +10,9 @@ import JobDetails from './pages/JobDetails'
 import Pipelines from './pages/Pipelines'
 import PipelineBuilder from './pages/PipelineBuilder'
 import Community from './pages/Community'
+import Forum from './pages/Forum'
+import ForumComposer from './pages/ForumComposer'
+import ForumThread from './pages/ForumThread'
 import Profile from './pages/Profile'
 import { getToken } from './services/authService'
 import { startPendingJobUploadProcessor } from './services/pendingJobUploadService'
@@ -88,8 +91,24 @@ function App() {
           element={<Community />} 
         />
         <Route
+          path="/forum"
+          element={<Forum />}
+        />
+        <Route
+          path="/forum/new"
+          element={<ForumComposer />}
+        />
+        <Route
+          path="/forum/:threadId"
+          element={<ForumThread />}
+        />
+        <Route
           path="/profile"
           element={isAuthenticated ? <Profile /> : <Navigate to="/login" />}
+        />
+        <Route
+          path="/profile/:userId"
+          element={<Profile />}
         />
         {/* Public routes - can view but not save/execute */}
         <Route 

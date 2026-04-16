@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router-dom'
 import Navigation from '../components/Navigation'
 import {
   CommunityEntry,
   ProfileUpdateRequest,
   User,
   getProfile,
+  getPublicProfile,
   updateProfile,
   uploadProfileAvatar,
 } from '../services/authService'
@@ -25,6 +26,8 @@ const emptyForm: ProfileUpdateRequest = {
 
 export default function Profile() {
   const navigate = useNavigate()
+  const { userId } = useParams()
+  const isPublicProfile = Boolean(userId)
   const [profile, setProfile] = useState<User | null>(null)
   const [communityEntries, setCommunityEntries] = useState<CommunityEntry[]>([])
   const [formData, setFormData] = useState<ProfileUpdateRequest>(emptyForm)
@@ -50,26 +53,35 @@ export default function Profile() {
 
   useEffect(() => {
     void loadProfile()
-  }, [])
+  }, [userId])
 
   const loadProfile = async () => {
     try {
       setLoading(true)
       setError('')
-      const data = await getProfile()
-      setProfile(data.user)
+      setSuccess('')
+      setIsEditing(false)
+
+      const data = isPublicProfile ? await getPublicProfile(Number(userId)) : await getProfile()
+      const loadedUser = data.user as User
+
+      setProfile(loadedUser)
       setCommunityEntries(data.community_entries)
-      setFormData({
-        email: data.user.email || '',
-        display_name: data.user.display_name || '',
-        bio: data.user.bio || '',
-        affiliation: data.user.affiliation || '',
-        job_title: data.user.job_title || '',
-        location: data.user.location || '',
-        website_url: data.user.website_url || '',
-        current_password: '',
-        new_password: '',
-      })
+      setFormData(
+        isPublicProfile
+          ? emptyForm
+          : {
+              email: loadedUser.email || '',
+              display_name: loadedUser.display_name || '',
+              bio: loadedUser.bio || '',
+              affiliation: loadedUser.affiliation || '',
+              job_title: loadedUser.job_title || '',
+              location: loadedUser.location || '',
+              website_url: loadedUser.website_url || '',
+              current_password: '',
+              new_password: '',
+            }
+      )
       setAvatarFile(null)
     } catch (err: any) {
       const message = err.response?.data?.message || err.message || 'Failed to load profile'
@@ -133,15 +145,17 @@ export default function Profile() {
       <div className="page-content profile-page">
         <section className="feature-hero">
           <div className="profile-summary-card">
-            <button
-              type="button"
-              className="profile-edit-button"
-              onClick={() => setIsEditing((current) => !current)}
-              aria-label={isEditing ? 'Close profile editor' : 'Edit profile'}
-              title={isEditing ? 'Close profile editor' : 'Edit profile'}
-            >
-              ✎
-            </button>
+            {!isPublicProfile && (
+              <button
+                type="button"
+                className="profile-edit-button"
+                onClick={() => setIsEditing((current) => !current)}
+                aria-label={isEditing ? 'Close profile editor' : 'Edit profile'}
+                title={isEditing ? 'Close profile editor' : 'Edit profile'}
+              >
+                ✎
+              </button>
+            )}
             <div className="profile-avatar-shell">
               {avatarPreviewUrl || profile?.avatar_url ? (
                 <img className="profile-avatar" src={avatarPreviewUrl || profile?.avatar_url || ''} alt={profile?.username || 'profile'} />
@@ -158,7 +172,7 @@ export default function Profile() {
             <div className="profile-mini-meta">
               <span>{profile?.job_title || 'Researcher'}</span>
               <span>{profile?.affiliation || 'Independent'}</span>
-              <span>{communityEntries.length} community entr{communityEntries.length === 1 ? 'y' : 'ies'}</span>
+              <span>{communityEntries.length} shared pipeline{communityEntries.length === 1 ? '' : 's'}</span>
             </div>
             <div className="profile-summary-bio">
               <p>{profile?.bio || 'No bio added yet.'}</p>
@@ -191,13 +205,17 @@ export default function Profile() {
 
         <section className="card profile-community-card profile-community-main">
           <div className="section-heading">
-            <h2>Community Entries</h2>
-            <p>The pipelines you have posted to the community catalog.</p>
+            <h2>{isPublicProfile ? 'Published Community Pipelines' : 'Community Entries'}</h2>
+            <p>
+              {isPublicProfile
+                ? 'Read-only profile view for pipelines this researcher shared with the community catalog.'
+                : 'The pipelines you have posted to the community catalog.'}
+            </p>
           </div>
 
           {communityEntries.length === 0 ? (
             <div className="empty-state compact-empty">
-              <p>You have not shared any pipelines yet.</p>
+              <p>{isPublicProfile ? 'This user has not shared any pipelines yet.' : 'You have not shared any pipelines yet.'}</p>
             </div>
           ) : (
             <div className="profile-entry-list profile-entry-list-main">
@@ -220,7 +238,7 @@ export default function Profile() {
           )}
         </section>
 
-        {isEditing && (
+        {!isPublicProfile && isEditing && (
           <section className="card profile-form-card">
             <div className="section-heading">
               <h2>Profile Details</h2>

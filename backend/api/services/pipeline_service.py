@@ -14,8 +14,12 @@ from backend.api.database.db_init import get_db_connection
 from backend.api.models.pipeline_model import (
     PipelineCreate,
     PipelineUpdate,
-    PipelineInDB
+    PipelineInDB,
+    PipelinePublisherResponse,
+    PipelineResponse,
 )
+from backend.api.services.user_service import get_user_by_id
+from backend.api.services.pipeline_analyzer import validate_pipeline_graph
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +48,70 @@ def _parse_jsonb_field(value: Any) -> List[Dict[str, Any]]:
     return []
 
 
+def _extract_pipeline_tool_labels(nodes: Any) -> List[str]:
+    """Return unique, user-visible tool labels from a pipeline's nodes."""
+    parsed_nodes = _parse_jsonb_field(nodes)
+    labels: List[str] = []
+    seen: set[str] = set()
+
+    for node in parsed_nodes:
+        if not isinstance(node, dict):
+            continue
+        if str(node.get("type") or "").strip().lower() != "tool":
+            continue
+
+        raw_label = str((node.get("data") or {}).get("label") or "").strip()
+        if not raw_label:
+            continue
+        normalized = raw_label.casefold()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        labels.append(raw_label)
+
+    return labels
+
+
+def _build_pipeline_publisher(user_id: int) -> Optional[PipelinePublisherResponse]:
+    user = get_user_by_id(user_id)
+    if user is None:
+        return None
+
+    avatar_url = getattr(user, "avatar_url", None)
+    resolved_avatar_url = None
+    if avatar_url:
+        normalized_avatar = str(avatar_url).strip()
+        if normalized_avatar:
+            if normalized_avatar.startswith(("http://", "https://", "data:", "/api/auth/profile/avatar/")):
+                resolved_avatar_url = normalized_avatar
+            else:
+                resolved_avatar_url = f"/api/auth/profile/avatar/{user.id}"
+
+    return PipelinePublisherResponse(
+        id=user.id,
+        username=user.username,
+        display_name=user.display_name,
+        affiliation=user.affiliation,
+        job_title=user.job_title,
+        avatar_url=resolved_avatar_url,
+    )
+
+
+def _pipeline_from_row(row) -> PipelineResponse:
+    return PipelineResponse(
+        id=row[0],
+        user_id=row[1],
+        name=row[2],
+        description=row[3],
+        nodes=_parse_jsonb_field(row[4]),
+        edges=_parse_jsonb_field(row[5]),
+        saved_at=row[6],
+        is_shared=row[7] if len(row) > 7 else False,
+        publisher=_build_pipeline_publisher(row[1]),
+        tool_labels=_extract_pipeline_tool_labels(row[4]),
+    )
+
+
 def create_pipeline(user_id: int, pipeline_data: PipelineCreate) -> PipelineInDB:
     """
     Create a new pipeline for a user.
@@ -62,6 +130,10 @@ def create_pipeline(user_id: int, pipeline_data: PipelineCreate) -> PipelineInDB
         cur = conn.cursor()
         
         try:
+            validation = validate_pipeline_graph(pipeline_data.nodes, pipeline_data.edges)
+            if not validation["is_valid"]:
+                raise ValueError("Invalid pipeline graph. " + " ".join(validation["errors"]))
+
             # Convert nodes and edges to JSON strings for JSONB storage
             # They are lists of dicts from ReactFlow
             nodes_json = json.dumps(pipeline_data.nodes) if pipeline_data.nodes else json.dumps([])
@@ -105,7 +177,7 @@ def create_pipeline(user_id: int, pipeline_data: PipelineCreate) -> PipelineInDB
             cur.close()
 
 
-def get_pipeline_by_id(pipeline_id: int, user_id: int) -> Optional[PipelineInDB]:
+def get_pipeline_by_id(pipeline_id: int, user_id: int) -> Optional[PipelineResponse]:
     """
     Get a pipeline by ID, ensuring it belongs to the user or is shared.
     
@@ -130,16 +202,7 @@ def get_pipeline_by_id(pipeline_id: int, user_id: int) -> Optional[PipelineInDB]
             if not row:
                 return None
             
-            return PipelineInDB(
-                id=row[0],
-                user_id=row[1],
-                name=row[2],
-                description=row[3],
-                nodes=_parse_jsonb_field(row[4]),
-                edges=_parse_jsonb_field(row[5]),
-                saved_at=row[6],
-                is_shared=row[7] if len(row) > 7 else False
-            )
+            return _pipeline_from_row(row)
             
         except Exception as e:
             logger.error(f"Error getting pipeline {pipeline_id}: {e}", exc_info=True)
@@ -148,7 +211,7 @@ def get_pipeline_by_id(pipeline_id: int, user_id: int) -> Optional[PipelineInDB]
             cur.close()
 
 
-def get_pipeline_by_id_public(pipeline_id: int) -> Optional[PipelineInDB]:
+def get_pipeline_by_id_public(pipeline_id: int) -> Optional[PipelineResponse]:
     """
     Get a shared pipeline by ID (public access, no authentication required).
     
@@ -172,16 +235,7 @@ def get_pipeline_by_id_public(pipeline_id: int) -> Optional[PipelineInDB]:
             if not row:
                 return None
             
-            return PipelineInDB(
-                id=row[0],
-                user_id=row[1],
-                name=row[2],
-                description=row[3],
-                nodes=_parse_jsonb_field(row[4]),
-                edges=_parse_jsonb_field(row[5]),
-                saved_at=row[6],
-                is_shared=row[7] if len(row) > 7 else False
-            )
+            return _pipeline_from_row(row)
             
         except Exception as e:
             logger.error(f"Error getting shared pipeline {pipeline_id}: {e}", exc_info=True)
@@ -190,7 +244,7 @@ def get_pipeline_by_id_public(pipeline_id: int) -> Optional[PipelineInDB]:
             cur.close()
 
 
-def get_pipelines_by_user(user_id: int) -> List[PipelineInDB]:
+def get_pipelines_by_user(user_id: int) -> List[PipelineResponse]:
     """
     Get all pipelines for a user.
     
@@ -213,16 +267,7 @@ def get_pipelines_by_user(user_id: int) -> List[PipelineInDB]:
             
             pipelines = []
             for row in cur.fetchall():
-                pipelines.append(PipelineInDB(
-                    id=row[0],
-                    user_id=row[1],
-                    name=row[2],
-                    description=row[3],
-                    nodes=_parse_jsonb_field(row[4]),
-                    edges=_parse_jsonb_field(row[5]),
-                    saved_at=row[6],
-                    is_shared=row[7] if len(row) > 7 else False
-                ))
+                pipelines.append(_pipeline_from_row(row))
             
             return pipelines
             
@@ -233,7 +278,7 @@ def get_pipelines_by_user(user_id: int) -> List[PipelineInDB]:
             cur.close()
 
 
-def update_pipeline(pipeline_id: int, user_id: int, update_data: PipelineUpdate) -> Optional[PipelineInDB]:
+def update_pipeline(pipeline_id: int, user_id: int, update_data: PipelineUpdate) -> Optional[PipelineResponse]:
     """
     Update a pipeline.
     
@@ -249,6 +294,16 @@ def update_pipeline(pipeline_id: int, user_id: int, update_data: PipelineUpdate)
         cur = conn.cursor()
         
         try:
+            existing_pipeline = get_pipeline_by_id(pipeline_id, user_id)
+            if existing_pipeline is None:
+                return None
+
+            candidate_nodes = update_data.nodes if update_data.nodes is not None else existing_pipeline.nodes
+            candidate_edges = update_data.edges if update_data.edges is not None else existing_pipeline.edges
+            validation = validate_pipeline_graph(candidate_nodes, candidate_edges)
+            if not validation["is_valid"]:
+                raise ValueError("Invalid pipeline graph. " + " ".join(validation["errors"]))
+
             # Build update query dynamically based on provided fields
             updates = []
             params = []
@@ -298,16 +353,7 @@ def update_pipeline(pipeline_id: int, user_id: int, update_data: PipelineUpdate)
             
             conn.commit()
             
-            pipeline = PipelineInDB(
-                id=row[0],
-                user_id=row[1],
-                name=row[2],
-                description=row[3],
-                nodes=_parse_jsonb_field(row[4]),
-                edges=_parse_jsonb_field(row[5]),
-                saved_at=row[6],
-                is_shared=row[7] if len(row) > 7 else False
-            )
+            pipeline = _pipeline_from_row(row)
             
             logger.info(f"Updated pipeline {pipeline_id} for user {user_id}")
             return pipeline
@@ -315,7 +361,7 @@ def update_pipeline(pipeline_id: int, user_id: int, update_data: PipelineUpdate)
         except Exception as e:
             conn.rollback()
             logger.error(f"Error updating pipeline {pipeline_id}: {e}", exc_info=True)
-            return None
+            raise ValueError(f"Failed to update pipeline: {str(e)}")
         finally:
             cur.close()
 
@@ -356,7 +402,7 @@ def delete_pipeline(pipeline_id: int, user_id: int) -> bool:
             cur.close()
 
 
-def get_shared_pipelines() -> List[PipelineInDB]:
+def get_shared_pipelines(search_query: Optional[str] = None) -> List[PipelineResponse]:
     """
     Get all shared pipelines (available to everyone).
     
@@ -367,25 +413,40 @@ def get_shared_pipelines() -> List[PipelineInDB]:
         cur = conn.cursor()
         
         try:
-            cur.execute("""
-                SELECT id, user_id, name, description, nodes, edges, saved_at, is_shared
-                FROM pipelines
-                WHERE is_shared = true
-                ORDER BY saved_at DESC
-            """)
+            if search_query and search_query.strip():
+                like_query = f"%{search_query.strip()}%"
+                cur.execute(
+                    """
+                    SELECT id, user_id, name, description, nodes, edges, saved_at, is_shared
+                    FROM pipelines
+                    WHERE is_shared = true
+                      AND (
+                          name ILIKE %s
+                          OR COALESCE(description, '') ILIKE %s
+                          OR EXISTS (
+                              SELECT 1
+                              FROM jsonb_array_elements(COALESCE(nodes, '[]'::jsonb)) AS node
+                              WHERE COALESCE(node->>'type', '') = 'tool'
+                                AND COALESCE(node->'data'->>'label', '') ILIKE %s
+                          )
+                      )
+                    ORDER BY saved_at DESC
+                    """,
+                    (like_query, like_query, like_query),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT id, user_id, name, description, nodes, edges, saved_at, is_shared
+                    FROM pipelines
+                    WHERE is_shared = true
+                    ORDER BY saved_at DESC
+                    """
+                )
             
             pipelines = []
             for row in cur.fetchall():
-                pipelines.append(PipelineInDB(
-                    id=row[0],
-                    user_id=row[1],
-                    name=row[2],
-                    description=row[3],
-                    nodes=_parse_jsonb_field(row[4]),
-                    edges=_parse_jsonb_field(row[5]),
-                    saved_at=row[6],
-                    is_shared=row[7] if len(row) > 7 else False
-                ))
+                pipelines.append(_pipeline_from_row(row))
             
             return pipelines
             
@@ -396,7 +457,7 @@ def get_shared_pipelines() -> List[PipelineInDB]:
             cur.close()
 
 
-def share_pipeline(pipeline_id: int, user_id: int) -> Optional[PipelineInDB]:
+def share_pipeline(pipeline_id: int, user_id: int) -> Optional[PipelineResponse]:
     """
     Share a pipeline with the community.
     
@@ -410,7 +471,7 @@ def share_pipeline(pipeline_id: int, user_id: int) -> Optional[PipelineInDB]:
     return update_pipeline(pipeline_id, user_id, PipelineUpdate(is_shared=True))
 
 
-def unshare_pipeline(pipeline_id: int, user_id: int) -> Optional[PipelineInDB]:
+def unshare_pipeline(pipeline_id: int, user_id: int) -> Optional[PipelineResponse]:
     """
     Unshare a pipeline (make it private).
     

@@ -124,6 +124,13 @@ export default function Navigation({ onLogout }: NavigationProps) {
           >
             Community
           </button>
+          <button
+            type="button"
+            className={`nav-link ${isActive('/forum') ? 'active' : ''}`}
+            onClick={() => navigate('/forum')}
+          >
+            Forum
+          </button>
         </div>
 
         <div className="nav-actions">

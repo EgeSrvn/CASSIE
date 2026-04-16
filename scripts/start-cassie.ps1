@@ -183,14 +183,11 @@ $env:CASSIE_MINIKUBE_CPUS = Get-EnvValueOrDefault -Name "CASSIE_MINIKUBE_CPUS" -
 $env:CASSIE_MINIKUBE_MEMORY = Get-EnvValueOrDefault -Name "CASSIE_MINIKUBE_MEMORY" -DefaultValue "7800"
 $env:CASSIE_MINIKUBE_DISK_SIZE = Get-EnvValueOrDefault -Name "CASSIE_MINIKUBE_DISK_SIZE" -DefaultValue "15g"
 
+$env:EXECUTION_BACKEND = Get-EnvValueOrDefault -Name "EXECUTION_BACKEND" -DefaultValue "kubernetes"
+$env:KUBERNETES_JOB_TIMEOUT_SECONDS = Get-EnvValueOrDefault -Name "KUBERNETES_JOB_TIMEOUT_SECONDS" -DefaultValue "0"
+
 Reset-MinikubeCluster
 Ensure-MinikubeRunning -CpuCount $env:CASSIE_MINIKUBE_CPUS -MemoryMb $env:CASSIE_MINIKUBE_MEMORY -DiskSize $env:CASSIE_MINIKUBE_DISK_SIZE
-
-if (-not $env:EXECUTION_BACKEND) {
-    $env:EXECUTION_BACKEND = "kubernetes"
-}
-
-$env:KUBERNETES_JOB_TIMEOUT_SECONDS = Get-EnvValueOrDefault -Name "KUBERNETES_JOB_TIMEOUT_SECONDS" -DefaultValue "0"
 
 $minioApiPort = if ($env:MINIO_API_PORT) { $env:MINIO_API_PORT } else { "9010" }
 $minioConsolePort = if ($env:MINIO_CONSOLE_PORT) { $env:MINIO_CONSOLE_PORT } else { "9011" }
@@ -201,6 +198,7 @@ $env:http_proxy = ""
 $env:https_proxy = ""
 $env:NO_PROXY = "localhost,127.0.0.1,host.docker.internal,kubernetes.docker.internal"
 $env:no_proxy = $env:NO_PROXY
+$env:KUBERNETES_NO_PROXY = $env:NO_PROXY
 $env:KUBERNETES_MINIO_ENDPOINT = "http://host.docker.internal:$minioApiPort"
 $env:KUBE_CONFIG_DIR = Prepare-ContainerKubeconfig
 $env:CASSIE_CLUSTER_STORAGE_RESERVE_MIB = Get-EnvValueOrDefault -Name "CASSIE_CLUSTER_STORAGE_RESERVE_MIB" -DefaultValue "2048"

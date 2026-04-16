@@ -2,7 +2,6 @@ import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { getPipelines, deletePipeline, sharePipeline, unsharePipeline, Pipeline } from '../services/pipelineService'
 import { getToken } from '../services/authService'
-import { STARTER_PIPELINE_TEMPLATES } from '../services/starterPipelines'
 import Navigation from '../components/Navigation'
 import '../styles/globals.css'
 
@@ -106,39 +105,11 @@ export default function Pipelines() {
               <p>
                 {authRequired || !isAuthenticated
                   ? 'Login to view and save your own pipelines.'
-                  : 'No pipelines yet. Create your first pipeline or start from a template below.'}
+                  : 'No pipelines yet. Create your first pipeline or start from a starter template below.'}
               </p>
               <button onClick={handleCreatePipeline} className="btn-primary">
                 {isAuthenticated ? 'Create Pipeline' : 'Login to Create Pipeline'}
               </button>
-
-              <div style={{ marginTop: '2rem', width: '100%' }}>
-                <h2 style={{ marginBottom: '1rem' }}>Starter Templates</h2>
-                <div className="pipeline-grid">
-                  {STARTER_PIPELINE_TEMPLATES.map((template) => (
-                    <div key={template.id} className="card pipeline-card">
-                      <h3 className="pipeline-card-title">{template.name}</h3>
-                      <p className="pipeline-card-description">{template.description}</p>
-                      <div className="pipeline-card-actions">
-                        <button
-                          onClick={() => navigate('/pipelines/builder', { state: { starterTemplate: template } })}
-                          className="btn-secondary"
-                        >
-                          Open Template
-                        </button>
-                        {isAuthenticated && (
-                          <button
-                            onClick={() => navigate('/pipelines/builder', { state: { starterTemplate: template } })}
-                            className="btn-primary"
-                          >
-                            Customize and Save
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
             </div>
           ) : (
             <div className="jobs-grid">

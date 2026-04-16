@@ -284,3 +284,143 @@ def analyze_pipeline_requirements(pipeline: PipelineInDB) -> Dict[str, Any]:
         "has_fastqc": "FASTQC" in tools_in_pipeline,
         "has_genomescope2": "GENOMESCOPE2" in tools_in_pipeline,
     }
+
+
+def validate_pipeline_graph(nodes: Any, edges: Any) -> Dict[str, Any]:
+    """Validate that a visual pipeline has a runnable structure."""
+    node_list = _get_node_list(nodes)
+    edge_list = _get_edge_list(edges)
+    errors: List[str] = []
+
+    if not node_list:
+        return {"is_valid": False, "errors": ["Add at least one node to the pipeline."]}
+
+    nodes_by_id = {
+        str(node.get("id")): node
+        for node in node_list
+        if isinstance(node, dict) and node.get("id") is not None
+    }
+    incoming_edges: Dict[str, List[str]] = {}
+    outgoing_edges: Dict[str, List[str]] = {}
+    for edge in edge_list:
+        source = edge["source"]
+        target = edge["target"]
+        outgoing_edges.setdefault(source, []).append(target)
+        incoming_edges.setdefault(target, []).append(source)
+
+    explicit_inputs = []
+    tools = []
+    results = []
+
+    for node in node_list:
+        node_type = _resolve_node_type(node).lower()
+        if node_type in {"fastqinput", "fastainput", "input", "inputnode", "start"}:
+            explicit_inputs.append(node)
+        elif node_type == "tool":
+            tools.append(node)
+        elif node_type in {"result", "end"}:
+            results.append(node)
+
+    if not tools:
+        errors.append("Add at least one tool node.")
+    if not explicit_inputs:
+        errors.append("Add at least one input node.")
+    if not results:
+        errors.append("Add at least one result node.")
+    if not edge_list:
+        errors.append("Connect the pipeline nodes before saving.")
+
+    for node in explicit_inputs:
+        node_id = str(node.get("id") or "")
+        label = _resolve_node_label(node) or "Input"
+        if incoming_edges.get(node_id):
+            errors.append(f'"{label}" is an input node and cannot have incoming connections.')
+        if not outgoing_edges.get(node_id):
+            errors.append(f'"{label}" is not connected to any downstream tool.')
+
+    for node in results:
+        node_id = str(node.get("id") or "")
+        label = _resolve_node_label(node) or "Result"
+        if outgoing_edges.get(node_id):
+            errors.append(f'"{label}" is a result node and cannot have outgoing connections.')
+        if not incoming_edges.get(node_id):
+            errors.append(f'"{label}" is not connected to any upstream tool.')
+
+    for node in tools:
+        node_id = str(node.get("id") or "")
+        label = _resolve_node_label(node) or "Tool"
+        if not incoming_edges.get(node_id):
+            errors.append(f'Tool "{label}" must have at least one incoming connection from an input or another tool.')
+        if not outgoing_edges.get(node_id):
+            errors.append(f'Tool "{label}" must connect to another tool or a result node.')
+
+    if tools and explicit_inputs:
+        reachable_from_inputs: set[str] = set()
+        stack = [str(node.get("id") or "") for node in explicit_inputs]
+        while stack:
+            current = stack.pop()
+            if current in reachable_from_inputs:
+                continue
+            reachable_from_inputs.add(current)
+            for target in outgoing_edges.get(current, []):
+                if target not in reachable_from_inputs:
+                    stack.append(target)
+
+        for tool in tools:
+            tool_id = str(tool.get("id") or "")
+            label = _resolve_node_label(tool) or "Tool"
+            if tool_id not in reachable_from_inputs:
+                errors.append(f'Tool "{label}" is not reachable from any input node.')
+
+    if tools and results:
+        reverse_reachable_to_results: set[str] = set()
+        stack = [str(node.get("id") or "") for node in results]
+        while stack:
+            current = stack.pop()
+            if current in reverse_reachable_to_results:
+                continue
+            reverse_reachable_to_results.add(current)
+            for source in incoming_edges.get(current, []):
+                if source not in reverse_reachable_to_results:
+                    stack.append(source)
+
+        for tool in tools:
+            tool_id = str(tool.get("id") or "")
+            label = _resolve_node_label(tool) or "Tool"
+            if tool_id not in reverse_reachable_to_results:
+                errors.append(f'Tool "{label}" does not lead to a result node.')
+
+    visited: set[str] = set()
+    visiting: set[str] = set()
+
+    def has_cycle(node_id: str) -> bool:
+        if node_id in visiting:
+            return True
+        if node_id in visited:
+            return False
+        visiting.add(node_id)
+        for neighbor in outgoing_edges.get(node_id, []):
+            if has_cycle(neighbor):
+                return True
+        visiting.remove(node_id)
+        visited.add(node_id)
+        return False
+
+    for node_id in nodes_by_id:
+        if has_cycle(node_id):
+            errors.append("Pipeline cycles are not allowed. Remove circular connections before saving.")
+            break
+
+    deduped_errors: List[str] = []
+    seen_errors: set[str] = set()
+    for error in errors:
+        normalized = error.casefold()
+        if normalized in seen_errors:
+            continue
+        seen_errors.add(normalized)
+        deduped_errors.append(error)
+
+    return {
+        "is_valid": len(deduped_errors) == 0,
+        "errors": deduped_errors,
+    }

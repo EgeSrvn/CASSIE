@@ -36,6 +36,7 @@ python-multipart>=0.0.6
 python-jose[cryptography]>=3.3.0
 passlib[bcrypt]>=1.7.4
 bcrypt>=4.0.0
+better-profanity>=0.7.0
 
 # ============================================================================
 # Storage (MinIO/S3 - Phase 4)
@@ -89,4 +90,3 @@ httpx>=0.24.0
 # 
 # To install with testing:
 #   pip install -r requirements.txt pytest pytest-asyncio httpx
-

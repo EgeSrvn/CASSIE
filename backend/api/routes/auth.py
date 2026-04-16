@@ -111,6 +111,22 @@ def _user_response_from_model(user) -> UserResponse:
     )
 
 
+def _public_profile_payload(user) -> dict:
+    return {
+        "id": user.id,
+        "username": user.username,
+        "display_name": getattr(user, "display_name", None),
+        "bio": getattr(user, "bio", None),
+        "affiliation": getattr(user, "affiliation", None),
+        "job_title": getattr(user, "job_title", None),
+        "location": getattr(user, "location", None),
+        "website_url": getattr(user, "website_url", None),
+        "avatar_url": _resolved_avatar_url(user),
+        "created_at": user.created_at.isoformat() if getattr(user, "created_at", None) else None,
+        "updated_at": user.updated_at.isoformat() if getattr(user, "updated_at", None) else None,
+    }
+
+
 async def get_auth_context(
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ) -> AuthContext:
@@ -390,6 +406,41 @@ async def get_profile(current_user: UserResponse = Depends(get_current_user)):
             ],
         },
         message="Profile retrieved successfully",
+    )
+
+
+@router.get("/profile/{user_id}")
+async def get_public_profile(user_id: int):
+    """Return a public, read-only user profile with their shared community entries."""
+    user = get_user_by_id(user_id)
+    if user is None:
+        error_data = error_response(
+            error_code=ErrorCode.NOT_FOUND,
+            message="Profile not found",
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_404_NOT_FOUND)
+
+    pipelines = [
+        pipeline for pipeline in get_pipelines_by_user(user_id)
+        if getattr(pipeline, "is_shared", False)
+    ]
+    return success_response(
+        data={
+            "user": _public_profile_payload(user),
+            "community_entries": [
+                {
+                    "id": pipeline.id,
+                    "name": pipeline.name,
+                    "description": pipeline.description,
+                    "saved_at": pipeline.saved_at.isoformat() if pipeline.saved_at else None,
+                    "is_shared": pipeline.is_shared,
+                }
+                for pipeline in pipelines
+            ],
+            "is_public_profile": True,
+        },
+        message="Public profile retrieved successfully",
     )
 
 
