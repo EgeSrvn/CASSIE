@@ -24,6 +24,7 @@ export interface Job {
   data_types?: string[]
   cloud_provider?: string
   vm_name?: string
+  interactive_outputs_enabled?: boolean
   upload_session_token?: string
   pending_upload_count?: number
   expected_total_input_files?: number

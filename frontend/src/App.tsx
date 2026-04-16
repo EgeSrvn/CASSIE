@@ -10,6 +10,7 @@ import JobDetails from './pages/JobDetails'
 import Pipelines from './pages/Pipelines'
 import PipelineBuilder from './pages/PipelineBuilder'
 import Community from './pages/Community'
+import Profile from './pages/Profile'
 import { getToken } from './services/authService'
 import { startPendingJobUploadProcessor } from './services/pendingJobUploadService'
 
@@ -85,6 +86,10 @@ function App() {
         <Route 
           path="/community" 
           element={<Community />} 
+        />
+        <Route
+          path="/profile"
+          element={isAuthenticated ? <Profile /> : <Navigate to="/login" />}
         />
         {/* Public routes - can view but not save/execute */}
         <Route 

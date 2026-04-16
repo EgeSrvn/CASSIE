@@ -2,91 +2,56 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$ROOT_DIR"
+cd "${ROOT_DIR}"
 
-set_dotenv_value() {
-  local file_path="$1"
-  local key="$2"
-  local value="$3"
-  local escaped_key=""
+get_env_value_or_default() {
+  local name="$1"
+  local default_value="$2"
+  local value="${!name:-}"
 
-  if [[ ! -f "${file_path}" ]]; then
-    return 0
+  if [[ -z "${value}" ]]; then
+    printf '%s\n' "${default_value}"
+    return
   fi
 
-  escaped_key="$(printf '%s\n' "${key}" | sed 's/[][\\/.*^$]/\\&/g')"
-  if grep -qE "^${escaped_key}=" "${file_path}"; then
-    sed -i -E "s|^${escaped_key}=.*$|${key}=${value}|" "${file_path}"
-  else
-    printf '%s=%s\n' "${key}" "${value}" >> "${file_path}"
+  printf '%s\n' "${value}"
+}
+
+require_command() {
+  local name="$1"
+  local install_hint="$2"
+
+  if ! command -v "${name}" >/dev/null 2>&1; then
+    printf '%s is required but was not found in PATH.\n%s\n' "${name}" "${install_hint}"
+    exit 1
   fi
 }
 
-if [[ ! -f .env && -f .env.example ]]; then
-  cp .env.example .env
-fi
+test_docker_compose_v2() {
+  docker compose version >/dev/null 2>&1
+}
 
-if ! command -v docker >/dev/null 2>&1; then
-  echo "Docker is required but was not found in PATH."
-  exit 1
-fi
-
-if docker compose version >/dev/null 2>&1; then
-  COMPOSE_CMD=(docker compose)
-elif command -v docker-compose >/dev/null 2>&1; then
-  COMPOSE_CMD=(docker-compose)
-else
-  echo "Docker Compose is required but was not found."
-  exit 1
-fi
-
-if [[ -z "${KUBE_CONFIG_DIR:-}" ]]; then
-  DEFAULT_KUBE_DIR="${HOME}/.kube"
-  if [[ -f "${DEFAULT_KUBE_DIR}/config" ]]; then
-    export KUBE_CONFIG_DIR="${DEFAULT_KUBE_DIR}"
+reset_minikube_cluster() {
+  if ! command -v minikube >/dev/null 2>&1; then
+    return
   fi
-fi
 
-export EXECUTION_BACKEND="${EXECUTION_BACKEND:-kubernetes}"
-export KUBERNETES_JOB_TIMEOUT_SECONDS="${KUBERNETES_JOB_TIMEOUT_SECONDS:-0}"
+  echo "Removing existing Minikube clusters to avoid stale state ..."
+  minikube delete --all --purge
 
-MINIO_API_PORT="${MINIO_API_PORT:-9010}"
-MINIO_CONSOLE_PORT="${MINIO_CONSOLE_PORT:-9011}"
-NO_PROXY_ITEMS=(
-  "localhost"
-  "127.0.0.1"
-  "host.docker.internal"
-  "kubernetes.docker.internal"
-)
-
-if [[ "$(uname -s)" == "Linux" ]]; then
-  CASSIE_HOST_IP="${CASSIE_HOST_IP:-}"
-  if [[ -z "${CASSIE_HOST_IP}" ]] && command -v ip >/dev/null 2>&1; then
-    CASSIE_HOST_IP="$(ip route get 1.1.1.1 2>/dev/null | awk '{print $7; exit}')"
+  if [[ -d "${ROOT_DIR}/.cassie/kube" ]]; then
+    rm -rf "${ROOT_DIR}/.cassie/kube"
   fi
-  if [[ -z "${CASSIE_HOST_IP}" ]] && command -v hostname >/dev/null 2>&1; then
-    CASSIE_HOST_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
-  fi
-  if [[ -n "${CASSIE_HOST_IP}" ]]; then
-    export CASSIE_HOST_IP
-    NO_PROXY_ITEMS+=("${CASSIE_HOST_IP}")
-    export KUBERNETES_MINIO_ENDPOINT="${KUBERNETES_MINIO_ENDPOINT:-http://${CASSIE_HOST_IP}:${MINIO_API_PORT}}"
-  fi
-fi
+}
 
 ensure_minikube_running() {
+  local cpu_count="$1"
+  local memory_mb="$2"
+  local disk_size="$3"
   local status_output=""
-  local current_context=""
 
-  if ! command -v kubectl >/dev/null 2>&1; then
-    echo "kubectl is required but was not found in PATH."
-    exit 1
-  fi
-
-  if ! command -v minikube >/dev/null 2>&1; then
-    echo "minikube is required but was not found in PATH."
-    exit 1
-  fi
+  require_command "kubectl" "Install kubectl using your package manager or from https://kubernetes.io/docs/tasks/tools/."
+  require_command "minikube" "Install minikube using your package manager or from https://minikube.sigs.k8s.io/docs/start/."
 
   status_output="$(minikube status 2>&1 || true)"
 
@@ -97,180 +62,122 @@ ensure_minikube_running() {
   fi
 
   if grep -Eq "host: Stopped|kubelet: Stopped|apiserver: Stopped|minikube does not exist|Profile \"minikube\" not found|No such container: minikube|unknown state|GUEST_STATUS" <<<"${status_output}"; then
-    echo "Starting Minikube with the Docker driver ..."
-    minikube start --driver=docker
+    echo "Starting Minikube with the Docker driver (${cpu_count} CPU, ${memory_mb}MB RAM, disk ${disk_size}) ..."
+  else
+    echo "Ensuring Minikube is sized at ${cpu_count} CPU, ${memory_mb}MB RAM, disk ${disk_size} ..."
   fi
 
+  minikube start --driver=docker --cpus="${cpu_count}" --memory="${memory_mb}mb" --disk-size="${disk_size}"
   minikube update-context
-  kubectl config use-context minikube >/dev/null 2>&1 || true
-
-  current_context="$(kubectl config current-context 2>/dev/null || true)"
-  if [[ "${current_context}" != "minikube" ]]; then
-    echo "Minikube context could not be activated."
-    exit 1
-  fi
-}
-
-ensure_minikube_running
-
-load_images_into_minikube() {
-  local current_context=""
-
-  if ! command -v kubectl >/dev/null 2>&1 || ! command -v minikube >/dev/null 2>&1; then
-    return 0
-  fi
-
-  current_context="$(kubectl config current-context 2>/dev/null || true)"
-  if [[ "${current_context}" != "minikube" ]]; then
-    return 0
-  fi
-
-  for tool_spec in "${TOOL_IMAGES[@]}"; do
-    image_name="${tool_spec%% *}"
-    echo "Loading ${image_name} into Minikube ..."
-    minikube image load "${image_name}"
-  done
-}
-
-connect_backend_to_minikube_network() {
-  local backend_networks=""
-
-  if ! docker network inspect minikube >/dev/null 2>&1; then
-    return 0
-  fi
-
-  if ! docker inspect cassie-backend >/dev/null 2>&1; then
-    return 0
-  fi
-
-  backend_networks="$(docker inspect cassie-backend --format '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}} {{end}}' 2>/dev/null || true)"
-  if grep -qw "minikube" <<<"${backend_networks}"; then
-    return 0
-  fi
-
-  echo "Connecting backend container to the Minikube Docker network ..."
-  docker network connect minikube cassie-backend >/dev/null 2>&1 || true
+  kubectl config use-context minikube
 }
 
 prepare_container_kubeconfig() {
-  local source_dir="${KUBE_CONFIG_DIR:-}"
-  local source_config=""
-  local runtime_dir=""
-  local runtime_config=""
-  local current_context=""
+  local runtime_dir="${ROOT_DIR}/.cassie/kube"
+  local runtime_config="${runtime_dir}/config"
   local cluster_server=""
-  local server_host=""
   local server_port=""
-  local minikube_profile=""
-  local minikube_ip=""
-  local minikube_port=""
-  local minikube_memory=""
-  local minikube_cpus=""
+  local runtime_contents=""
 
-  if [[ -z "${source_dir}" ]]; then
-    return 0
-  fi
-
-  source_config="${source_dir}/config"
-  if [[ ! -f "${source_config}" ]]; then
-    return 0
-  fi
-
-  if ! command -v kubectl >/dev/null 2>&1; then
-    return 0
-  fi
-
-  runtime_dir="${ROOT_DIR}/.cassie/kube"
-  runtime_config="${runtime_dir}/config"
   mkdir -p "${runtime_dir}"
-
-  current_context="$(kubectl config current-context 2>/dev/null || true)"
-  cluster_server="$(kubectl config view --raw --minify -o jsonpath='{.clusters[0].cluster.server}' 2>/dev/null || true)"
 
   if ! kubectl config view --raw --minify --flatten > "${runtime_config}"; then
     echo "Failed to generate a flattened kubeconfig for the backend container."
     exit 1
   fi
 
-  if [[ -n "${cluster_server}" ]]; then
-    server_host="$(printf '%s\n' "${cluster_server}" | sed -E 's#^https?://([^:/]+).*$#\1#')"
-    server_port="$(printf '%s\n' "${cluster_server}" | sed -nE 's#^https?://[^:/]+:([0-9]+).*$#\1#p')"
+  cluster_server="$(kubectl config view --raw --minify -o jsonpath='{.clusters[0].cluster.server}' | tr -d '\r')"
+  if [[ "${cluster_server}" =~ :([0-9]+)$ ]]; then
+    server_port="${BASH_REMATCH[1]}"
   fi
 
-  if [[ "${current_context}" == "minikube" && ( "${server_host}" == "127.0.0.1" || "${server_host}" == "localhost" ) ]]; then
-    minikube_profile="${HOME}/.minikube/profiles/minikube/config.json"
-    if [[ -f "${minikube_profile}" ]]; then
-      minikube_ip="$(sed -nE 's/.*"IP": "([^"]+)".*/\1/p' "${minikube_profile}" | head -n 1)"
-      minikube_port="$(sed -nE 's/.*"APIServerPort": ([0-9]+).*/\1/p' "${minikube_profile}" | head -n 1)"
+  if [[ -n "${server_port}" ]]; then
+    runtime_contents="$(cat "${runtime_config}")"
+    runtime_contents="$(printf '%s\n' "${runtime_contents}" | sed -E "s#server: https://(127\\.0\\.0\\.1|localhost):[0-9]+#server: https://host.docker.internal:${server_port}#")"
+    if ! grep -Eq '^[[:space:]]*tls-server-name:[[:space:]]+localhost[[:space:]]*$' <<<"${runtime_contents}"; then
+      runtime_contents="$(printf '%s\n' "${runtime_contents}" | sed -E "/^[[:space:]]*server: https:\/\/host\.docker\.internal:${server_port}[[:space:]]*$/a\\
+    tls-server-name: localhost")"
     fi
-    if [[ -n "${minikube_ip}" && -n "${minikube_port}" ]]; then
-      sed -i -E "s#server: https://(127\\.0\\.0\\.1|localhost):[0-9]+#server: https://${minikube_ip}:${minikube_port}#" "${runtime_config}"
-      NO_PROXY_ITEMS+=("${minikube_ip}")
-      echo "Using Minikube API server ${minikube_ip}:${minikube_port} for the backend container."
-    fi
-  elif [[ -n "${CASSIE_HOST_IP:-}" && ( "${server_host}" == "127.0.0.1" || "${server_host}" == "localhost" ) && -n "${server_port}" ]]; then
-    sed -i -E "s#server: https://(127\\.0\\.0\\.1|localhost):${server_port}#server: https://${CASSIE_HOST_IP}:${server_port}#" "${runtime_config}"
-    NO_PROXY_ITEMS+=("${CASSIE_HOST_IP}")
-    echo "Rewriting localhost Kubernetes API server to ${CASSIE_HOST_IP}:${server_port} for the backend container."
+    printf '%s\n' "${runtime_contents}" > "${runtime_config}"
   fi
 
-  export KUBE_CONFIG_DIR="${runtime_dir}"
+  printf '%s\n' "${runtime_dir}"
+}
 
-  if docker inspect minikube --format '{{.HostConfig.Memory}} {{.HostConfig.NanoCpus}}' >/tmp/cassie-minikube-limits 2>/dev/null; then
-    read -r minikube_memory minikube_cpus < /tmp/cassie-minikube-limits || true
-    rm -f /tmp/cassie-minikube-limits
-    if [[ -n "${minikube_memory:-}" && "${minikube_memory}" -gt 0 ]]; then
-      export CASSIE_CLUSTER_MEMORY_MIB="$((minikube_memory / 1024 / 1024))"
-    fi
-    if [[ -n "${minikube_cpus:-}" && "${minikube_cpus}" -gt 0 ]]; then
-      export CASSIE_CLUSTER_CPU_MILLIS="$((minikube_cpus / 1000000))"
-    fi
+ensure_tool_image() {
+  local image="$1"
+  local context="$2"
+
+  if ! docker image inspect "${image}" >/dev/null 2>&1; then
+    echo "Building tool image ${image} ..."
+    docker build -t "${image}" "${context}"
   fi
 }
 
-prepare_container_kubeconfig
+load_tool_images_into_minikube() {
+  local tool_spec=""
+  local image_name=""
 
-NO_PROXY_VALUE="$(IFS=,; echo "${NO_PROXY_ITEMS[*]}")"
-export NO_PROXY="${KUBERNETES_NO_PROXY:-$NO_PROXY_VALUE}"
+  for tool_spec in "$@"; do
+    image_name="${tool_spec%% *}"
+    echo "Loading ${image_name} into Minikube ..."
+    minikube image load "${image_name}"
+  done
+}
+
+require_command "docker" "Docker is required but was not found in PATH."
+
+if test_docker_compose_v2; then
+  COMPOSE_CMD=(docker compose)
+else
+  require_command "docker-compose" "Docker Compose is required but was not found."
+  COMPOSE_CMD=(docker-compose)
+fi
+
+export CASSIE_MINIKUBE_CPUS="$(get_env_value_or_default "CASSIE_MINIKUBE_CPUS" "4")"
+export CASSIE_MINIKUBE_MEMORY="$(get_env_value_or_default "CASSIE_MINIKUBE_MEMORY" "7800")"
+export CASSIE_MINIKUBE_DISK_SIZE="$(get_env_value_or_default "CASSIE_MINIKUBE_DISK_SIZE" "15g")"
+
+reset_minikube_cluster
+ensure_minikube_running "${CASSIE_MINIKUBE_CPUS}" "${CASSIE_MINIKUBE_MEMORY}" "${CASSIE_MINIKUBE_DISK_SIZE}"
+
+export EXECUTION_BACKEND="${EXECUTION_BACKEND:-kubernetes}"
+export KUBERNETES_JOB_TIMEOUT_SECONDS="$(get_env_value_or_default "KUBERNETES_JOB_TIMEOUT_SECONDS" "0")"
+
+MINIO_API_PORT="${MINIO_API_PORT:-9010}"
+MINIO_CONSOLE_PORT="${MINIO_CONSOLE_PORT:-9011}"
+
+export HTTP_PROXY=""
+export HTTPS_PROXY=""
+export http_proxy=""
+export https_proxy=""
+export NO_PROXY="localhost,127.0.0.1,host.docker.internal,kubernetes.docker.internal"
 export no_proxy="${NO_PROXY}"
-
-set_dotenv_value ".env" "EXECUTION_BACKEND" "${EXECUTION_BACKEND}"
-set_dotenv_value ".env" "KUBERNETES_JOB_TIMEOUT_SECONDS" "${KUBERNETES_JOB_TIMEOUT_SECONDS}"
-if [[ -n "${KUBE_CONFIG_DIR:-}" ]]; then
-  set_dotenv_value ".env" "KUBE_CONFIG_DIR" "${KUBE_CONFIG_DIR}"
-fi
-if [[ -n "${KUBERNETES_MINIO_ENDPOINT:-}" ]]; then
-  set_dotenv_value ".env" "KUBERNETES_MINIO_ENDPOINT" "${KUBERNETES_MINIO_ENDPOINT}"
-fi
-set_dotenv_value ".env" "KUBERNETES_NO_PROXY" "${NO_PROXY}"
-if [[ -n "${CASSIE_CLUSTER_MEMORY_MIB:-}" ]]; then
-  set_dotenv_value ".env" "CASSIE_CLUSTER_MEMORY_MIB" "${CASSIE_CLUSTER_MEMORY_MIB}"
-fi
-if [[ -n "${CASSIE_CLUSTER_CPU_MILLIS:-}" ]]; then
-  set_dotenv_value ".env" "CASSIE_CLUSTER_CPU_MILLIS" "${CASSIE_CLUSTER_CPU_MILLIS}"
-fi
-set_dotenv_value ".env" "CASSIE_CLUSTER_STORAGE_RESERVE_MIB" "2048"
-set_dotenv_value ".env" "FASTQC_THREADS" "auto"
-set_dotenv_value ".env" "GENOMESCOPE2_THREADS" "auto"
-set_dotenv_value ".env" "SPADES_THREADS" "auto"
-set_dotenv_value ".env" "SPADES_MEMORY_GB" "auto"
-set_dotenv_value ".env" "SPADES_LOW_RESOURCE" "auto"
-set_dotenv_value ".env" "SPADES_KMERS" "auto"
-set_dotenv_value ".env" "SPADES_MEMORY_LIMIT" "auto"
-set_dotenv_value ".env" "METASPADES_THREADS" "auto"
-set_dotenv_value ".env" "METASPADES_MEMORY_GB" "auto"
-set_dotenv_value ".env" "HIFIASM_THREADS" "auto"
-set_dotenv_value ".env" "HIFIASM_MEMORY_GB" "auto"
-set_dotenv_value ".env" "VERKKO_THREADS" "auto"
-set_dotenv_value ".env" "VERKKO_MEMORY_GB" "auto"
-set_dotenv_value ".env" "LIFTOFF_THREADS" "auto"
-set_dotenv_value ".env" "CAT_THREADS" "auto"
-set_dotenv_value ".env" "CAT_MEMORY_GB" "auto"
-set_dotenv_value ".env" "BUSCO_THREADS" "auto"
-set_dotenv_value ".env" "BUSCO_MEMORY_GB" "auto"
-set_dotenv_value ".env" "MERQURY_THREADS" "auto"
-set_dotenv_value ".env" "MERQURY_MEMORY_GB" "auto"
-set_dotenv_value ".env" "QUAST_THREADS" "auto"
+export KUBERNETES_NO_PROXY="${NO_PROXY}"
+export KUBERNETES_MINIO_ENDPOINT="http://host.docker.internal:${MINIO_API_PORT}"
+export KUBE_CONFIG_DIR="$(prepare_container_kubeconfig)"
+export CASSIE_CLUSTER_STORAGE_RESERVE_MIB="$(get_env_value_or_default "CASSIE_CLUSTER_STORAGE_RESERVE_MIB" "2048")"
+export FASTQC_THREADS="$(get_env_value_or_default "FASTQC_THREADS" "auto")"
+export GENOMESCOPE2_THREADS="$(get_env_value_or_default "GENOMESCOPE2_THREADS" "auto")"
+export SPADES_THREADS="$(get_env_value_or_default "SPADES_THREADS" "auto")"
+export SPADES_MEMORY_GB="$(get_env_value_or_default "SPADES_MEMORY_GB" "auto")"
+export SPADES_LOW_RESOURCE="$(get_env_value_or_default "SPADES_LOW_RESOURCE" "auto")"
+export SPADES_KMERS="$(get_env_value_or_default "SPADES_KMERS" "auto")"
+export SPADES_MEMORY_LIMIT="$(get_env_value_or_default "SPADES_MEMORY_LIMIT" "auto")"
+export METASPADES_THREADS="$(get_env_value_or_default "METASPADES_THREADS" "auto")"
+export METASPADES_MEMORY_GB="$(get_env_value_or_default "METASPADES_MEMORY_GB" "auto")"
+export HIFIASM_THREADS="$(get_env_value_or_default "HIFIASM_THREADS" "auto")"
+export HIFIASM_MEMORY_GB="$(get_env_value_or_default "HIFIASM_MEMORY_GB" "auto")"
+export VERKKO_THREADS="$(get_env_value_or_default "VERKKO_THREADS" "auto")"
+export VERKKO_MEMORY_GB="$(get_env_value_or_default "VERKKO_MEMORY_GB" "auto")"
+export LIFTOFF_THREADS="$(get_env_value_or_default "LIFTOFF_THREADS" "auto")"
+export CAT_THREADS="$(get_env_value_or_default "CAT_THREADS" "auto")"
+export CAT_MEMORY_GB="$(get_env_value_or_default "CAT_MEMORY_GB" "auto")"
+export BUSCO_THREADS="$(get_env_value_or_default "BUSCO_THREADS" "auto")"
+export BUSCO_MEMORY_GB="$(get_env_value_or_default "BUSCO_MEMORY_GB" "auto")"
+export MERQURY_THREADS="$(get_env_value_or_default "MERQURY_THREADS" "auto")"
+export MERQURY_MEMORY_GB="$(get_env_value_or_default "MERQURY_MEMORY_GB" "auto")"
+export QUAST_THREADS="$(get_env_value_or_default "QUAST_THREADS" "auto")"
 
 TOOL_IMAGES=(
   "fastqc:0.12.1 dockerized_tools/fastqc"
@@ -287,18 +194,12 @@ TOOL_IMAGES=(
 )
 
 for tool_spec in "${TOOL_IMAGES[@]}"; do
-  image_name="${tool_spec%% *}"
-  build_context="${tool_spec#* }"
-  if ! docker image inspect "${image_name}" >/dev/null 2>&1; then
-    echo "Building tool image ${image_name} ..."
-    docker build -t "${image_name}" "${build_context}"
-  fi
+  ensure_tool_image "${tool_spec%% *}" "${tool_spec#* }"
 done
 
-load_images_into_minikube
+load_tool_images_into_minikube "${TOOL_IMAGES[@]}"
 
 "${COMPOSE_CMD[@]}" up --build -d --force-recreate --remove-orphans
-connect_backend_to_minikube_network
 
 echo
 echo "CASSIE is starting."
@@ -308,9 +209,6 @@ echo "Docs:       http://localhost:8000/docs"
 echo "MinIO API:  http://localhost:${MINIO_API_PORT}"
 echo "MinIO UI:   http://localhost:${MINIO_CONSOLE_PORT}"
 echo "Backend:    ${EXECUTION_BACKEND} execution backend"
-if [[ -n "${KUBE_CONFIG_DIR:-}" ]]; then
-  echo "Kubeconfig: ${KUBE_CONFIG_DIR}"
-fi
-if [[ -n "${KUBERNETES_MINIO_ENDPOINT:-}" ]]; then
-  echo "K8s MinIO:  ${KUBERNETES_MINIO_ENDPOINT}"
-fi
+echo "Kubeconfig: ${KUBE_CONFIG_DIR}"
+echo "K8s MinIO:  ${KUBERNETES_MINIO_ENDPOINT}"
+echo "Minikube:   ${CASSIE_MINIKUBE_CPUS} CPU, ${CASSIE_MINIKUBE_MEMORY}MB RAM, disk ${CASSIE_MINIKUBE_DISK_SIZE}"

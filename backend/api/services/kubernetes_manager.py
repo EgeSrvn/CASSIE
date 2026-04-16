@@ -29,9 +29,10 @@ from backend.api.models.job_model import (
     JobExecutionCreate,
     JobExecutionUpdate,
     JobStatus,
+    JobUpdate,
 )
 from backend.api.models.pipeline_model import FileCreate, FileType
-from backend.api.services.job_execution_service import create_job_execution, update_job_execution
+from backend.api.services.job_execution_service import create_job_execution, get_running_executions, update_job_execution
 from backend.api.services.job_archive_service import prewarm_job_outputs_zip
 from backend.api.services.job_service import update_job, get_job_by_id
 from backend.api.services.minio_client import get_minio_client
@@ -753,6 +754,7 @@ class KubernetesPipelineRunner:
         namespace = self._config.kubernetes.namespace
 
         temp_manifest = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8")
+        pod_name = ""
         try:
             json.dump(manifest, temp_manifest, indent=2)
             temp_manifest.close()
@@ -768,6 +770,7 @@ class KubernetesPipelineRunner:
             logs = self._get_job_logs(stage_job_name)
             if logs:
                 stage_info["logs_preview"] = logs[-2000:]
+                stage_info["tool_logs_full"] = logs
 
             output_dir = self._copy_job_outputs(namespace, pod_name, tool["id"], stage_job_name)
             stage_outputs = self._upload_stage_outputs(
@@ -781,7 +784,12 @@ class KubernetesPipelineRunner:
             )
 
             return stage_outputs
+        except Exception:
+            self._capture_stage_logs(stage_info, stage_job_name, pod_name=pod_name)
+            raise
         finally:
+            if stage_info.get("status") == "completed":
+                self._capture_stage_logs(stage_info, stage_job_name, pod_name=pod_name)
             try:
                 os.unlink(temp_manifest.name)
             except Exception:
@@ -1156,14 +1164,25 @@ class KubernetesPipelineRunner:
         if tool["id"] == "BUSCO":
             assembly = self._resolve_busco_input(classified["fasta"])
             busco_out = f"{output_dir}/busco_out"
+            default_lineage = self._config.tools.busco_default_lineage
+            download_path = self._config.tools.busco_download_path
+            lineage_dir = f'{download_path.rstrip("/")}/lineages/{default_lineage}'
             return self._wrap_tool_script(
                 [
                     profile_note,
                     f"mkdir -p {busco_out}",
+                    f'BUSCO_DOWNLOAD_PATH="{download_path}"',
+                    f'BUSCO_LINEAGE="{lineage_dir}"',
+                    'if [ ! -d "${BUSCO_LINEAGE}" ]; then',
+                    '  echo "BUSCO lineage ${BUSCO_LINEAGE} is not cached; downloading it now..." >&2',
+                    f'  busco --download_path "${{BUSCO_DOWNLOAD_PATH}}" --download "{default_lineage}"',
+                    'fi',
                     (
                         f'cd "{busco_out}" && '
                         f'busco -i "{input_dir}/{os.path.basename(assembly["filename"])}" '
-                        f'-m genome --auto-lineage -c {tool_plan["threads"]} -o busco_run'
+                        f'-m genome -l "${{BUSCO_LINEAGE}}" '
+                        f'--download_path "${{BUSCO_DOWNLOAD_PATH}}" --offline '
+                        f'-c {tool_plan["threads"]} -o busco_run'
                     ),
                 ]
             )
@@ -2441,6 +2460,31 @@ class KubernetesPipelineRunner:
 
         return self._get_job_logs(job_name)
 
+    def _capture_stage_logs(
+        self,
+        stage_info: Dict[str, Any],
+        job_name: str,
+        *,
+        pod_name: Optional[str] = None,
+    ) -> None:
+        """Persist full stage logs into stage metadata for later admin inspection."""
+        resolved_pod_name = pod_name or str(stage_info.get("pod_name") or "").strip() or self._get_job_pod_name(job_name)
+        if resolved_pod_name:
+            stage_info["pod_name"] = resolved_pod_name
+            init_logs = self._get_pod_container_logs(resolved_pod_name, "fetch-inputs")
+            if init_logs and "not found" not in init_logs.lower():
+                stage_info["init_logs_full"] = init_logs
+            tool_logs = self._get_pod_container_logs(resolved_pod_name, "tool")
+            if tool_logs and "not found" not in tool_logs.lower():
+                stage_info["tool_logs_full"] = tool_logs
+                stage_info["logs_preview"] = tool_logs[-2000:]
+            return
+
+        tool_logs = self._get_job_logs(job_name)
+        if tool_logs and "not found" not in tool_logs.lower():
+            stage_info["tool_logs_full"] = tool_logs
+            stage_info["logs_preview"] = tool_logs[-2000:]
+
     def _cluster_visible_minio_endpoint(self, endpoint: str) -> str:
         override = self._config.kubernetes.minio_endpoint.strip()
         if override:
@@ -2518,6 +2562,189 @@ class KubernetesPipelineRunner:
         return {
             "namespace": namespace,
             "deleted_stage_jobs": deleted_stage_jobs,
+            "errors": errors,
+        }
+
+    def get_job_runtime_details(self, job_id: int, executions: List[Any]) -> Dict[str, Any]:
+        """Return live Kubernetes status and recent log snippets for admin inspection."""
+        namespace = self._config.kubernetes.namespace
+        stages: List[Dict[str, Any]] = []
+        errors: List[str] = []
+
+        for execution in executions:
+            parameters_used = getattr(execution, "parameters_used", None) or {}
+            stage_entries = parameters_used.get("stages") if isinstance(parameters_used, dict) else None
+            if not isinstance(stage_entries, list):
+                continue
+
+            for stage in stage_entries:
+                if not isinstance(stage, dict):
+                    continue
+
+                stage_job_name = str(stage.get("kubernetes_job_name") or "").strip()
+                pod_name = str(stage.get("pod_name") or "").strip()
+                snapshot: Dict[str, Any] = {
+                    "job_id": job_id,
+                    "execution_id": getattr(execution, "id", None),
+                    "execution_number": getattr(execution, "execution_number", None),
+                    "stage_number": stage.get("stage_number"),
+                    "tool_id": stage.get("tool_id"),
+                    "tool_name": stage.get("tool_name"),
+                    "recorded_status": stage.get("status"),
+                    "recorded_error": stage.get("error"),
+                    "kubernetes_job_name": stage_job_name or None,
+                    "pod_name": pod_name or None,
+                    "job_status": None,
+                    "pod_phase": None,
+                    "live_init_logs": None,
+                    "live_tool_logs": None,
+                    "raw_job_status": None,
+                    "raw_pod_status": None,
+                }
+
+                if stage_job_name:
+                    job_result = self._run_kubectl(
+                        ["get", "job", stage_job_name, "-n", namespace, "-o", "json"],
+                        timeout=20,
+                    )
+                    if job_result.returncode == 0:
+                        try:
+                            job_payload = json.loads(job_result.stdout)
+                            status_payload = job_payload.get("status", {}) or {}
+                            snapshot["raw_job_status"] = status_payload
+                            conditions = status_payload.get("conditions", []) or []
+                            if conditions:
+                                latest_condition = conditions[-1]
+                                snapshot["job_status"] = latest_condition.get("type") or "Unknown"
+                            elif status_payload.get("active", 0):
+                                snapshot["job_status"] = "Active"
+                            elif status_payload.get("succeeded", 0):
+                                snapshot["job_status"] = "Succeeded"
+                            elif status_payload.get("failed", 0):
+                                snapshot["job_status"] = "Failed"
+                        except json.JSONDecodeError as exc:
+                            errors.append(f"{stage_job_name}: could not parse Kubernetes job payload ({exc})")
+                    else:
+                        stderr = (job_result.stderr or job_result.stdout or "").strip()
+                        if stderr and "NotFound" not in stderr:
+                            errors.append(f"{stage_job_name}: {stderr}")
+
+                if not pod_name and stage_job_name:
+                    pod_name = self._get_job_pod_name(stage_job_name)
+                    snapshot["pod_name"] = pod_name or None
+
+                if pod_name:
+                    pod_result = self._run_kubectl(
+                        ["get", "pod", pod_name, "-n", namespace, "-o", "json"],
+                        timeout=20,
+                    )
+                    if pod_result.returncode == 0:
+                        try:
+                            pod_payload = json.loads(pod_result.stdout)
+                            status_payload = pod_payload.get("status", {}) or {}
+                            snapshot["raw_pod_status"] = status_payload
+                            snapshot["pod_phase"] = status_payload.get("phase")
+                        except json.JSONDecodeError as exc:
+                            errors.append(f"{pod_name}: could not parse Kubernetes pod payload ({exc})")
+                    else:
+                        stderr = (pod_result.stderr or pod_result.stdout or "").strip()
+                        if stderr and "NotFound" not in stderr:
+                            errors.append(f"{pod_name}: {stderr}")
+
+                    init_logs = self._run_kubectl(
+                        ["logs", pod_name, "-n", namespace, "-c", "fetch-inputs", "--tail=120"],
+                        timeout=20,
+                    )
+                    if init_logs.returncode == 0 and init_logs.stdout.strip():
+                        snapshot["live_init_logs"] = init_logs.stdout[-8000:]
+
+                    tool_logs = self._run_kubectl(
+                        ["logs", pod_name, "-n", namespace, "-c", "tool", "--tail=200"],
+                        timeout=20,
+                    )
+                    if tool_logs.returncode == 0 and tool_logs.stdout.strip():
+                        snapshot["live_tool_logs"] = tool_logs.stdout[-12000:]
+                elif stage_job_name:
+                    job_logs = self._run_kubectl(
+                        ["logs", f"job/{stage_job_name}", "-n", namespace, "-c", "tool", "--tail=200"],
+                        timeout=20,
+                    )
+                    if job_logs.returncode == 0 and job_logs.stdout.strip():
+                        snapshot["live_tool_logs"] = job_logs.stdout[-12000:]
+
+                stages.append(snapshot)
+
+        return {
+            "namespace": namespace,
+            "stages": stages,
+            "errors": errors,
+        }
+
+    def recover_orphaned_executions(self) -> Dict[str, Any]:
+        """
+        Reconcile Kubernetes executions left RUNNING after a backend restart.
+
+        The Kubernetes runner uses in-process async tasks to shepherd DAG progress,
+        collect outputs, and schedule follow-up stages. If the backend restarts,
+        those tasks disappear. Any Kubernetes-backed execution still marked RUNNING
+        is therefore orphaned and must be failed cleanly so the user can retry.
+        """
+        recovered: List[int] = []
+        errors: List[str] = []
+        executions = get_running_executions()
+
+        for execution in executions:
+            parameters_used = getattr(execution, "parameters_used", None) or {}
+            if not isinstance(parameters_used, dict):
+                continue
+            if str(parameters_used.get("backend") or "").strip().lower() != "kubernetes":
+                continue
+
+            job = get_job_by_id(execution.job_id)
+            if not job:
+                continue
+
+            recovery_message = (
+                "Kubernetes execution was interrupted because the backend restarted while this job was running. "
+                "CASSIE marked the execution as failed during startup recovery. Please retry the job."
+            )
+
+            try:
+                cleanup_summary = self.terminate_job_stages(execution.job_id, [execution])
+                if cleanup_summary.get("errors"):
+                    errors.extend(cleanup_summary["errors"])
+            except Exception as exc:
+                errors.append(f"job {execution.job_id}: failed to terminate orphaned stages ({exc})")
+
+            stages = parameters_used.get("stages")
+            if isinstance(stages, list):
+                for stage in stages:
+                    if not isinstance(stage, dict):
+                        continue
+                    if str(stage.get("status") or "").lower() in {
+                        "pending",
+                        "running",
+                        "waiting_for_dependencies",
+                        "waiting_for_resources",
+                    }:
+                        stage["status"] = "failed"
+                        stage["completed_at"] = datetime.now().isoformat()
+                        stage["error"] = recovery_message
+
+            update_job_execution(
+                execution.id,
+                JobExecutionUpdate(
+                    status=ExecutionStatus.FAILED,
+                    error_message=recovery_message,
+                    completed_at=datetime.now(),
+                    parameters_used=parameters_used,
+                ),
+            )
+            update_job(execution.job_id, job.user_id, JobUpdate(status=JobStatus.FAILED))
+            recovered.append(execution.id)
+
+        return {
+            "recovered_execution_ids": recovered,
             "errors": errors,
         }
 

@@ -30,6 +30,8 @@ from backend.api.utils.response_builder import (
     ErrorCode
 )
 from backend.api.database.db_init import initialize_database, check_database_health, reset_connection_pool
+from backend.api.services.kubernetes_manager import get_kubernetes_pipeline_runner, kubernetes_is_available
+from backend.api.services.user_service import ensure_admin_user
 
 logger = get_logger(__name__)
 
@@ -56,6 +58,29 @@ async def lifespan(app: FastAPI):
             logger.warning(f"Database health check failed: {health_status.get('error')}")
         else:
             logger.info("Database health check passed")
+
+        admin_user = ensure_admin_user()
+        logger.info("Admin panel user ready", extra={"admin_username": admin_user.username})
+
+        if kubernetes_is_available():
+            try:
+                recovery_summary = get_kubernetes_pipeline_runner().recover_orphaned_executions()
+                recovered = recovery_summary.get("recovered_execution_ids") or []
+                if recovered:
+                    logger.warning(
+                        "Recovered orphaned Kubernetes executions after backend startup",
+                        extra={"execution_ids": recovered, "errors": recovery_summary.get("errors") or []},
+                    )
+                elif recovery_summary.get("errors"):
+                    logger.warning(
+                        "Kubernetes execution recovery completed with cleanup errors",
+                        extra={"errors": recovery_summary.get("errors") or []},
+                    )
+            except Exception as recovery_error:
+                logger.warning(
+                    f"Failed to reconcile orphaned Kubernetes executions on startup: {recovery_error}",
+                    exc_info=True,
+                )
         
         if config.api.enable_local_infra_bootstrap:
             # Ensure MinIO is set up (using emulation system's setup)
@@ -352,6 +377,7 @@ from fastapi import APIRouter
 
 # Import route modules
 from backend.api.routes import auth, jobs, storage, pipelines, folders, data_files
+from backend.api.routes.admin_panel import router as admin_panel_router
 from backend.api.routes.estimator import router as estimator_router
 from backend.api.routes import tools
 
@@ -364,6 +390,7 @@ app.include_router(folders.router, prefix=config.api.prefix)
 app.include_router(data_files.router, prefix=config.api.prefix)
 app.include_router(estimator_router, prefix=config.api.prefix)
 app.include_router(tools.router, prefix=config.api.prefix)
+app.include_router(admin_panel_router)
 
 
 # ============================================================================

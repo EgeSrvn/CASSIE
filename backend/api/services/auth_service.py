@@ -149,3 +149,22 @@ def create_job_upload_token(data: Dict[str, Any], expires_delta: Optional[timede
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
+
+
+def create_scoped_token(
+    data: Dict[str, Any],
+    *,
+    token_type: str,
+    expires_delta: Optional[timedelta] = None,
+) -> str:
+    """Create a JWT token with an explicit token_type claim."""
+    to_encode = data.copy()
+    to_encode["token_type"] = token_type
+
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+
+    to_encode.update({"exp": expire})
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)

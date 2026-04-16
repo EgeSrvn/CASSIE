@@ -20,7 +20,7 @@ export default function Home() {
           </p>
         </div>
 
-        <div className="dashboard-cards-grid">
+        <div className="dashboard-cards-grid dashboard-cards-grid-four-up">
           <div className="dashboard-card">
             <h2 className="dashboard-card-title">View Jobs</h2>
             <p className="dashboard-card-description">
@@ -109,4 +109,3 @@ export default function Home() {
     </div>
   )
 }
-

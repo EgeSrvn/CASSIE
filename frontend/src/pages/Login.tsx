@@ -48,8 +48,13 @@ export default function Login({ onLogin }: LoginProps) {
   return (
     <div className="auth-container">
       <div className="auth-card">
+        <span className="page-kicker">Welcome Back</span>
         <h1>CASSIE</h1>
-        <h2>Login</h2>
+        <h2>Pick up where your analysis left off</h2>
+        <p className="auth-intro">
+          Sign in to return to active jobs, revisit saved pipelines, and continue your
+          genomics work without losing context.
+        </p>
         
         {error && <div className="error-message">{error}</div>}
         
@@ -78,8 +83,8 @@ export default function Login({ onLogin }: LoginProps) {
             />
           </div>
           
-          <button type="submit" disabled={loading} className="btn-primary">
-            {loading ? 'Logging in...' : 'Login'}
+          <button type="submit" disabled={loading} className="btn-primary auth-submit">
+            {loading ? 'Logging in...' : 'Enter Workspace'}
           </button>
         </form>
         
@@ -90,4 +95,3 @@ export default function Login({ onLogin }: LoginProps) {
     </div>
   )
 }
-

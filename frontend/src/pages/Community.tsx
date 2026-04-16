@@ -90,57 +90,52 @@ export default function Community() {
     <div className="page-container">
       <Navigation />
       <div className="page-content">
-        <header className="page-header">
-          <h1 className="page-title">Community Pipelines</h1>
-          <p style={{ color: 'var(--gray-600)', marginTop: '0.5rem' }}>
-            Browse and discover pipelines shared by the community
-            {isAuthenticated && ' - Click "Save" to add any pipeline to your collection'}
-          </p>
-        </header>
+        <section className="feature-hero">
+          <div className="feature-hero-copy">
+            <span className="page-kicker">Community</span>
+            <h1 className="page-title">Discover workflows other researchers decided were worth sharing.</h1>
+            <p className="dashboard-subtitle">
+              Browse public pipelines, open a template, or save a copy into your own
+              workspace to iterate from a solid starting point.
+            </p>
+          </div>
+          <div className="hero-info-card">
+            <span className="hero-stat-label">How this page helps</span>
+            <div className="hero-stat-grid">
+              <div>
+                <strong>Discover</strong>
+                <span>See what the community is already using in practice.</span>
+              </div>
+              <div>
+                <strong>Reuse</strong>
+                <span>Copy a shared workflow into your own collection.</span>
+              </div>
+              <div>
+                <strong>Bootstrap</strong>
+                <span>Open curated starter templates even before the catalog grows.</span>
+              </div>
+            </div>
+          </div>
+        </section>
 
         {error && <div className="error-message">{error}</div>}
 
         {pipelines.length === 0 && !error ? (
           <div className="empty-state">
             <p>No shared pipelines are published yet.</p>
-            <p style={{ marginTop: '1rem', color: 'var(--gray-600)' }}>
+            <p className="empty-state-secondary">
               Starter templates are available below so the page stays useful even before the first community share.
             </p>
-            <div className="pipeline-grid" style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))',
-              gap: '1.5rem',
-              marginTop: '2rem',
-              width: '100%'
-            }}>
+            <div className="pipeline-grid pipeline-grid-showcase">
               {STARTER_PIPELINE_TEMPLATES.map((template) => (
-                <div key={template.id} className="card pipeline-card" style={{
-                  background: 'var(--bg-primary)',
-                  borderRadius: 'var(--radius-lg)',
-                  padding: 'var(--spacing-xl)',
-                  boxShadow: 'var(--shadow-md)',
-                  border: '1px solid var(--gray-200)'
-                }}>
-                  <h3 className="pipeline-card-title" style={{
-                    fontSize: '1.25rem',
-                    fontWeight: '600',
-                    color: 'var(--primary)',
-                    marginBottom: '0.75rem'
-                  }}>
-                    {template.name}
-                  </h3>
-                  <p className="pipeline-card-description" style={{
-                    color: 'var(--gray-600)',
-                    marginBottom: '1rem',
-                    lineHeight: '1.6'
-                  }}>
-                    {template.description}
-                  </p>
-                  <div style={{ display: 'flex', gap: '0.5rem' }}>
+                <div key={template.id} className="card pipeline-card pipeline-card-immersive">
+                  <span className="dashboard-card-eyebrow">Starter Template</span>
+                  <h3 className="pipeline-card-title">{template.name}</h3>
+                  <p className="pipeline-card-description">{template.description}</p>
+                  <div className="button-row compact-actions">
                     <button
                       onClick={() => handleUseTemplate(template)}
                       className="btn-primary"
-                      style={{ padding: '0.5rem 1rem', fontSize: '0.875rem' }}
                     >
                       Open Template
                     </button>
@@ -148,7 +143,6 @@ export default function Community() {
                       <button
                         onClick={() => handleUseTemplate(template)}
                         className="btn-secondary"
-                        style={{ padding: '0.5rem 1rem', fontSize: '0.875rem' }}
                       >
                         Customize
                       </button>
@@ -159,79 +153,31 @@ export default function Community() {
             </div>
           </div>
         ) : (
-          <div className="pipeline-grid" style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))',
-            gap: '1.5rem'
-          }}>
+          <div className="pipeline-grid pipeline-grid-showcase">
             {pipelines.map((pipeline) => (
               <div
                 key={pipeline.id}
-                className="card pipeline-card"
-                style={{
-                  background: 'var(--bg-primary)',
-                  borderRadius: 'var(--radius-lg)',
-                  padding: 'var(--spacing-xl)',
-                  boxShadow: 'var(--shadow-md)',
-                  border: '1px solid var(--gray-200)',
-                  transition: 'all 0.3s ease',
-                  cursor: 'pointer'
-                }}
+                className="card pipeline-card pipeline-card-immersive"
                 onClick={() => handleViewPipeline(pipeline.id)}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.transform = 'translateY(-4px)'
-                  e.currentTarget.style.boxShadow = 'var(--shadow-lg)'
-                  e.currentTarget.style.borderColor = 'var(--primary-light)'
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.transform = 'translateY(0)'
-                  e.currentTarget.style.boxShadow = 'var(--shadow-md)'
-                  e.currentTarget.style.borderColor = 'var(--gray-200)'
-                }}
               >
-                <h3 className="pipeline-card-title" style={{
-                  fontSize: '1.25rem',
-                  fontWeight: '600',
-                  color: 'var(--primary)',
-                  marginBottom: '0.75rem'
-                }}>
-                  {pipeline.name}
-                </h3>
+                <span className="dashboard-card-eyebrow">Community Share</span>
+                <h3 className="pipeline-card-title">{pipeline.name}</h3>
                 {pipeline.description && (
-                  <p className="pipeline-card-description" style={{
-                    color: 'var(--gray-600)',
-                    marginBottom: '1rem',
-                    lineHeight: '1.6'
-                  }}>
+                  <p className="pipeline-card-description">
                     {pipeline.description}
                   </p>
                 )}
-                <div className="pipeline-card-meta" style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  marginTop: 'auto',
-                  paddingTop: '1rem',
-                  borderTop: '1px solid var(--gray-200)'
-                }}>
-                  <span className="pipeline-card-date" style={{
-                    color: 'var(--gray-500)',
-                    fontSize: '0.875rem'
-                  }}>
+                <div className="pipeline-card-meta">
+                  <span className="pipeline-card-date">
                     {new Date(pipeline.saved_at).toLocaleDateString()}
                   </span>
-                  <div style={{ display: 'flex', gap: '0.5rem' }}>
+                  <div className="button-row compact-actions">
                     {isAuthenticated ? (
                       <>
                         <button
                           onClick={(e) => handleSavePipeline(pipeline.id, e)}
                           disabled={savingPipelineId === pipeline.id}
                           className="btn-secondary"
-                          style={{
-                            padding: '0.5rem 1rem',
-                            fontSize: '0.875rem',
-                            opacity: savingPipelineId === pipeline.id ? 0.6 : 1
-                          }}
                         >
                           {savingPipelineId === pipeline.id ? 'Saving...' : 'Save'}
                         </button>
@@ -241,7 +187,6 @@ export default function Community() {
                             handleViewPipeline(pipeline.id)
                           }}
                           className="btn-primary"
-                          style={{ padding: '0.5rem 1rem', fontSize: '0.875rem' }}
                         >
                           View
                         </button>
@@ -254,7 +199,6 @@ export default function Community() {
                             navigate('/login')
                           }}
                           className="btn-secondary"
-                          style={{ padding: '0.5rem 1rem', fontSize: '0.875rem' }}
                         >
                           Login to Save
                         </button>
@@ -264,7 +208,6 @@ export default function Community() {
                           handleViewPipeline(pipeline.id)
                         }}
                         className="btn-primary"
-                        style={{ padding: '0.5rem 1rem', fontSize: '0.875rem' }}
                       >
                         View
                       </button>

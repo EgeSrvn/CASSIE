@@ -49,8 +49,12 @@ export default function Register({ onRegister }: RegisterProps) {
   return (
     <div className="auth-container">
       <div className="auth-card">
+        <span className="page-kicker">Create Account</span>
         <h1>CASSIE</h1>
         <h2>Register</h2>
+        <p className="auth-intro">
+          Set up your space for running analyses, building pipelines, and sharing them with the community.
+        </p>
         
         {error && <div className="error-message">{error}</div>}
         
@@ -92,7 +96,7 @@ export default function Register({ onRegister }: RegisterProps) {
             />
           </div>
           
-          <button type="submit" disabled={loading} className="btn-primary">
+          <button type="submit" disabled={loading} className="btn-primary auth-submit">
             {loading ? 'Registering...' : 'Register'}
           </button>
         </form>
@@ -104,4 +108,3 @@ export default function Register({ onRegister }: RegisterProps) {
     </div>
   )
 }
-

@@ -8,6 +8,7 @@ from backend.api.models.job_model import JobStatus, JobUpdate
 from backend.api.models.pipeline_model import FileType
 from backend.api.services.job_execution_service import get_executions_by_job
 from backend.api.services.job_service import get_job_by_id, update_job
+from backend.api.services.user_limit_service import can_user_start_more_jobs
 from backend.api.utils.logger import get_logger
 from tool_registry import get_tool_by_index
 
@@ -157,6 +158,8 @@ async def start_job_execution_task(job_id: int, user_id: int, workflow_id: int, 
 
 
 def get_auto_start_payload(job_id: int, user_id: int) -> Tuple[Optional[object], Optional[List[int]], Optional[str]]:
+    from backend.api.services.user_service import get_user_by_id
+
     job = get_job_by_id(job_id, user_id=user_id)
     if not job:
         return None, None, "Job not found"
@@ -166,6 +169,18 @@ def get_auto_start_payload(job_id: int, user_id: int) -> Tuple[Optional[object],
 
     if job_has_active_execution(job_id):
         return job, None, "Job already has an active execution"
+
+    user = get_user_by_id(user_id)
+    can_start, current_running_jobs, max_running_jobs = can_user_start_more_jobs(
+        user_id=user_id,
+        username=user.username if user else None,
+    )
+    if not can_start:
+        return (
+            job,
+            None,
+            f"You already have {current_running_jobs} running jobs. The limit is {max_running_jobs}.",
+        )
 
     input_file_ids, readiness_error = get_job_execution_readiness(job, user_id)
     if readiness_error:

@@ -267,7 +267,7 @@ export default function PipelineBuilder() {
   }
 
   return (
-    <div className="page-container">
+    <div className="page-container pipeline-builder-page">
       <Navigation />
       <div className="page-content">
         <div className="pipeline-builder">

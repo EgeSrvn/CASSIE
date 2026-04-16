@@ -69,7 +69,7 @@ export default function Jobs() {
   }
 
   return (
-    <div className="page-container">
+    <div className="page-container jobs-classic-page">
       <Navigation />
       <div className="page-content">
         <header className="page-header">

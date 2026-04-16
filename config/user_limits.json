@@ -1,0 +1,8 @@
+{
+  "default": {
+    "max_running_jobs": 3,
+    "downloadable_finished_jobs": 6,
+    "interactive_output_jobs": 6
+  },
+  "users": {}
+}

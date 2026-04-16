@@ -24,6 +24,66 @@ const formatVmMemory = (memoryMib: number): string => `${(memoryMib / 1024).toFi
 const formatVmStorage = (storageMib: number): string => storageMib > 0 ? `${(storageMib / 1024).toFixed(2)} GiB` : 'Auto'
 const formatVmSlots = (vm: VM): string => `${vm.available_job_slots}/${vm.max_jobs} jobs available`
 
+const TOOL_OUTPUTS_BY_ID: Record<string, string[]> = {
+  FASTQC: ['qc_report'],
+  SPADES: ['assembly'],
+  QUAST: ['qc_report'],
+  GENOMESCOPE2: ['kmer_profile'],
+  METASPADES: ['assembly'],
+  HIFIASM: ['assembly'],
+  VERKKO: ['assembly'],
+  LIFTOFF: ['annotation'],
+  CAT: ['annotation'],
+  BUSCO: ['qc_report'],
+  MERQURY: ['qc_report'],
+}
+
+const PRODUCED_ARTIFACT_COMPATIBILITY: Record<string, string[]> = {
+  assembly: ['assembly', 'target_genome'],
+  annotation: ['annotation', 'reference_annotation'],
+}
+
+const toolProducesRequirement = (toolId: string, requirementType: string): boolean => {
+  const normalizedRequirement = requirementType.trim().toLowerCase()
+  const outputs = TOOL_OUTPUTS_BY_ID[toolId] || []
+  const compatibleOutputs = new Set<string>()
+
+  outputs.forEach(output => {
+    const normalizedOutput = output.trim().toLowerCase()
+    if (!normalizedOutput) return
+    const compatible = PRODUCED_ARTIFACT_COMPATIBILITY[normalizedOutput] || [normalizedOutput]
+    compatible.forEach(item => compatibleOutputs.add(item))
+  })
+
+  return compatibleOutputs.has(normalizedRequirement)
+}
+
+const markIntermediateRequirements = (cards: ToolRequirementInfo[]): ToolRequirementInfo[] => (
+  cards.map(toolReq => {
+    const requirements = toolReq.requirements.map(req => {
+      if (req.is_intermediate) return req
+
+      const producer = cards.find(candidate => (
+        candidate.tool_id !== toolReq.tool_id &&
+        toolProducesRequirement(candidate.tool_id, req.type)
+      ))
+
+      if (!producer) return req
+
+      return {
+        ...req,
+        is_intermediate: true,
+        source_tool: producer.tool_name,
+      }
+    })
+
+    return {
+      ...toolReq,
+      requirements,
+    }
+  })
+)
+
 export default function CreateJob() {
   const location = useLocation()
   const [jobName, setJobName] = useState('')
@@ -229,9 +289,10 @@ export default function CreateJob() {
     ))
   }
 
-  const activeToolRequirementCards = selectionMode === 'pipeline'
+  const rawToolRequirementCards = selectionMode === 'pipeline'
     ? (pipelineRequirements?.tool_requirements || [])
     : toolRequirements
+  const activeToolRequirementCards = markIntermediateRequirements(rawToolRequirementCards)
 
   // Fetch tool requirements when tools are selected
   useEffect(() => {

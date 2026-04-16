@@ -88,7 +88,7 @@ export default function Pipelines() {
   }
 
   return (
-    <div className="page-container">
+    <div className="page-container pipelines-classic-page">
       <Navigation />
       <div className="page-content">
         <header className="page-header">
@@ -98,100 +98,106 @@ export default function Pipelines() {
           </button>
         </header>
 
-        {error && <div className="error-message">{error}</div>}
+        <div className="jobs-page-content">
+          {error && <div className="error-message">{error}</div>}
 
-        {pipelines.length === 0 ? (
-          <div className="empty-state">
-            <p>
-              {authRequired || !isAuthenticated
-                ? 'Login to view and save your own pipelines.'
-                : 'No pipelines yet. Create your first pipeline or start from a template below.'}
-            </p>
-            <button onClick={handleCreatePipeline} className="btn-primary">
-              {isAuthenticated ? 'Create Pipeline' : 'Login to Create Pipeline'}
-            </button>
+          {pipelines.length === 0 ? (
+            <div className="empty-state">
+              <p>
+                {authRequired || !isAuthenticated
+                  ? 'Login to view and save your own pipelines.'
+                  : 'No pipelines yet. Create your first pipeline or start from a template below.'}
+              </p>
+              <button onClick={handleCreatePipeline} className="btn-primary">
+                {isAuthenticated ? 'Create Pipeline' : 'Login to Create Pipeline'}
+              </button>
 
-            <div style={{ marginTop: '2rem', width: '100%' }}>
-              <h2 style={{ marginBottom: '1rem' }}>Starter Templates</h2>
-              <div className="pipeline-grid">
-                {STARTER_PIPELINE_TEMPLATES.map((template) => (
-                  <div key={template.id} className="card pipeline-card">
-                    <h3 className="pipeline-card-title">{template.name}</h3>
-                    <p className="pipeline-card-description">{template.description}</p>
-                    <div className="pipeline-card-actions">
-                      <button
-                        onClick={() => navigate('/pipelines/builder', { state: { starterTemplate: template } })}
-                        className="btn-secondary"
-                      >
-                        Open Template
-                      </button>
-                      {isAuthenticated && (
+              <div style={{ marginTop: '2rem', width: '100%' }}>
+                <h2 style={{ marginBottom: '1rem' }}>Starter Templates</h2>
+                <div className="pipeline-grid">
+                  {STARTER_PIPELINE_TEMPLATES.map((template) => (
+                    <div key={template.id} className="card pipeline-card">
+                      <h3 className="pipeline-card-title">{template.name}</h3>
+                      <p className="pipeline-card-description">{template.description}</p>
+                      <div className="pipeline-card-actions">
                         <button
                           onClick={() => navigate('/pipelines/builder', { state: { starterTemplate: template } })}
-                          className="btn-primary"
+                          className="btn-secondary"
                         >
-                          Customize and Save
+                          Open Template
                         </button>
-                      )}
+                        {isAuthenticated && (
+                          <button
+                            onClick={() => navigate('/pipelines/builder', { state: { starterTemplate: template } })}
+                            className="btn-primary"
+                          >
+                            Customize and Save
+                          </button>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  ))}
+                </div>
               </div>
             </div>
-          </div>
-        ) : (
-          <div className="pipeline-grid">
-            {pipelines.map((pipeline) => (
-              <div key={pipeline.id} className="card pipeline-card">
-                <h3 className="pipeline-card-title">{pipeline.name}</h3>
-                {pipeline.description && (
-                  <p className="pipeline-card-description">{pipeline.description}</p>
-                )}
-                <div className="pipeline-card-meta">
-                  <span className="pipeline-card-date">
-                    Created: {new Date(pipeline.saved_at).toLocaleDateString()}
-                  </span>
-                </div>
-                <div className="pipeline-card-actions">
-                  <button
-                    onClick={() => navigate(`/pipelines/builder/${pipeline.id}`)}
-                    className="btn-secondary"
-                  >
-                    Edit
-                  </button>
-                  <button
-                    onClick={() => navigate('/jobs/create', { state: { pipelineId: pipeline.id } })}
-                    className="btn-primary"
-                  >
-                    Use in Job
-                  </button>
-                  {isAuthenticated && (
+          ) : (
+            <div className="jobs-grid">
+              {pipelines.map((pipeline) => (
+                <div key={pipeline.id} className="job-card pipeline-list-card">
+                  <div className="job-header">
+                    <h3>{pipeline.name}</h3>
+                    <span className={`status-badge ${pipeline.is_shared ? 'status-completed' : 'status-pending'}`}>
+                      {pipeline.is_shared ? 'Shared' : 'Private'}
+                    </span>
+                  </div>
+                  {pipeline.description && (
+                    <p className="pipeline-card-description">{pipeline.description}</p>
+                  )}
+                  <div className="job-details">
+                    <p><strong>Pipeline ID:</strong> {pipeline.id}</p>
+                    <p><strong>Created:</strong> {new Date(pipeline.saved_at).toLocaleDateString()}</p>
+                  </div>
+                  <div className="job-actions pipeline-card-actions">
                     <button
-                      onClick={() => handleShare(pipeline.id, pipeline.is_shared || false)}
+                      onClick={() => navigate(`/pipelines/builder/${pipeline.id}`)}
                       className="btn-secondary"
-                      style={{
-                        backgroundColor: pipeline.is_shared ? 'var(--success)' : 'var(--gray-300)',
-                        color: pipeline.is_shared ? 'white' : 'var(--gray-700)'
-                      }}
-                      title={pipeline.is_shared ? 'Shared with community' : 'Share with community'}
                     >
-                      {pipeline.is_shared ? 'Shared' : 'Share'}
+                      Edit
                     </button>
-                  )}
-                  {isAuthenticated && (
                     <button
-                      onClick={() => handleDelete(pipeline.id)}
-                      disabled={deleting === pipeline.id}
-                      className="btn-danger"
+                      onClick={() => navigate('/jobs/create', { state: { pipelineId: pipeline.id } })}
+                      className="btn-primary"
                     >
-                      {deleting === pipeline.id ? 'Deleting...' : 'Delete'}
+                      Use in Job
                     </button>
-                  )}
+                    {isAuthenticated && (
+                      <button
+                        onClick={() => handleShare(pipeline.id, pipeline.is_shared || false)}
+                        className="btn-secondary"
+                        style={{
+                          backgroundColor: pipeline.is_shared ? 'var(--success)' : 'var(--gray-300)',
+                          color: pipeline.is_shared ? 'white' : 'var(--gray-700)'
+                        }}
+                        title={pipeline.is_shared ? 'Shared with community' : 'Share with community'}
+                      >
+                        {pipeline.is_shared ? 'Shared' : 'Share'}
+                      </button>
+                    )}
+                    {isAuthenticated && (
+                      <button
+                        onClick={() => handleDelete(pipeline.id)}
+                        disabled={deleting === pipeline.id}
+                        className="btn-danger"
+                      >
+                        {deleting === pipeline.id ? 'Deleting...' : 'Delete'}
+                      </button>
+                    )}
+                  </div>
                 </div>
-              </div>
-            ))}
-          </div>
-        )}
+              ))}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   )

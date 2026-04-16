@@ -9,7 +9,7 @@ import {
   requestJobOutputsZip,
   getJobOutputsZipStatus,
   openJobOutputsZipLink,
-  JobOutputsZipStatus
+  JobOutputsZipStatus,
 } from '../services/fileService'
 import { getPipelineRequirements, PipelineRequirements } from '../services/pipelineService'
 import {
@@ -24,41 +24,10 @@ import { formatDurationClock, formatLocalDateTime } from '../utils/dateTime'
 import Navigation from '../components/Navigation'
 import '../styles/globals.css'
 
-const ZIP_PANEL_STORAGE_KEY = 'cassie-zip-download-panel-jobs'
 const formatVmCpu = (cpuMillis: number): string => `${(cpuMillis / 1000).toFixed(2)} cores`
 const formatVmMemory = (memoryMib: number): string => `${(memoryMib / 1024).toFixed(2)} GiB`
 const formatVmStorage = (storageMib: number): string => storageMib > 0 ? `${(storageMib / 1024).toFixed(2)} GiB` : 'Auto'
 const formatVmSlots = (vm: VM): string => `${vm.available_job_slots}/${vm.max_jobs} jobs available`
-
-const readZipPanelVisibilityMap = (): Record<string, boolean> => {
-  if (typeof window === 'undefined') return {}
-  try {
-    const raw = window.localStorage.getItem(ZIP_PANEL_STORAGE_KEY)
-    return raw ? JSON.parse(raw) : {}
-  } catch {
-    return {}
-  }
-}
-
-const writeZipPanelVisibilityMap = (value: Record<string, boolean>) => {
-  if (typeof window === 'undefined') return
-  window.localStorage.setItem(ZIP_PANEL_STORAGE_KEY, JSON.stringify(value))
-}
-
-const getStoredZipPanelVisibility = (jobId: number): boolean => {
-  const visibilityMap = readZipPanelVisibilityMap()
-  return visibilityMap[jobId.toString()] === true
-}
-
-const setStoredZipPanelVisibility = (jobId: number, visible: boolean) => {
-  const visibilityMap = readZipPanelVisibilityMap()
-  if (visible) {
-    visibilityMap[jobId.toString()] = true
-  } else {
-    delete visibilityMap[jobId.toString()]
-  }
-  writeZipPanelVisibilityMap(visibilityMap)
-}
 
 export default function JobDetails() {
   const { jobId } = useParams<{ jobId: string }>()
@@ -81,11 +50,11 @@ export default function JobDetails() {
   const [, setClockTick] = useState(0)
   const [jobUploadStatus, setJobUploadStatus] = useState<JobUploadStatus | null>(null)
   const [pendingQueuedFiles, setPendingQueuedFiles] = useState<PendingQueuedJobFile[]>([])
+  const [availableVMs, setAvailableVMs] = useState<VM[]>([])
   const [zipPanelVisible, setZipPanelVisible] = useState(false)
   const [zipStatus, setZipStatus] = useState<JobOutputsZipStatus | null>(null)
   const [zipStatusError, setZipStatusError] = useState('')
   const [startingZipGeneration, setStartingZipGeneration] = useState(false)
-  const [availableVMs, setAvailableVMs] = useState<VM[]>([])
 
   useEffect(() => {
     if (jobId) {
@@ -200,9 +169,6 @@ export default function JobDetails() {
     if (!jobId) return
 
     const numericJobId = parseInt(jobId)
-    setZipStatus(null)
-    setZipStatusError('')
-    setZipPanelVisible(getStoredZipPanelVisibility(numericJobId))
     setJobUploadStatus(getJobUploadStatus(numericJobId))
     void loadPendingQueuedFiles()
     void startPendingJobUploadProcessor()
@@ -232,45 +198,6 @@ export default function JobDetails() {
 
     void loadVMs()
   }, [])
-
-  useEffect(() => {
-    if (!jobId || !zipPanelVisible) return
-
-    const numericJobId = parseInt(jobId)
-    let cancelled = false
-
-    const loadZipStatus = async () => {
-      try {
-        const status = await getJobOutputsZipStatus(numericJobId)
-        if (!cancelled) {
-          setZipStatus(status)
-          setZipStatusError('')
-        }
-      } catch (err: any) {
-        if (!cancelled) {
-          setZipStatusError(err.response?.data?.message || err.message || 'Failed to load ZIP status')
-        }
-      }
-    }
-
-    void loadZipStatus()
-
-    const shouldPoll = zipStatus?.status === 'queued' || zipStatus?.status === 'processing' || zipStatus === null
-    if (!shouldPoll) {
-      return () => {
-        cancelled = true
-      }
-    }
-
-    const poller = window.setInterval(() => {
-      void loadZipStatus()
-    }, 3000)
-
-    return () => {
-      cancelled = true
-      window.clearInterval(poller)
-    }
-  }, [jobId, zipPanelVisible, zipStatus?.status])
 
   // Compute files before early returns (will be empty arrays initially)
   const inputFiles = (files || []).filter(f => f && f.file_type === 'input')
@@ -352,21 +279,29 @@ export default function JobDetails() {
   // Group outputs by family - compute directly to avoid dependency issues
   const outputGroups = outputFiles && outputFiles.length > 0 ? groupOutputsByFamily(outputFiles) : {}
   const outputFamilies = Object.keys(outputGroups).sort()
+  const interactiveOutputsEnabled = job?.interactive_outputs_enabled !== false
 
-  // Get viewable file types (images, HTML, PDF)
   const isViewable = (file: File): boolean => {
     const filename = file.filename.toLowerCase()
-    return filename.endsWith('.html') || 
-           filename.endsWith('.png') || 
-           filename.endsWith('.jpg') || 
-           filename.endsWith('.jpeg') || 
-           filename.endsWith('.gif') || 
+    return filename.endsWith('.html') ||
+           filename.endsWith('.png') ||
+           filename.endsWith('.jpg') ||
+           filename.endsWith('.jpeg') ||
+           filename.endsWith('.gif') ||
            filename.endsWith('.svg') ||
            filename.endsWith('.pdf')
   }
 
   // Initialize selected family and index - MUST be before early returns
   useEffect(() => {
+    if (!interactiveOutputsEnabled) {
+      setSelectedOutputFamily(null)
+      setSelectedOutputIndex(0)
+      setViewingFile(null)
+      setZipPanelVisible(false)
+      return
+    }
+
     if (outputFiles && outputFiles.length > 0) {
       const families = Object.keys(groupOutputsByFamily(outputFiles)).sort()
       if (families.length > 0 && !selectedOutputFamily) {
@@ -378,39 +313,37 @@ export default function JobDetails() {
       setSelectedOutputFamily(null)
       setSelectedOutputIndex(0)
     }
-  }, [outputFiles.length, selectedOutputFamily])
+  }, [interactiveOutputsEnabled, outputFiles.length, selectedOutputFamily])
 
   const currentFamilyFiles = selectedOutputFamily && outputGroups[selectedOutputFamily] ? outputGroups[selectedOutputFamily] : []
   const viewableFiles = currentFamilyFiles.filter(isViewable)
   const inputFilesPendingUpload = job?.status === 'pending' && !!jobUploadStatus
-  
-  // Update viewing file when index or family changes - MUST be before early returns
+
   useEffect(() => {
+    if (!interactiveOutputsEnabled) {
+      setViewingFile(null)
+      return
+    }
+
     if (!selectedOutputFamily || !outputGroups[selectedOutputFamily]) {
       setViewingFile(null)
       return
     }
-    
+
     const familyFiles = outputGroups[selectedOutputFamily] || []
     const viewable = familyFiles.filter(isViewable)
-    
+
     if (viewable.length > 0) {
       const validIndex = Math.max(0, Math.min(selectedOutputIndex, viewable.length - 1))
       const targetFile = viewable[validIndex]
-      setViewingFile(prev => {
-        if (!prev || prev.id !== targetFile.id) {
-          return targetFile
-        }
-        return prev
-      })
+      setViewingFile(prev => (!prev || prev.id !== targetFile.id ? targetFile : prev))
     } else {
       setViewingFile(null)
     }
-  }, [selectedOutputIndex, selectedOutputFamily, outputFiles.length])
-  
-  // Load file URL when viewing file changes - MUST be before early returns
+  }, [interactiveOutputsEnabled, selectedOutputIndex, selectedOutputFamily, outputFiles.length])
+
   useEffect(() => {
-    if (!viewingFile || !isViewable(viewingFile)) {
+    if (!interactiveOutputsEnabled || !viewingFile || !isViewable(viewingFile)) {
       if (viewingFileUrlRef.current) {
         window.URL.revokeObjectURL(viewingFileUrlRef.current)
         viewingFileUrlRef.current = null
@@ -418,22 +351,18 @@ export default function JobDetails() {
       setViewingFileUrl(null)
       return
     }
-    
+
     let cancelled = false
-    
-    // Load the file URL
+
     getFileViewUrl(viewingFile.id)
       .then(url => {
         if (cancelled) {
           window.URL.revokeObjectURL(url)
           return
         }
-        
-        // Revoke previous blob URL
         if (viewingFileUrlRef.current) {
           window.URL.revokeObjectURL(viewingFileUrlRef.current)
         }
-        
         viewingFileUrlRef.current = url
         setViewingFileUrl(url)
       })
@@ -445,15 +374,50 @@ export default function JobDetails() {
         }
         setViewingFileUrl(null)
       })
-    
-    // Cleanup function
+
     return () => {
       cancelled = true
-      // Don't revoke here - we want to keep the URL while component is mounted
     }
-  }, [viewingFile?.id])
-  
-  // Cleanup blob URLs on unmount
+  }, [interactiveOutputsEnabled, viewingFile?.id])
+
+  useEffect(() => {
+    if (!jobId || !interactiveOutputsEnabled || !zipPanelVisible) return
+
+    let cancelled = false
+
+    const loadZipStatus = async () => {
+      try {
+        const status = await getJobOutputsZipStatus(parseInt(jobId))
+        if (!cancelled) {
+          setZipStatus(status)
+          setZipStatusError('')
+        }
+      } catch (err: any) {
+        if (!cancelled) {
+          setZipStatusError(err.response?.data?.message || err.message || 'Failed to load ZIP status')
+        }
+      }
+    }
+
+    void loadZipStatus()
+
+    const shouldPoll = zipStatus?.status === 'queued' || zipStatus?.status === 'processing' || zipStatus === null
+    if (!shouldPoll) {
+      return () => {
+        cancelled = true
+      }
+    }
+
+    const poller = window.setInterval(() => {
+      void loadZipStatus()
+    }, 3000)
+
+    return () => {
+      cancelled = true
+      window.clearInterval(poller)
+    }
+  }, [jobId, interactiveOutputsEnabled, zipPanelVisible, zipStatus?.status])
+
   useEffect(() => {
     return () => {
       if (viewingFileUrlRef.current) {
@@ -462,7 +426,7 @@ export default function JobDetails() {
       }
     }
   }, [])
-  
+
   const currentViewingFile = viewingFile || (viewableFiles.length > 0 && selectedOutputIndex >= 0 && selectedOutputIndex < viewableFiles.length ? viewableFiles[selectedOutputIndex] : null)
 
   const handleDownload = async (file: File) => {
@@ -479,12 +443,10 @@ export default function JobDetails() {
     if (!jobId) return
 
     try {
-      const numericJobId = parseInt(jobId)
       setZipPanelVisible(true)
-      setStoredZipPanelVisibility(numericJobId, true)
       setStartingZipGeneration(true)
       setZipStatusError('')
-      const status = await requestJobOutputsZip(numericJobId)
+      const status = await requestJobOutputsZip(parseInt(jobId))
       setZipStatus(status)
     } catch (err: any) {
       console.error('Failed to start ZIP generation:', err)
@@ -496,7 +458,6 @@ export default function JobDetails() {
 
   const handleOpenZipLink = () => {
     if (!jobId || !zipStatus) return
-
     try {
       openJobOutputsZipLink(zipStatus, parseInt(jobId))
     } catch (err: any) {
@@ -1001,12 +962,6 @@ export default function JobDetails() {
                         <strong>{file.filename}</strong>
                         <span>{(file.size_bytes / 1024 / 1024).toFixed(2)} MB</span>
                       </div>
-                      <button
-                        onClick={() => handleDownload(file)}
-                        className="btn-secondary"
-                      >
-                        Download
-                      </button>
                     </div>
                   ))}
                 </div>
@@ -1022,7 +977,7 @@ export default function JobDetails() {
                 )}
               </div>
               <div className="section-header-actions">
-                {outputFiles.length > 0 && (
+                {outputFiles.length > 0 && interactiveOutputsEnabled && (
                   <>
                     <button
                       onClick={() => setOutputFilesCollapsed(!outputFilesCollapsed)}
@@ -1042,7 +997,7 @@ export default function JobDetails() {
                 )}
               </div>
             </div>
-            {zipPanelVisible && outputFiles.length > 0 && (
+            {interactiveOutputsEnabled && zipPanelVisible && outputFiles.length > 0 && (
               <div className="zip-download-panel">
                 <div className="zip-download-panel-header">
                   <strong>ZIP Download</strong>
@@ -1104,7 +1059,7 @@ export default function JobDetails() {
               </div>
             ) : (
               <>
-                {outputFilesCollapsed ? (
+                {interactiveOutputsEnabled && outputFilesCollapsed ? (
                   <div className="file-list-collapsed">
                     <div className="file-list-preview">
                       {outputFiles.slice(0, 3).map((file) => (
@@ -1131,35 +1086,24 @@ export default function JobDetails() {
                 ) : (
                   <div>
                     {/* Output Family Tabs */}
-                    {outputFamilies.length > 1 && (
+                    {interactiveOutputsEnabled && outputFamilies.length > 1 && (
                       <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1.5rem', flexWrap: 'wrap' }}>
-                        {outputFamilies.map((family) => {
-                          const familyViewableFiles = (outputGroups[family] || []).filter(isViewable)
-                          return (
-                            <button
-                              key={family}
-                              onClick={() => {
-                                setSelectedOutputFamily(family)
-                                setSelectedOutputIndex(0)
-                                // Auto-select first viewable file if available
-                                if (familyViewableFiles.length > 0) {
-                                  setViewingFile(familyViewableFiles[0])
-                                } else {
-                                  setViewingFile(null)
-                                }
-                              }}
-                              className={selectedOutputFamily === family ? 'btn-primary' : 'btn-secondary'}
-                              style={{ padding: '0.5rem 1rem' }}
-                            >
-                              {family} ({outputGroups[family].length})
-                            </button>
-                          )
-                        })}
+                        {outputFamilies.map((family) => (
+                          <button
+                            key={family}
+                            onClick={() => {
+                              setSelectedOutputFamily(family)
+                            }}
+                            className={selectedOutputFamily === family ? 'btn-primary' : 'btn-secondary'}
+                            style={{ padding: '0.5rem 1rem' }}
+                          >
+                            {family} ({outputGroups[family].length})
+                          </button>
+                        ))}
                       </div>
                     )}
 
-                    {/* Output Viewer */}
-                    {currentViewingFile && isViewable(currentViewingFile) && (
+                    {interactiveOutputsEnabled && currentViewingFile && isViewable(currentViewingFile) && (
                       <div style={{ 
                         marginBottom: '1.5rem', 
                         padding: '1rem', 
@@ -1333,16 +1277,15 @@ export default function JobDetails() {
 
                     {/* File List */}
                     <div className="file-list">
-                      {(selectedOutputFamily ? outputGroups[selectedOutputFamily] : outputFiles).map((file) => {
-                        const canView = isViewable(file)
-                        return (
-                          <div key={file.id} className="file-item">
-                            <div className="file-info">
-                              <strong>{file.filename}</strong>
-                              <span>{(file.size_bytes / 1024 / 1024).toFixed(2)} MB</span>
-                            </div>
+                      {(interactiveOutputsEnabled && selectedOutputFamily ? outputGroups[selectedOutputFamily] : outputFiles).map((file) => (
+                        <div key={file.id} className="file-item">
+                          <div className="file-info">
+                            <strong>{file.filename}</strong>
+                            <span>{(file.size_bytes / 1024 / 1024).toFixed(2)} MB</span>
+                          </div>
+                          {interactiveOutputsEnabled && (
                             <div style={{ display: 'flex', gap: '0.5rem' }}>
-                              {canView && (
+                              {isViewable(file) && (
                                 <button
                                   onClick={() => {
                                     const familyFiles = selectedOutputFamily ? (outputGroups[selectedOutputFamily] || []) : outputFiles
@@ -1358,7 +1301,7 @@ export default function JobDetails() {
                                   }}
                                   className="btn-secondary"
                                 >
-                                  👁️ View
+                                  View
                                 </button>
                               )}
                               <button
@@ -1368,9 +1311,9 @@ export default function JobDetails() {
                                 Download
                               </button>
                             </div>
-                          </div>
-                        )
-                      })}
+                          )}
+                        </div>
+                      ))}
                     </div>
                   </div>
                 )}

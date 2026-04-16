@@ -23,6 +23,52 @@ CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 CREATE INDEX IF NOT EXISTS idx_users_bucket_name ON users(bucket_name);
 
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'users' AND column_name = 'display_name'
+    ) THEN
+        ALTER TABLE users ADD COLUMN display_name VARCHAR(120);
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'users' AND column_name = 'bio'
+    ) THEN
+        ALTER TABLE users ADD COLUMN bio TEXT;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'users' AND column_name = 'affiliation'
+    ) THEN
+        ALTER TABLE users ADD COLUMN affiliation VARCHAR(255);
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'users' AND column_name = 'job_title'
+    ) THEN
+        ALTER TABLE users ADD COLUMN job_title VARCHAR(120);
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'users' AND column_name = 'location'
+    ) THEN
+        ALTER TABLE users ADD COLUMN location VARCHAR(120);
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'users' AND column_name = 'website_url'
+    ) THEN
+        ALTER TABLE users ADD COLUMN website_url VARCHAR(500);
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'users' AND column_name = 'avatar_url'
+    ) THEN
+        ALTER TABLE users ADD COLUMN avatar_url VARCHAR(500);
+    END IF;
+END $$;
+
 -- ============================================================================
 -- Table 2: Workflows
 -- ============================================================================

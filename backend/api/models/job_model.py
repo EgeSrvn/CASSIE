@@ -81,7 +81,7 @@ class JobInDB(JobBase):
 
 class JobResponse(JobInDB):
     """Job model for API responses."""
-    pass
+    interactive_outputs_enabled: Optional[bool] = None
 
 
 class JobCreateResponse(JobResponse):

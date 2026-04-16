@@ -14,6 +14,15 @@ from copy import deepcopy
 from typing import Any, Dict, List, Optional
 
 
+PRODUCED_ARTIFACT_COMPATIBILITY: Dict[str, set[str]] = {
+    # Assembly FASTA outputs can be used anywhere a downstream tool expects
+    # a specific genome/assembly role.
+    "assembly": {"assembly", "target_genome"},
+    # Annotation outputs can satisfy tools that explicitly ask for a reference annotation.
+    "annotation": {"annotation", "reference_annotation"},
+}
+
+
 TOOL_REGISTRY: List[Dict[str, Any]] = [
     {
         "id": "FASTQC",
@@ -505,7 +514,7 @@ process GENOMESCOPE2 {
         "kubernetes": {
             "command": ["bash", "-lc"],
             "args_template": [
-                "busco -i /data/<assembly.fasta> -m genome --auto-lineage -o busco_out"
+                "busco -i /data/<assembly.fasta> -m genome -l /opt/busco_downloads/lineages/eukaryota_odb12 --download_path /opt/busco_downloads --offline -o busco_out"
             ],
             "expected_outputs": ["busco_out/short_summary.txt", "busco_out/short_summary.json"],
         },
@@ -602,11 +611,16 @@ def tool_produces_requirement(tool_or_id: Dict[str, Any] | str, requirement_type
         produced = get_tool_outputs(str(tool_or_id))
 
     normalized_requirement = str(requirement_type or "").strip().lower()
-    return normalized_requirement in {
-        str(item).strip().lower()
-        for item in produced
-        if str(item).strip()
-    }
+    compatible_outputs = set()
+    for item in produced:
+        normalized_item = str(item).strip().lower()
+        if not normalized_item:
+            continue
+        compatible_outputs.update(
+            PRODUCED_ARTIFACT_COMPATIBILITY.get(normalized_item, {normalized_item})
+        )
+
+    return normalized_requirement in compatible_outputs
 
 
 def get_tool_id_from_label(label: str) -> Optional[str]:

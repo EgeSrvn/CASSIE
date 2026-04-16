@@ -41,6 +41,7 @@ from backend.api.services.job_launch_service import (
     get_auto_start_payload,
     start_job_execution_task,
 )
+from backend.api.services.user_limit_service import can_user_start_more_jobs, can_user_interact_with_job_outputs
 from backend.api.services.vm_queue_service import queue_or_start_job
 from backend.api.services.job_execution_service import get_executions_by_job
 from backend.api.services.kubernetes_manager import get_kubernetes_pipeline_runner, kubernetes_is_available
@@ -66,6 +67,32 @@ from backend.api.services.auth_service import create_job_upload_token
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
+
+
+def _job_response_for_user(job, username: Optional[str]) -> dict:
+    interactive_outputs_enabled, _ = can_user_interact_with_job_outputs(
+        user_id=job.user_id,
+        username=username,
+        job_id=job.id,
+        job_status=job.status.value if hasattr(job.status, "value") else str(job.status),
+    )
+
+    return JobResponse(
+        id=job.id,
+        user_id=job.user_id,
+        name=job.name,
+        status=job.status,
+        workflow_id=job.workflow_id,
+        pipeline_config_id=job.pipeline_config_id,
+        pipeline_id=job.pipeline_id,
+        assembler=job.assembler,
+        data_types=job.data_types,
+        cloud_provider=job.cloud_provider,
+        vm_name=job.vm_name,
+        created_at=job.created_at,
+        updated_at=job.updated_at,
+        interactive_outputs_enabled=interactive_outputs_enabled,
+    ).model_dump(mode='json')
 
 
 def _cleanup_deleted_job_resources(
@@ -502,6 +529,7 @@ async def create_job_endpoint(
                     upload_session_token=upload_session_token,
                     pending_upload_count=job_data.pending_upload_count,
                     expected_total_input_files=job_data.expected_total_input_files,
+                    interactive_outputs_enabled=True,
                 ).model_dump(mode='json'),  # Use mode='json' to serialize datetime to ISO strings
                 message="Job created successfully",
                 status_code=status.HTTP_201_CREATED
@@ -555,24 +583,7 @@ async def list_jobs(
         
         total = count_jobs_by_user(current_user.id, status_filter)
         
-        job_responses = [
-            JobResponse(
-                id=job.id,
-                user_id=job.user_id,
-                name=job.name,
-                status=job.status,
-                workflow_id=job.workflow_id,
-                pipeline_config_id=job.pipeline_config_id,
-                pipeline_id=job.pipeline_id,
-                assembler=job.assembler,
-                data_types=job.data_types,
-                cloud_provider=job.cloud_provider,
-                vm_name=job.vm_name,
-                created_at=job.created_at,
-                updated_at=job.updated_at
-            ).model_dump(mode='json')  # Use mode='json' to serialize datetime to ISO strings
-            for job in jobs
-        ]
+        job_responses = [_job_response_for_user(job, current_user.username) for job in jobs]
         
         return paginated_response(
             data=job_responses,
@@ -617,21 +628,7 @@ async def get_job(
         return JSONResponse(content=error_data, status_code=status.HTTP_404_NOT_FOUND)
     
     return success_response(
-        data=JobResponse(
-            id=job.id,
-            user_id=job.user_id,
-            name=job.name,
-            status=job.status,
-            workflow_id=job.workflow_id,
-            pipeline_config_id=job.pipeline_config_id,
-            pipeline_id=job.pipeline_id,
-            assembler=job.assembler,
-            data_types=job.data_types,
-            cloud_provider=job.cloud_provider,
-            vm_name=job.vm_name,
-            created_at=job.created_at,
-            updated_at=job.updated_at
-        ).model_dump(mode='json'),  # Use mode='json' to serialize datetime to ISO strings
+        data=_job_response_for_user(job, current_user.username),
         message="Job retrieved successfully"
     )
 
@@ -669,6 +666,21 @@ async def execute_job(
             error_data = error_response(
                 error_code=ErrorCode.VALIDATION_ERROR,
                 message=f"Job must be in PENDING status to execute. Current status: {job.status.value}",
+                status_code=status.HTTP_400_BAD_REQUEST
+            )
+            return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+
+        can_start, current_running_jobs, max_running_jobs = can_user_start_more_jobs(
+            user_id=current_user.id,
+            username=current_user.username,
+        )
+        if not can_start:
+            error_data = error_response(
+                error_code=ErrorCode.VALIDATION_ERROR,
+                message=(
+                    f"You already have {current_running_jobs} running jobs. "
+                    f"The limit is {max_running_jobs}."
+                ),
                 status_code=status.HTTP_400_BAD_REQUEST
             )
             return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)

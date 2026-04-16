@@ -14,17 +14,17 @@ export default function Dashboard({ onLogout }: DashboardProps) {
       <Navigation onLogout={onLogout} />
       
       <div className="page-content">
-        <header className="page-header">
+        <header className="page-header dashboard-page-header">
           <h1 className="page-title">CASSIE Genomics Platform</h1>
         </header>
 
-      <div className="dashboard-hero">
-        <p className="dashboard-subtitle">
-          Comprehensive genomic data analysis with multi-cloud support
-        </p>
-      </div>
+        <div className="dashboard-hero dashboard-hero-compact">
+          <p className="dashboard-subtitle">
+            Comprehensive genomic data analysis with multi-cloud support
+          </p>
+        </div>
 
-      <div className="dashboard-cards-grid">
+      <div className="dashboard-cards-grid dashboard-cards-grid-four-up">
         <div className="dashboard-card">
           <h2 className="dashboard-card-title">Build Pipeline</h2>
           <p className="dashboard-card-description">

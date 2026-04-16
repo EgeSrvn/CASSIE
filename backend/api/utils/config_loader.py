@@ -14,6 +14,7 @@ Usage:
     minio_endpoint = config.minio.endpoint
 """
 
+import json
 import os
 from pathlib import Path
 from typing import List, Optional
@@ -68,6 +69,17 @@ class APIConfig:
             self.cors_origins = [origin.strip() for origin in cors_origins.split(",")]
 
 
+class AdminPanelConfig:
+    """Secret admin panel configuration."""
+
+    def __init__(self):
+        self.path = os.getenv("ADMIN_PANEL_PATH", "/_cassie_admin_console_7f3a9b")
+        self.username = os.getenv("ADMIN_PANEL_USERNAME", "admin")
+        self.default_password = os.getenv("ADMIN_PANEL_PASSWORD", "admin")
+        self.session_cookie_name = os.getenv("ADMIN_PANEL_SESSION_COOKIE", "cassie_admin_session")
+        self.session_duration_minutes = int(os.getenv("ADMIN_PANEL_SESSION_MINUTES", "720"))
+
+
 class NextflowConfig:
     """Nextflow pipeline execution configuration."""
     
@@ -117,10 +129,86 @@ class ToolsConfig:
         self.fastqc_image = os.getenv("FASTQC_IMAGE", "fastqc:0.12.1")
         self.spades_image = os.getenv("SPADES_IMAGE", "spades:3.15.5")
         self.genomescope2_image = os.getenv("GENOMESCOPE2_IMAGE", "genomescope2:latest")
+        self.busco_default_lineage = os.getenv("BUSCO_DEFAULT_LINEAGE", "eukaryota_odb12")
+        self.busco_download_path = os.getenv("BUSCO_DOWNLOAD_PATH", "/opt/busco_downloads")
         
         # Tool resource limits (optional)
         self.default_memory_limit = os.getenv("TOOL_MEMORY_LIMIT", "4g")
         self.default_cpu_limit = int(os.getenv("TOOL_CPU_LIMIT", "2"))
+
+
+class UserLimitsConfig:
+    """Per-user job and output access limits loaded from JSON."""
+
+    def __init__(self, project_root: Path):
+        self.path = Path(
+            os.getenv(
+                "USER_LIMITS_CONFIG_PATH",
+                str(project_root / "config" / "user_limits.json"),
+            )
+        )
+        self.default_max_running_jobs = 3
+        self.default_downloadable_finished_jobs = 6
+        self.default_interactive_output_jobs = 6
+        self.raw = self._load_json()
+
+    def _load_json(self) -> dict:
+        if not self.path.exists():
+            return {
+                "default": {
+                    "max_running_jobs": self.default_max_running_jobs,
+                    "downloadable_finished_jobs": self.default_downloadable_finished_jobs,
+                    "interactive_output_jobs": self.default_interactive_output_jobs,
+                },
+                "users": {},
+            }
+
+        try:
+            with self.path.open("r", encoding="utf-8") as handle:
+                data = json.load(handle)
+                if isinstance(data, dict):
+                    return data
+        except Exception:
+            pass
+
+        return {
+            "default": {
+                "max_running_jobs": self.default_max_running_jobs,
+                "downloadable_finished_jobs": self.default_downloadable_finished_jobs,
+                "interactive_output_jobs": self.default_interactive_output_jobs,
+            },
+            "users": {},
+        }
+
+    def get_limits_for_username(self, username: Optional[str]) -> dict:
+        defaults = self.raw.get("default", {}) if isinstance(self.raw, dict) else {}
+        users = self.raw.get("users", {}) if isinstance(self.raw, dict) else {}
+        user_overrides = users.get(username, {}) if username and isinstance(users, dict) else {}
+
+        max_running_jobs = int(
+            user_overrides.get(
+                "max_running_jobs",
+                defaults.get("max_running_jobs", self.default_max_running_jobs),
+            )
+        )
+        downloadable_finished_jobs = int(
+            user_overrides.get(
+                "downloadable_finished_jobs",
+                defaults.get("downloadable_finished_jobs", self.default_downloadable_finished_jobs),
+            )
+        )
+        interactive_output_jobs = int(
+            user_overrides.get(
+                "interactive_output_jobs",
+                defaults.get("interactive_output_jobs", self.default_interactive_output_jobs),
+            )
+        )
+
+        return {
+            "max_running_jobs": max_running_jobs,
+            "downloadable_finished_jobs": downloadable_finished_jobs,
+            "interactive_output_jobs": interactive_output_jobs,
+        }
 
 
 class Config:
@@ -135,16 +223,19 @@ class Config:
         """Initialize configuration from environment variables and .env file."""
         # Load .env file if it exists (in project root or current directory)
         self._load_env_file()
+        project_root = Path(__file__).parent.parent.parent.parent
         
         # Initialize configuration sections
         self.database = DatabaseConfig()
         self.minio = MinIOConfig()
         self.api = APIConfig()
+        self.admin_panel = AdminPanelConfig()
         self.nextflow = NextflowConfig()
         self.docker = DockerConfig()
         self.execution = ExecutionConfig()
         self.kubernetes = KubernetesConfig()
         self.tools = ToolsConfig()
+        self.user_limits = UserLimitsConfig(project_root)
     
     def _load_env_file(self):
         """
@@ -202,6 +293,13 @@ class Config:
                 "log_file": self.api.log_file,
                 "cors_origins": self.api.cors_origins,
             },
+            "admin_panel": {
+                "path": self.admin_panel.path,
+                "username": self.admin_panel.username,
+                "default_password": "***",
+                "session_cookie_name": self.admin_panel.session_cookie_name,
+                "session_duration_minutes": self.admin_panel.session_duration_minutes,
+            },
             "nextflow": {
                 "executable": self.nextflow.executable,
                 "work_dir": self.nextflow.work_dir,
@@ -230,8 +328,14 @@ class Config:
                 "fastqc_image": self.tools.fastqc_image,
                 "spades_image": self.tools.spades_image,
                 "genomescope2_image": self.tools.genomescope2_image,
+                "busco_default_lineage": self.tools.busco_default_lineage,
+                "busco_download_path": self.tools.busco_download_path,
                 "default_memory_limit": self.tools.default_memory_limit,
                 "default_cpu_limit": self.tools.default_cpu_limit,
+            },
+            "user_limits": {
+                "path": str(self.user_limits.path),
+                "default_limits": self.user_limits.get_limits_for_username(None),
             },
         }
 

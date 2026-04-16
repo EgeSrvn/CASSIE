@@ -18,11 +18,57 @@ export interface User {
   id: number
   username: string
   email: string
+  display_name?: string | null
+  bio?: string | null
+  affiliation?: string | null
+  job_title?: string | null
+  location?: string | null
+  website_url?: string | null
+  avatar_url?: string | null
+  bucket_name?: string
+  created_at?: string
+  updated_at?: string
 }
 
 export interface AuthResponse {
   access_token: string
   user: User
+}
+
+export interface CommunityEntry {
+  id: number
+  name: string
+  description?: string | null
+  saved_at?: string | null
+  is_shared: boolean
+}
+
+export interface ProfileResponse {
+  user: User
+  community_entries: CommunityEntry[]
+}
+
+export interface ProfileUpdateRequest {
+  email?: string
+  display_name?: string
+  bio?: string
+  affiliation?: string
+  job_title?: string
+  location?: string
+  website_url?: string
+  current_password?: string
+  new_password?: string
+}
+
+const normalizeProfilePayload = (payload: ProfileUpdateRequest): ProfileUpdateRequest => {
+  const normalized: ProfileUpdateRequest = {}
+  ;(Object.entries(payload) as Array<[keyof ProfileUpdateRequest, string | undefined]>).forEach(([key, value]) => {
+    if (typeof value !== 'string') {
+      return
+    }
+    normalized[key] = value.trim()
+  })
+  return normalized
 }
 
 export const login = async (credentials: LoginRequest): Promise<AuthResponse> => {
@@ -79,6 +125,37 @@ export const getCurrentUser = async (): Promise<User> => {
     return response.data.data
   }
   throw new Error('Failed to get user')
+}
+
+export const getProfile = async (): Promise<ProfileResponse> => {
+  const response = await apiClient.get<{ success: boolean; data: ProfileResponse }>('/api/auth/profile')
+  if (response.data.success) {
+    return response.data.data
+  }
+  throw new Error('Failed to get profile')
+}
+
+export const updateProfile = async (payload: ProfileUpdateRequest): Promise<User> => {
+  const response = await apiClient.put<{ success: boolean; data: User }>('/api/auth/profile', normalizeProfilePayload(payload))
+  if (response.data.success) {
+    return response.data.data
+  }
+  throw new Error('Failed to update profile')
+}
+
+export const uploadProfileAvatar = async (file: File): Promise<User> => {
+  const formData = new FormData()
+  formData.append('file', file)
+
+  const response = await apiClient.post<{ success: boolean; data: User }>('/api/auth/profile/avatar', formData, {
+    headers: {
+      'Content-Type': 'multipart/form-data',
+    },
+  })
+  if (response.data.success) {
+    return response.data.data
+  }
+  throw new Error('Failed to upload profile picture')
 }
 
 export const setToken = (token: string): void => {

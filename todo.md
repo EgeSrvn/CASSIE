@@ -4,11 +4,20 @@
 
 ## 2. Small ml model to predict time and price of pipelines with different length of data,tool should be trained. 
 
-## Profile page with edit
+## 3. Serch bar in community page
 
-## 3. User authentication via tokens should be added.
+## 4. Profile pages of the publishers should be accesible from community entries
 
-## 4. Make it work on EC2
+## 5. Forum page might be good
+
+## 6. Make it work on EC2
 
 # Current Issues
 
+## it waits files to be uploaded to notify the system that a pratition is filled. It should immediately change the number of available partition in the vm and the remaining number of jobs user can run at the same time. 
+
+## If user hits the limit, it should immediately fail, not stay in pending
+
+## Ready templates should be always available in community page
+
+## move vm_partitions.json to /config

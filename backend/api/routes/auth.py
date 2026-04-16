@@ -7,18 +7,24 @@ This module provides:
 - Get current user status
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.responses import JSONResponse
+import os
+import tempfile
+from typing import Optional
+from uuid import uuid4
+
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, EmailStr, Field
-from typing import Optional
 
-from backend.api.models.user_model import UserCreate, UserResponse
-from backend.api.services.user_service import create_user, get_user_by_username, get_user_by_id
+from backend.api.models.user_model import UserCreate, UserProfileUpdate, UserResponse
+from backend.api.services.user_service import create_user, get_user_by_username, get_user_by_id, update_user_password, update_user_profile
+from backend.api.services.pipeline_service import get_pipelines_by_user
+from backend.api.services.minio_client import MinIOClient
 from backend.api.services.auth_service import (
     verify_password,
     create_access_token,
-    decode_access_token
+    decode_access_token,
 )
 from backend.api.utils.response_builder import (
     success_response,
@@ -72,6 +78,39 @@ class AuthContext(BaseModel):
     expected_total_input_files: Optional[int] = None
 
 
+def _resolved_avatar_url(user) -> Optional[str]:
+    stored_avatar = getattr(user, "avatar_url", None)
+    if not stored_avatar:
+        return None
+
+    normalized = str(stored_avatar).strip()
+    if not normalized:
+        return None
+
+    if normalized.startswith(("http://", "https://", "data:", "/api/auth/profile/avatar/")):
+        return normalized
+
+    return f"/api/auth/profile/avatar/{user.id}"
+
+
+def _user_response_from_model(user) -> UserResponse:
+    return UserResponse(
+        id=user.id,
+        username=user.username,
+        email=user.email,
+        bucket_name=user.bucket_name,
+        display_name=getattr(user, "display_name", None),
+        bio=getattr(user, "bio", None),
+        affiliation=getattr(user, "affiliation", None),
+        job_title=getattr(user, "job_title", None),
+        location=getattr(user, "location", None),
+        website_url=getattr(user, "website_url", None),
+        avatar_url=_resolved_avatar_url(user),
+        created_at=user.created_at,
+        updated_at=user.updated_at
+    )
+
+
 async def get_auth_context(
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ) -> AuthContext:
@@ -108,14 +147,7 @@ async def get_auth_context(
         )
 
     context = AuthContext(
-        user=UserResponse(
-            id=user.id,
-            username=user.username,
-            email=user.email,
-            bucket_name=user.bucket_name,
-            created_at=user.created_at,
-            updated_at=user.updated_at
-        ),
+        user=_user_response_from_model(user),
         token_type=token_type,
     )
 
@@ -236,14 +268,7 @@ async def register(request: RegisterRequest):
         )
         user = create_user(user_data)
         
-        user_response = UserResponse(
-            id=user.id,
-            username=user.username,
-            email=user.email,
-            bucket_name=user.bucket_name,
-            created_at=user.created_at,
-            updated_at=user.updated_at
-        )
+        user_response = _user_response_from_model(user)
         
         return success_response(
             data=user_response.model_dump(),
@@ -297,14 +322,7 @@ async def login(request: LoginRequest):
     }
     access_token = create_access_token(data=token_data)
     
-    user_response = UserResponse(
-        id=user.id,
-        username=user.username,
-        email=user.email,
-        bucket_name=user.bucket_name,
-        created_at=user.created_at,
-        updated_at=user.updated_at
-    )
+    user_response = _user_response_from_model(user)
     
     return success_response(
         data=LoginResponse(
@@ -348,3 +366,191 @@ async def get_current_user_info(current_user: UserResponse = Depends(get_current
         data=current_user.model_dump(),
         message="User information retrieved successfully"
     )
+
+
+@router.get("/profile")
+async def get_profile(current_user: UserResponse = Depends(get_current_user)):
+    """Return current user profile plus their shared community entries."""
+    pipelines = [
+        pipeline for pipeline in get_pipelines_by_user(current_user.id)
+        if getattr(pipeline, "is_shared", False)
+    ]
+    return success_response(
+        data={
+            "user": current_user.model_dump(),
+            "community_entries": [
+                {
+                    "id": pipeline.id,
+                    "name": pipeline.name,
+                    "description": pipeline.description,
+                    "saved_at": pipeline.saved_at.isoformat() if pipeline.saved_at else None,
+                    "is_shared": pipeline.is_shared,
+                }
+                for pipeline in pipelines
+            ],
+        },
+        message="Profile retrieved successfully",
+    )
+
+
+@router.put("/profile")
+async def update_profile(
+    payload: UserProfileUpdate,
+    current_user: UserResponse = Depends(get_current_user),
+):
+    """Update profile fields and optionally change password."""
+    existing_user = get_user_by_id(current_user.id)
+    if existing_user is None:
+        error_data = unauthorized_response("User not found")
+        return JSONResponse(content=error_data, status_code=status.HTTP_401_UNAUTHORIZED)
+
+    if payload.new_password is not None:
+        if not payload.current_password:
+            error_data = error_response(
+                error_code=ErrorCode.VALIDATION_ERROR,
+                message="Current password is required to set a new password",
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+            return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+        if not verify_password(payload.current_password, existing_user.password_hash):
+            error_data = unauthorized_response("Current password is incorrect")
+            return JSONResponse(content=error_data, status_code=status.HTTP_401_UNAUTHORIZED)
+        is_valid, error_msg = validate_password(payload.new_password)
+        if not is_valid:
+            error_data = error_response(
+                error_code=ErrorCode.VALIDATION_ERROR,
+                message=error_msg,
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+            return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+        update_user_password(current_user.id, payload.new_password)
+
+    updated_user = update_user_profile(current_user.id, payload) or get_user_by_id(current_user.id)
+    if updated_user is None:
+        error_data = error_response(
+            error_code=ErrorCode.INTERNAL_ERROR,
+            message="Failed to update profile",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    return success_response(
+        data=_user_response_from_model(updated_user).model_dump(),
+        message="Profile updated successfully",
+    )
+
+
+@router.post("/profile/avatar")
+async def upload_profile_avatar(
+    file: UploadFile = File(...),
+    current_user: UserResponse = Depends(get_current_user),
+):
+    """Upload a profile avatar image and update the current user profile."""
+    content_type = (file.content_type or "").lower()
+    allowed_types = {"image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp", "image/svg+xml"}
+    if content_type not in allowed_types:
+        error_data = error_response(
+            error_code=ErrorCode.VALIDATION_ERROR,
+            message="Profile pictures must be PNG, JPEG, GIF, WEBP, or SVG",
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+
+    suffix = os.path.splitext(file.filename or "")[1].lower()
+    if suffix not in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}:
+        suffix = {
+            "image/png": ".png",
+            "image/jpeg": ".jpg",
+            "image/jpg": ".jpg",
+            "image/gif": ".gif",
+            "image/webp": ".webp",
+            "image/svg+xml": ".svg",
+        }.get(content_type, ".img")
+
+    max_bytes = 5 * 1024 * 1024
+    uploaded_size = 0
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
+            temp_path = temp_file.name
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                uploaded_size += len(chunk)
+                if uploaded_size > max_bytes:
+                    error_data = error_response(
+                        error_code=ErrorCode.VALIDATION_ERROR,
+                        message="Profile pictures must be 5 MB or smaller",
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                    )
+                    return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+                temp_file.write(chunk)
+
+        minio_client = MinIOClient()
+        avatar_key = f"profile/avatars/{uuid4().hex}{suffix}"
+        minio_client.upload_file(
+            user_id=current_user.id,
+            username=current_user.username,
+            local_path=temp_path,
+            s3_key=avatar_key,
+            metadata={"purpose": "profile-avatar", "content_type": content_type},
+        )
+
+        updated_user = update_user_profile(
+            current_user.id,
+            UserProfileUpdate(avatar_url=avatar_key),
+        ) or get_user_by_id(current_user.id)
+
+        if updated_user is None:
+            error_data = error_response(
+                error_code=ErrorCode.INTERNAL_ERROR,
+                message="Avatar uploaded, but profile could not be updated",
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+            return JSONResponse(content=error_data, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        return success_response(
+            data=_user_response_from_model(updated_user).model_dump(),
+            message="Profile picture updated successfully",
+        )
+    except Exception as e:
+        logger.error(f"Error uploading profile avatar: {e}", exc_info=True)
+        error_data = error_response(
+            error_code=ErrorCode.INTERNAL_ERROR,
+            message="Failed to upload profile picture",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    finally:
+        await file.close()
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+
+
+@router.get("/profile/avatar/{user_id}")
+async def get_profile_avatar(user_id: int):
+    """Resolve a stable backend avatar URL to a fresh presigned object URL."""
+    user = get_user_by_id(user_id)
+    if user is None or not getattr(user, "avatar_url", None):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Avatar not found")
+
+    stored_avatar = str(user.avatar_url).strip()
+    if stored_avatar.startswith(("http://", "https://", "data:")):
+        return RedirectResponse(url=stored_avatar, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
+
+    try:
+        minio_client = MinIOClient()
+        presigned_url = minio_client.generate_presigned_url(
+            user_id=user.id,
+            username=user.username,
+            s3_key=stored_avatar,
+            expiration=3600,
+        )
+        return RedirectResponse(url=presigned_url, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
+    except Exception as e:
+        logger.error(f"Error resolving profile avatar for user {user_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Avatar not found")

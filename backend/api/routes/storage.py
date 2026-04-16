@@ -45,6 +45,10 @@ from backend.api.services.job_launch_service import (
     get_auto_start_payload,
     start_job_execution_task,
 )
+from backend.api.services.user_limit_service import (
+    can_user_access_job_outputs,
+    validate_output_file_access,
+)
 from backend.api.utils.response_builder import (
     success_response,
     error_response,
@@ -406,6 +410,15 @@ async def download_file(
     if file_record is None:
         error_data = not_found_response("File", file_id)
         return JSONResponse(content=error_data, status_code=status.HTTP_404_NOT_FOUND)
+
+    allowed, access_error = validate_output_file_access(file_record, current_user.id, current_user.username)
+    if not allowed:
+        error_data = error_response(
+            error_code=ErrorCode.VALIDATION_ERROR,
+            message=access_error or "Output access is not allowed for this file",
+            status_code=status.HTTP_403_FORBIDDEN
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_403_FORBIDDEN)
     
     try:
         # Download file to temp location
@@ -497,6 +510,15 @@ async def view_file(
     if file_record is None:
         error_data = not_found_response("File", file_id)
         return JSONResponse(content=error_data, status_code=status.HTTP_404_NOT_FOUND)
+
+    allowed, access_error = validate_output_file_access(file_record, current_user.id, current_user.username)
+    if not allowed:
+        error_data = error_response(
+            error_code=ErrorCode.VALIDATION_ERROR,
+            message=access_error or "Output access is not allowed for this file",
+            status_code=status.HTTP_403_FORBIDDEN
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_403_FORBIDDEN)
     
     try:
         # Download file to temp location
@@ -584,6 +606,19 @@ async def request_job_outputs_zip(
         error_data = not_found_response("Job", job_id)
         return JSONResponse(content=error_data, status_code=status.HTTP_404_NOT_FOUND)
 
+    can_access_outputs, max_finished_jobs = can_user_access_job_outputs(
+        user_id=current_user.id,
+        username=current_user.username,
+        job_id=job_id,
+    )
+    if not can_access_outputs:
+        error_data = error_response(
+            error_code=ErrorCode.VALIDATION_ERROR,
+            message=f"Output downloads are limited to your latest {max_finished_jobs} finished jobs. This job is outside that window.",
+            status_code=status.HTTP_403_FORBIDDEN
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_403_FORBIDDEN)
+
     status_payload = get_zip_download_status_payload(current_user.id, job_id, username=current_user.username)
     if status_payload["status"] in {"queued", "processing"}:
         return JSONResponse(
@@ -620,6 +655,19 @@ async def get_job_outputs_zip_download(
     if job is None:
         error_data = not_found_response("Job", job_id)
         return JSONResponse(content=error_data, status_code=status.HTTP_404_NOT_FOUND)
+
+    can_access_outputs, max_finished_jobs = can_user_access_job_outputs(
+        user_id=current_user.id,
+        username=current_user.username,
+        job_id=job_id,
+    )
+    if not can_access_outputs:
+        error_data = error_response(
+            error_code=ErrorCode.VALIDATION_ERROR,
+            message=f"Output downloads are limited to your latest {max_finished_jobs} finished jobs. This job is outside that window.",
+            status_code=status.HTTP_403_FORBIDDEN
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_403_FORBIDDEN)
 
     status_payload = get_zip_download_status_payload(current_user.id, job_id, username=current_user.username)
     if redirect and status_payload["status"] == "ready" and status_payload.get("download_url"):

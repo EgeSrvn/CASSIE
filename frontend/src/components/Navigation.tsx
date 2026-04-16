@@ -90,7 +90,9 @@ export default function Navigation({ onLogout }: NavigationProps) {
     <nav className="top-navigation">
       <div className="nav-container">
         <div className="nav-brand" onClick={() => navigate('/')}>
-          <h1 className="nav-title">CASSIE</h1>
+          <div>
+            <h1 className="nav-title">CASSIE</h1>
+          </div>
         </div>
         
         <div className="nav-links">
@@ -128,14 +130,27 @@ export default function Navigation({ onLogout }: NavigationProps) {
           {isAuthenticated ? (
             <>
               {user && (
-                <span style={{ 
-                  color: 'white', 
-                  marginRight: 'var(--spacing-sm)',
-                  fontSize: '0.9em',
-                  fontWeight: 500
-                }}>
-                  {user.username}
-                </span>
+                <button
+                  type="button"
+                  className="nav-user-chip"
+                  onClick={() => navigate('/profile')}
+                >
+                  {user.avatar_url ? (
+                    <img
+                      className="nav-user-avatar nav-user-avatar-image"
+                      src={user.avatar_url}
+                      alt={user.username}
+                    />
+                  ) : (
+                    <span className="nav-user-avatar">
+                      {(user.display_name || user.username).slice(0, 1).toUpperCase()}
+                    </span>
+                  )}
+                  <span className="nav-user-text">
+                    <strong>{user.display_name || user.username}</strong>
+                    <small>@{user.username}</small>
+                  </span>
+                </button>
               )}
               <button type="button" onClick={handleLogout} className="btn-secondary btn-small">
                 Logout
@@ -172,4 +187,3 @@ export default function Navigation({ onLogout }: NavigationProps) {
     </nav>
   )
 }
-
