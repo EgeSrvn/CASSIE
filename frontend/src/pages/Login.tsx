@@ -1,6 +1,7 @@
 import { useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
-import { login, LoginRequest } from '../services/authService'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
+import { AuthError, login, LoginRequest } from '../services/authService'
+import { extractApiErrorMessage } from '../services/apiClient'
 import '../styles/globals.css'
 
 interface LoginProps {
@@ -12,7 +13,18 @@ export default function Login({ onLogin }: LoginProps) {
     username: '',
     password: '',
   })
+  const location = useLocation()
   const [error, setError] = useState<string>('')
+  const [successMessage] = useState<string>(() => {
+    const state = location.state as { verifiedEmail?: string; passwordReset?: boolean; resetEmail?: string } | null
+    if (state?.verifiedEmail) {
+      return `Email verified for ${state.verifiedEmail}. You can log in now.`
+    }
+    if (state?.passwordReset && state?.resetEmail) {
+      return `Password updated for ${state.resetEmail}. You can log in now.`
+    }
+    return ''
+  })
   const [loading, setLoading] = useState(false)
   const navigate = useNavigate()
 
@@ -37,8 +49,26 @@ export default function Login({ onLogin }: LoginProps) {
         throw new Error('Login failed: No token received')
       }
     } catch (err: any) {
-      // Extract error message - could be from axios error or Error object
-      const errorMessage = err.message || err.response?.data?.message || err.response?.data?.detail || 'Login failed. Please check your credentials.'
+      const authError = err as AuthError
+      const verificationEmail =
+        authError.verificationEmail ||
+        err?.response?.data?.error?.details?.email ||
+        err?.response?.data?.data?.email
+      const verificationRequired =
+        authError.verificationRequired ||
+        err?.response?.data?.error?.details?.verification_required === true
+
+      if (verificationRequired && typeof verificationEmail === 'string' && verificationEmail.trim()) {
+        navigate('/verify-email', {
+          state: {
+            email: verificationEmail,
+            requestNewCode: true,
+          },
+        })
+        return
+      }
+
+      const errorMessage = extractApiErrorMessage(err, 'Login failed. Please check your credentials.')
       setError(errorMessage)
       console.error('Login error:', err)
       setLoading(false)
@@ -56,6 +86,7 @@ export default function Login({ onLogin }: LoginProps) {
           genomics work without losing context.
         </p>
         
+        {successMessage && <div className="success-message">{successMessage}</div>}
         {error && <div className="error-message">{error}</div>}
         
         <form onSubmit={handleSubmit}>
@@ -88,6 +119,9 @@ export default function Login({ onLogin }: LoginProps) {
           </button>
         </form>
         
+        <p className="auth-link">
+          <Link to="/forgot-password">Forgot password?</Link>
+        </p>
         <p className="auth-link">
           Don't have an account? <Link to="/register">Register here</Link>
         </p>

@@ -1368,6 +1368,14 @@ body {
   width: 100%;
 }
 
+.auth-helper-text {
+  margin: 0.5rem 0 1rem;
+  text-align: center;
+  color: var(--gray-600);
+  font-size: 0.95rem;
+  line-height: 1.6;
+}
+
 .dashboard-cards-grid {
   padding: 0;
 }
@@ -1757,12 +1765,46 @@ body {
   font-size: 1.05rem;
   cursor: pointer;
   transition: transform 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  padding: 0;
 }
 
 .profile-edit-button:hover {
   transform: translateY(-1px);
   box-shadow: 0 10px 24px rgba(74, 144, 226, 0.16);
   background: white;
+}
+
+.profile-danger-zone {
+  margin-top: 2rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid rgba(164, 27, 27, 0.16);
+}
+
+.profile-danger-zone h3 {
+  margin-bottom: 0.4rem;
+}
+
+.profile-danger-zone p {
+  margin-bottom: 1rem;
+  color: var(--gray-600);
+}
+
+.profile-danger-button {
+  border-color: rgba(164, 27, 27, 0.28);
+  color: #8f1c1c;
+}
+
+.profile-danger-button:hover {
+  background: rgba(164, 27, 27, 0.08);
+}
+
+.profile-delete-confirmation {
+  margin-top: 1rem;
+  max-width: 420px;
 }
 
 .profile-summary-card p {
@@ -1967,8 +2009,15 @@ body {
   padding: 1.2rem 1.25rem;
   max-width: 1040px;
   width: 100%;
-  margin: 0 auto;
+  margin: 0.7rem auto 0;
   border-radius: 28px;
+  transition: transform 0.22s ease, box-shadow 0.22s ease, border-color 0.22s ease;
+}
+
+.forum-thread-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 24px 48px rgba(31, 41, 55, 0.12);
+  border-color: rgba(74, 144, 226, 0.24);
 }
 
 .forum-thread-card h3,
@@ -2172,6 +2221,7 @@ body {
   border: 1px solid rgba(74, 144, 226, 0.12);
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(245, 248, 255, 0.94));
   width: 100%;
+  margin-top: 0.35rem;
 }
 
 .forum-comment {
@@ -2244,10 +2294,136 @@ body {
   background: rgba(255, 255, 255, 0.94);
 }
 
+.forum-post-image-button {
+  border: none;
+  padding: 0;
+  background: transparent;
+  cursor: zoom-in;
+}
+
+.forum-post-image {
+  display: block;
+}
+
 .forum-image-preview-card {
   display: grid;
   gap: 0.45rem;
   color: var(--gray-700);
+}
+
+.forum-inline-image-grid {
+  margin-top: 0;
+}
+
+.forum-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.85rem;
+  margin-top: 1rem;
+  flex-wrap: wrap;
+  color: var(--gray-700);
+}
+
+.forum-list-pagination {
+  margin-top: 1.5rem;
+}
+
+.forum-pagination-cluster {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.forum-page-chip.active {
+  background: linear-gradient(135deg, var(--secondary-light), var(--secondary));
+  color: var(--gray-900);
+  border-color: transparent;
+}
+
+.forum-page-arrow {
+  min-width: 2.8rem;
+}
+
+.forum-page-ellipsis {
+  color: var(--gray-500);
+  letter-spacing: 0.2em;
+}
+
+.community-pagination {
+  margin-top: 2rem;
+}
+
+.forum-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  background: rgba(9, 16, 28, 0.82);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+}
+
+.forum-lightbox-content {
+  max-width: min(92vw, 1080px);
+  max-height: 90vh;
+  display: grid;
+  gap: 0.85rem;
+  justify-items: center;
+}
+
+.forum-lightbox-image {
+  max-width: 100%;
+  max-height: 78vh;
+  border-radius: 22px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
+}
+
+.forum-lightbox-caption {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+  justify-content: center;
+  color: white;
+  text-align: center;
+}
+
+.forum-lightbox-close,
+.forum-lightbox-nav {
+  position: fixed;
+  border: none;
+  color: white;
+  cursor: pointer;
+  backdrop-filter: blur(10px);
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.forum-lightbox-close {
+  top: 1.4rem;
+  right: 1.4rem;
+  width: 2.8rem;
+  height: 2.8rem;
+  border-radius: 999px;
+  font-size: 1.7rem;
+  line-height: 1;
+}
+
+.forum-lightbox-nav {
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3.25rem;
+  height: 4.5rem;
+  border-radius: 999px;
+  font-size: 2rem;
+}
+
+.forum-lightbox-nav-left {
+  left: 1.25rem;
+}
+
+.forum-lightbox-nav-right {
+  right: 1.25rem;
 }
 
 @media (max-width: 980px) {
@@ -2366,6 +2542,138 @@ body {
   -webkit-text-fill-color: initial;
   color: var(--gray-900);
   margin-bottom: 1rem;
+}
+
+.pipeline-builder-header {
+  justify-content: flex-end;
+  min-height: 2.5rem;
+}
+
+.static-page-sections {
+  display: grid;
+  gap: 1.2rem;
+}
+
+.static-page-section {
+  padding: 1rem 1.1rem;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.7);
+  border: 1px solid rgba(17, 24, 39, 0.08);
+}
+
+.static-page-section h3 {
+  margin-bottom: 0.45rem;
+}
+
+.static-page-section p + p {
+  margin-top: 0.6rem;
+}
+
+.pipeline-save-modal {
+  max-width: 620px;
+}
+
+.pipeline-save-error-list {
+  margin-top: 0.9rem;
+  padding-left: 1.25rem;
+  color: var(--gray-700);
+}
+
+.pipeline-save-error-list li + li {
+  margin-top: 0.45rem;
+}
+
+.runtime-estimate-card {
+  margin-top: 0.9rem;
+  padding: 1rem 1.1rem;
+  border-radius: 12px;
+  border: 1px solid rgba(37, 99, 235, 0.14);
+  background: linear-gradient(180deg, rgba(239, 246, 255, 0.95), rgba(248, 250, 252, 0.96));
+}
+
+.runtime-estimate-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.65rem;
+}
+
+.runtime-estimate-header span {
+  font-size: 0.84rem;
+  color: var(--gray-500);
+}
+
+.runtime-estimate-main {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  margin-bottom: 0.45rem;
+}
+
+.runtime-estimate-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.85rem;
+  margin-bottom: 0.75rem;
+}
+
+.runtime-estimate-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  padding: 0.9rem 1rem;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.78);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+}
+
+.runtime-estimate-label {
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #64748b;
+}
+
+.runtime-estimate-value {
+  font-size: 1.35rem;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.runtime-estimate-subtle,
+.runtime-estimate-copy {
+  color: #475569;
+  font-size: 0.92rem;
+}
+
+.runtime-estimate-breakdown {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0.75rem 0;
+}
+
+.runtime-estimate-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.4rem 0.65rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.78);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  color: #1e293b;
+  font-size: 0.85rem;
+}
+
+.runtime-estimate-error {
+  color: #b91c1c;
+  font-size: 0.92rem;
+}
+
+@media (max-width: 720px) {
+  .runtime-estimate-summary-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .pipeline-builder-page .card {

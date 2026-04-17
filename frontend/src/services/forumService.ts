@@ -21,6 +21,7 @@ export interface ForumComment {
   parent_comment_id?: number | null
   user_id: number
   body: string
+  image_urls: string[]
   created_at: string
   updated_at: string
   author: ForumAuthor
@@ -114,6 +115,20 @@ export const createForumComment = async (
     return response.data.data
   }
   throw new Error(response.data.message || 'Failed to post comment')
+}
+
+export const uploadForumCommentImages = async (commentId: number, files: File[]): Promise<ForumComment | null> => {
+  const formData = new FormData()
+  files.forEach((file) => formData.append('files', file))
+  const response = await apiClient.post<ForumApiResponse<ForumComment | null>>(`/api/forum/comments/${commentId}/images`, formData, {
+    headers: {
+      'Content-Type': 'multipart/form-data',
+    },
+  })
+  if (response.data.success) {
+    return response.data.data
+  }
+  throw new Error(response.data.message || 'Failed to upload forum comment images')
 }
 
 export const deleteForumThread = async (threadId: number): Promise<void> => {

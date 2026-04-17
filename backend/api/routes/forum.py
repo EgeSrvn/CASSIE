@@ -11,11 +11,13 @@ from backend.api.models.forum_model import ForumCommentCreate, ForumThreadCreate
 from backend.api.models.user_model import UserResponse
 from backend.api.routes.auth import get_current_user
 from backend.api.services.forum_service import (
+    append_comment_image_keys,
     append_thread_image_keys,
     create_forum_comment,
     create_forum_thread,
     delete_forum_comment,
     delete_forum_thread,
+    get_forum_comment_owner,
     get_forum_thread,
     get_forum_thread_owner,
     list_forum_threads,
@@ -27,6 +29,40 @@ from backend.api.utils.response_builder import ErrorCode, error_response, not_fo
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/forum", tags=["forum"])
+ALLOWED_FORUM_IMAGE_TYPES = {"image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif"}
+MAX_FORUM_IMAGES_PER_POST = 4
+
+
+def _forum_image_suffix(content_type: str) -> str:
+    return {
+        "image/png": ".png",
+        "image/jpeg": ".jpg",
+        "image/jpg": ".jpg",
+        "image/webp": ".webp",
+        "image/gif": ".gif",
+    }[content_type]
+
+
+def _validate_forum_upload_count(files: list[UploadFile], existing_count: int) -> Optional[JSONResponse]:
+    if not files:
+        return JSONResponse(
+            content=error_response(
+                error_code=ErrorCode.VALIDATION_ERROR,
+                message="Please select at least one image to upload",
+                status_code=status.HTTP_400_BAD_REQUEST,
+            ),
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    if existing_count + len(files) > MAX_FORUM_IMAGES_PER_POST:
+        return JSONResponse(
+            content=error_response(
+                error_code=ErrorCode.VALIDATION_ERROR,
+                message=f"You can attach up to {MAX_FORUM_IMAGES_PER_POST} images per post",
+                status_code=status.HTTP_400_BAD_REQUEST,
+            ),
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    return None
 
 
 @router.get("")
@@ -157,8 +193,25 @@ async def upload_thread_images(
     current_user: UserResponse = Depends(get_current_user),
 ):
     owner_id = get_forum_thread_owner(thread_id)
-    if owner_id != current_user.id:
+    if owner_id is None:
         return JSONResponse(content=not_found_response("Forum thread", thread_id), status_code=status.HTTP_404_NOT_FOUND)
+    if owner_id != current_user.id:
+        return JSONResponse(
+            content=error_response(
+                error_code=ErrorCode.FORBIDDEN,
+                message="You can only upload images to your own discussion",
+                status_code=status.HTTP_403_FORBIDDEN,
+            ),
+            status_code=status.HTTP_403_FORBIDDEN,
+        )
+
+    existing_thread = get_forum_thread(thread_id, increment_view_count=False)
+    if existing_thread is None:
+        return JSONResponse(content=not_found_response("Forum thread", thread_id), status_code=status.HTTP_404_NOT_FOUND)
+
+    upload_count_error = _validate_forum_upload_count(files, len(existing_thread.image_urls))
+    if upload_count_error is not None:
+        return upload_count_error
 
     temp_paths: list[str] = []
     uploaded_keys: list[str] = []
@@ -167,7 +220,7 @@ async def upload_thread_images(
     try:
         for upload in files:
             content_type = (upload.content_type or "").lower()
-            if content_type not in {"image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif"}:
+            if content_type not in ALLOWED_FORUM_IMAGE_TYPES:
                 return JSONResponse(
                     content=error_response(
                         error_code=ErrorCode.VALIDATION_ERROR,
@@ -177,13 +230,7 @@ async def upload_thread_images(
                     status_code=status.HTTP_400_BAD_REQUEST,
                 )
 
-            suffix = Path(upload.filename or "").suffix.lower() or {
-                "image/png": ".png",
-                "image/jpeg": ".jpg",
-                "image/jpg": ".jpg",
-                "image/webp": ".webp",
-                "image/gif": ".gif",
-            }[content_type]
+            suffix = Path(upload.filename or "").suffix.lower() or _forum_image_suffix(content_type)
 
             with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
                 temp_path = temp_file.name
@@ -217,6 +264,97 @@ async def upload_thread_images(
             content=error_response(
                 error_code=ErrorCode.INTERNAL_ERROR,
                 message="Failed to upload forum images",
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            ),
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+    finally:
+        for temp_path in temp_paths:
+            if os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
+
+
+@router.post("/comments/{comment_id}/images", status_code=status.HTTP_201_CREATED)
+async def upload_comment_images(
+    comment_id: int,
+    files: list[UploadFile] = File(...),
+    current_user: UserResponse = Depends(get_current_user),
+):
+    owner_id = get_forum_comment_owner(comment_id)
+    if owner_id is None:
+        return JSONResponse(content=not_found_response("Forum comment", comment_id), status_code=status.HTTP_404_NOT_FOUND)
+    if owner_id != current_user.id:
+        return JSONResponse(
+            content=error_response(
+                error_code=ErrorCode.FORBIDDEN,
+                message="You can only upload images to your own comment",
+                status_code=status.HTTP_403_FORBIDDEN,
+            ),
+            status_code=status.HTTP_403_FORBIDDEN,
+        )
+
+    existing_comment = append_comment_image_keys(comment_id, current_user.id, [])
+    if existing_comment is None:
+        return JSONResponse(content=not_found_response("Forum comment", comment_id), status_code=status.HTTP_404_NOT_FOUND)
+
+    upload_count_error = _validate_forum_upload_count(files, len(existing_comment.image_urls))
+    if upload_count_error is not None:
+        return upload_count_error
+
+    temp_paths: list[str] = []
+    uploaded_keys: list[str] = []
+    minio_client = MinIOClient()
+
+    try:
+        for upload in files:
+            content_type = (upload.content_type or "").lower()
+            if content_type not in ALLOWED_FORUM_IMAGE_TYPES:
+                return JSONResponse(
+                    content=error_response(
+                        error_code=ErrorCode.VALIDATION_ERROR,
+                        message="Forum images must be PNG, JPEG, WEBP, or GIF",
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                    ),
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                )
+
+            suffix = Path(upload.filename or "").suffix.lower() or _forum_image_suffix(content_type)
+
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
+                temp_path = temp_file.name
+                temp_paths.append(temp_path)
+                while True:
+                    chunk = await upload.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    temp_file.write(chunk)
+
+            key = f"forum/comments/{comment_id}/{uuid4().hex}{suffix}"
+            minio_client.upload_file(
+                user_id=current_user.id,
+                username=current_user.username,
+                local_path=temp_path,
+                s3_key=key,
+                metadata={"purpose": "forum-comment-image", "comment_id": str(comment_id)},
+            )
+            uploaded_keys.append(key)
+            await upload.close()
+
+        updated_comment = append_comment_image_keys(comment_id, current_user.id, uploaded_keys)
+        return success_response(
+            data=updated_comment.model_dump() if updated_comment else None,
+            message="Forum comment images uploaded successfully",
+            status_code=status.HTTP_201_CREATED,
+        )
+    except Exception as e:
+        logger.error(f"Failed to upload forum images for comment {comment_id}: {e}", exc_info=True)
+        return JSONResponse(
+            content=error_response(
+                error_code=ErrorCode.INTERNAL_ERROR,
+                message="Failed to upload forum comment images",
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             ),
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

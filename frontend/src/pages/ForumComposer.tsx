@@ -1,9 +1,12 @@
-import { FormEvent, useMemo, useState } from 'react'
+import { FormEvent, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import Navigation from '../components/Navigation'
 import { createForumThread, uploadForumThreadImages } from '../services/forumService'
+import { extractApiErrorMessage } from '../services/apiClient'
 import '../styles/globals.css'
+
+const MAX_FORUM_IMAGES = 4
 
 export default function ForumComposer() {
   const navigate = useNavigate()
@@ -18,6 +21,22 @@ export default function ForumComposer() {
     [images]
   )
 
+  useEffect(() => {
+    return () => {
+      imagePreviews.forEach(({ url }) => URL.revokeObjectURL(url))
+    }
+  }, [imagePreviews])
+
+  const handleImageChange = (nextFiles: FileList | null) => {
+    const selectedFiles = Array.from(nextFiles || [])
+    if (selectedFiles.length > MAX_FORUM_IMAGES) {
+      setError(`You can attach up to ${MAX_FORUM_IMAGES} images per post.`)
+      return
+    }
+    setError('')
+    setImages(selectedFiles)
+  }
+
   const handlePublish = async (e: FormEvent) => {
     e.preventDefault()
     try {
@@ -29,7 +48,7 @@ export default function ForumComposer() {
       }
       navigate(`/forum/${createdThread.id}`)
     } catch (err: any) {
-      setError(err.response?.data?.message || err.message || 'Failed to publish forum discussion')
+      setError(extractApiErrorMessage(err, 'Failed to publish forum discussion'))
     } finally {
       setPublishing(false)
     }
@@ -74,8 +93,9 @@ export default function ForumComposer() {
                 type="file"
                 accept="image/png,image/jpeg,image/jpg,image/webp,image/gif"
                 multiple
-                onChange={(e) => setImages(Array.from(e.target.files || []))}
+                onChange={(e) => handleImageChange(e.target.files)}
               />
+              <small>Up to 4 images per discussion.</small>
             </div>
             {imagePreviews.length > 0 && (
               <div className="forum-image-preview-grid">

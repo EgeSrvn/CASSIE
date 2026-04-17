@@ -240,6 +240,35 @@ export interface VM {
   available_storage_mib: number
 }
 
+export interface RuntimeEstimate {
+  model_type: string
+  vm_name: string
+  vm_display_name: string
+  partition_factor: number
+  vm_price_per_minute: number
+  total_input_size_mib: number
+  estimated_runtime_minutes: number
+  estimated_runtime_hours: number
+  estimated_price_usd: number
+  fixed_overhead_minutes: number
+  execution_shape: string
+  tool_breakdown: Array<{
+    tool_id: string
+    tool_name: string
+    base_minutes: number
+    input_size_mib: number
+    size_factor: number
+    adjusted_minutes: number
+  }>
+  assumptions: string[]
+}
+
+export interface RuntimeInputAssignment {
+  tool_id: string
+  requirement_type: string
+  total_input_size_mib: number
+}
+
 export const getAvailableVMs = async (): Promise<VM[]> => {
   try {
     const response = await apiClient.get<{ success: boolean; data: VM[]; message?: string }>('/api/jobs/vms')
@@ -251,6 +280,22 @@ export const getAvailableVMs = async (): Promise<VM[]> => {
     if (error.response?.data) {
       const errorData = error.response.data
       throw new Error(extractApiErrorMessage(errorData, 'Failed to get available VMs'))
+    }
+    throw error
+  }
+}
+
+export const estimateRuntime = async (payload: { tool_indices?: number[]; pipeline_id?: number; vm_name?: string; input_assignments?: RuntimeInputAssignment[] }): Promise<RuntimeEstimate> => {
+  try {
+    const response = await apiClient.post<{ success: boolean; data: RuntimeEstimate; message?: string }>('/api/estimator/runtime', payload)
+    if (response.data.success) {
+      return response.data.data
+    }
+    throw new Error(response.data.message || 'Failed to estimate runtime')
+  } catch (error: any) {
+    if (error.response?.data) {
+      const errorData = error.response.data
+      throw new Error(extractApiErrorMessage(errorData, 'Failed to estimate runtime'))
     }
     throw error
   }

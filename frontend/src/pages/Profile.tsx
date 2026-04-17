@@ -1,15 +1,18 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import Navigation from '../components/Navigation'
 import {
   CommunityEntry,
   ProfileUpdateRequest,
   User,
+  confirmAccountDeletion,
   getProfile,
   getPublicProfile,
+  requestAccountDeletionCode,
   updateProfile,
   uploadProfileAvatar,
 } from '../services/authService'
+import { extractApiErrorMessage } from '../services/apiClient'
 import '../styles/globals.css'
 
 const emptyForm: ProfileUpdateRequest = {
@@ -34,9 +37,14 @@ export default function Profile() {
   const [isEditing, setIsEditing] = useState(false)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [deletingAccount, setDeletingAccount] = useState(false)
+  const [requestingDeletionCode, setRequestingDeletionCode] = useState(false)
+  const [deletionCodeSent, setDeletionCodeSent] = useState(false)
+  const [deletionCode, setDeletionCode] = useState('')
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
   const [avatarFile, setAvatarFile] = useState<File | null>(null)
+  const editSectionRef = useRef<HTMLElement | null>(null)
 
   const avatarPreviewUrl = useMemo(() => {
     if (!avatarFile) return null
@@ -84,7 +92,7 @@ export default function Profile() {
       )
       setAvatarFile(null)
     } catch (err: any) {
-      const message = err.response?.data?.message || err.message || 'Failed to load profile'
+      const message = extractApiErrorMessage(err, 'Failed to load profile')
       setError(message)
     } finally {
       setLoading(false)
@@ -98,6 +106,47 @@ export default function Profile() {
   const handleAvatarChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const nextFile = e.target.files?.[0] || null
     setAvatarFile(nextFile)
+  }
+
+  const handleToggleEdit = () => {
+    setIsEditing((current) => {
+      const next = !current
+      if (next) {
+        window.setTimeout(() => {
+          editSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+        }, 50)
+      }
+      return next
+    })
+  }
+
+  const handleRequestDeletionCode = async () => {
+    try {
+      setRequestingDeletionCode(true)
+      setError('')
+      await requestAccountDeletionCode()
+      setDeletionCodeSent(true)
+      setSuccess('Deletion verification code sent to your email.')
+    } catch (err: any) {
+      const message = extractApiErrorMessage(err, 'Failed to request account deletion code')
+      setError(message)
+    } finally {
+      setRequestingDeletionCode(false)
+    }
+  }
+
+  const handleDeleteAccount = async () => {
+    try {
+      setDeletingAccount(true)
+      setError('')
+      await confirmAccountDeletion(deletionCode)
+      navigate('/')
+    } catch (err: any) {
+      const message = extractApiErrorMessage(err, 'Failed to delete account')
+      setError(message)
+    } finally {
+      setDeletingAccount(false)
+    }
   }
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -121,7 +170,7 @@ export default function Profile() {
       }))
       window.dispatchEvent(new Event('auth-change'))
     } catch (err: any) {
-      const message = err.response?.data?.message || err.message || 'Failed to update profile'
+      const message = extractApiErrorMessage(err, 'Failed to update profile')
       setError(message)
     } finally {
       setSaving(false)
@@ -149,7 +198,7 @@ export default function Profile() {
               <button
                 type="button"
                 className="profile-edit-button"
-                onClick={() => setIsEditing((current) => !current)}
+                onClick={handleToggleEdit}
                 aria-label={isEditing ? 'Close profile editor' : 'Edit profile'}
                 title={isEditing ? 'Close profile editor' : 'Edit profile'}
               >
@@ -239,7 +288,7 @@ export default function Profile() {
         </section>
 
         {!isPublicProfile && isEditing && (
-          <section className="card profile-form-card">
+          <section ref={editSectionRef} className="card profile-form-card">
             <div className="section-heading">
               <h2>Profile Details</h2>
               <p>Visible information, account basics, and optional password change.</p>
@@ -372,6 +421,33 @@ export default function Profile() {
                 </button>
               </div>
             </form>
+
+            <div className="profile-danger-zone">
+              <h3>Delete Account</h3>
+              <p>Permanently remove your account and its associated data. A verification code will be sent to your email before deletion is allowed.</p>
+              <div className="button-row">
+                <button className="btn-secondary profile-danger-button" type="button" onClick={handleRequestDeletionCode} disabled={requestingDeletionCode || deletingAccount}>
+                  {requestingDeletionCode ? 'Sending Code...' : (deletionCodeSent ? 'Resend Delete Code' : 'Send Delete Code')}
+                </button>
+              </div>
+              {deletionCodeSent && (
+                <div className="profile-delete-confirmation">
+                  <div className="form-group">
+                    <label htmlFor="delete_account_code">Deletion Verification Code</label>
+                    <input
+                      id="delete_account_code"
+                      value={deletionCode}
+                      onChange={(e) => setDeletionCode(e.target.value)}
+                      placeholder="Enter the emailed code"
+                      disabled={deletingAccount}
+                    />
+                  </div>
+                  <button className="btn-secondary profile-danger-button" type="button" onClick={handleDeleteAccount} disabled={deletingAccount || !deletionCode.trim()}>
+                    {deletingAccount ? 'Deleting Account...' : 'Confirm Delete Account'}
+                  </button>
+                </div>
+              )}
+            </div>
           </section>
         )}
       </div>

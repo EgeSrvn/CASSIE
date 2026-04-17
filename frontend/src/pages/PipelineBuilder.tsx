@@ -303,17 +303,8 @@ export default function PipelineBuilder() {
   const [saving, setSaving] = useState(false)
   const [loading, setLoading] = useState(false)
   const [isAuthenticated, setIsAuthenticated] = useState(() => !!getToken())
+  const [saveValidationPopup, setSaveValidationPopup] = useState<string[] | null>(null)
   const validationErrors = useMemo(() => validatePipelineGraph(nodes, edges), [nodes, edges])
-  const canSavePipeline = pipelineName.trim().length > 0 && validationErrors.length === 0
-  const validationHeadline = useMemo(() => {
-    if (validationErrors.length === 0) {
-      return ''
-    }
-
-    const firstError = validationErrors[0]
-    const shortened = firstError.length > 110 ? `${firstError.slice(0, 107)}...` : firstError
-    return validationErrors.length > 1 ? `${shortened} (+${validationErrors.length - 1})` : shortened
-  }, [validationErrors])
 
   useEffect(() => {
     const syncAuthState = () => {
@@ -435,12 +426,12 @@ export default function PipelineBuilder() {
     }
 
     if (!pipelineName.trim()) {
-      alert('Please enter a pipeline name')
+      setSaveValidationPopup(['Please enter a pipeline name before saving.'])
       return
     }
 
     if (validationErrors.length > 0) {
-      alert(`This pipeline is not valid yet:\n\n- ${validationErrors.join('\n- ')}`)
+      setSaveValidationPopup(validationErrors)
       return
     }
 
@@ -488,19 +479,6 @@ export default function PipelineBuilder() {
       <Navigation />
       <div className="page-content">
         <div className="pipeline-builder">
-          <div className="page-header" style={{ alignItems: 'center' }}>
-            <h1 className="page-title">Visual Pipeline Builder</h1>
-            {validationHeadline && (
-              <span
-                className="status-badge status-failed"
-                title={validationErrors.join(' | ')}
-                style={{ maxWidth: '460px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-              >
-                Pipeline validation: {validationHeadline}
-              </span>
-            )}
-          </div>
-
           <div className="pipeline-builder-grid">
             <div className="pipeline-sidebar">
               <div className="card">
@@ -740,7 +718,7 @@ export default function PipelineBuilder() {
                 {isAuthenticated ? (
                   <button
                       onClick={handleSave}
-                      disabled={saving || !canSavePipeline}
+                      disabled={saving}
                       className="btn-primary"
                     >
                       {saving ? 'Saving...' : id ? 'Update Pipeline' : 'Save Pipeline'}
@@ -788,6 +766,31 @@ export default function PipelineBuilder() {
           </div>
         </div>
       </div>
+      {saveValidationPopup && (
+        <div className="modal-overlay" onClick={() => setSaveValidationPopup(null)}>
+          <div className="modal-content pipeline-save-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>Pipeline Can&apos;t Be Saved Yet</h2>
+              <button type="button" className="modal-close" onClick={() => setSaveValidationPopup(null)}>
+                ×
+              </button>
+            </div>
+            <div className="modal-body">
+              <p>Fix the following items and try saving again:</p>
+              <ul className="pipeline-save-error-list">
+                {saveValidationPopup.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+            </div>
+            <div className="modal-footer">
+              <button type="button" className="btn-primary" onClick={() => setSaveValidationPopup(null)}>
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

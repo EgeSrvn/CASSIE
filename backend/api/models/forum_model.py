@@ -33,6 +33,7 @@ class ForumCommentResponse(BaseModel):
     parent_comment_id: Optional[int] = None
     user_id: int
     body: str
+    image_urls: List[str] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
     author: ForumAuthorResponse

@@ -14,6 +14,9 @@ TRUNCATE TABLE
     votes,
     saved_workflows,
     community_workflows,
+    forum_comments,
+    forum_answers,
+    forum_threads,
     datasets,
     folders,        -- Must be before files (files reference folders)
     files,
@@ -38,6 +41,12 @@ RESTART IDENTITY CASCADE;
 -- Verify tables are empty
 SELECT 
     'users' as table_name, COUNT(*) as row_count FROM users
+UNION ALL
+SELECT 'forum_threads', COUNT(*) FROM forum_threads
+UNION ALL
+SELECT 'forum_answers', COUNT(*) FROM forum_answers
+UNION ALL
+SELECT 'forum_comments', COUNT(*) FROM forum_comments
 UNION ALL
 SELECT 'workflows', COUNT(*) FROM workflows
 UNION ALL
@@ -67,4 +76,3 @@ SELECT 'vms', COUNT(*) FROM vms
 UNION ALL
 SELECT 'tenants', COUNT(*) FROM tenants
 ORDER BY table_name;
-

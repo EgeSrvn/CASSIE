@@ -134,8 +134,9 @@ def _comment_row_to_response(row) -> ForumCommentResponse:
         parent_comment_id=row[3],
         user_id=row[4],
         body=row[5],
-        created_at=row[6],
-        updated_at=row[7],
+        image_urls=[_build_forum_media_url(row[4], key) for key in _parse_json_list(row[6])],
+        created_at=row[7],
+        updated_at=row[8],
         author=_build_author(row[4]),
     )
 
@@ -341,7 +342,7 @@ def get_forum_thread(thread_id: int, increment_view_count: bool = True) -> Optio
 
             cur.execute(
                 """
-                SELECT id, thread_id, answer_id, parent_comment_id, user_id, body, created_at, updated_at
+                SELECT id, thread_id, answer_id, parent_comment_id, user_id, body, image_keys, created_at, updated_at
                 FROM forum_comments
                 WHERE thread_id = %s
                 ORDER BY created_at ASC
@@ -465,13 +466,31 @@ def create_forum_comment(
                 """
                 INSERT INTO forum_comments (thread_id, answer_id, parent_comment_id, user_id, body)
                 VALUES (%s, %s, %s, %s, %s)
-                RETURNING id, thread_id, answer_id, parent_comment_id, user_id, body, created_at, updated_at
+                RETURNING id, thread_id, answer_id, parent_comment_id, user_id, body, image_keys, created_at, updated_at
                 """,
                 (thread_id, answer_id, parent_comment_id, user_id, payload.body.strip()),
             )
             row = cur.fetchone()
             conn.commit()
-            return _comment_row_to_response(row)
+            comment = _comment_row_to_response(row)
+            if parent_comment_id is not None:
+                cur.execute(
+                    """
+                    SELECT id, user_id, body
+                    FROM forum_comments
+                    WHERE id = %s
+                    """,
+                    (parent_comment_id,),
+                )
+                parent_row = cur.fetchone()
+                if parent_row is not None:
+                    parent_author = _build_author(parent_row[1])
+                    comment.parent_comment_preview = {
+                        "id": parent_row[0],
+                        "author_name": parent_author.display_name or parent_author.username,
+                        "body": parent_row[2],
+                    }
+            return comment
         except Exception:
             conn.rollback()
             logger.exception("Failed to create forum comment")
@@ -553,11 +572,91 @@ def append_thread_image_keys(thread_id: int, user_id: int, image_keys: list[str]
             cur.close()
 
 
+def get_forum_comment(comment_id: int) -> Optional[ForumCommentResponse]:
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                """
+                SELECT id, thread_id, answer_id, parent_comment_id, user_id, body, image_keys, created_at, updated_at
+                FROM forum_comments
+                WHERE id = %s
+                """,
+                (comment_id,),
+            )
+            row = cur.fetchone()
+            if row is None:
+                return None
+
+            comment = _comment_row_to_response(row)
+            if comment.parent_comment_id is not None:
+                cur.execute(
+                    """
+                    SELECT id, user_id, body
+                    FROM forum_comments
+                    WHERE id = %s
+                    """,
+                    (comment.parent_comment_id,),
+                )
+                parent_row = cur.fetchone()
+                if parent_row is not None:
+                    parent_author = _build_author(parent_row[1])
+                    comment.parent_comment_preview = {
+                        "id": parent_row[0],
+                        "author_name": parent_author.display_name or parent_author.username,
+                        "body": parent_row[2],
+                    }
+            return comment
+        finally:
+            cur.close()
+
+
+def append_comment_image_keys(comment_id: int, user_id: int, image_keys: list[str]) -> Optional[ForumCommentResponse]:
+    if not image_keys:
+        return get_forum_comment(comment_id)
+
+    image_keys_json = json.dumps(image_keys)
+
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                """
+                UPDATE forum_comments
+                SET image_keys = COALESCE(image_keys, '[]'::jsonb) || %s::jsonb
+                WHERE id = %s AND user_id = %s
+                """,
+                (image_keys_json, comment_id, user_id),
+            )
+            if cur.rowcount == 0:
+                conn.rollback()
+                return None
+            conn.commit()
+            return get_forum_comment(comment_id)
+        except Exception:
+            conn.rollback()
+            logger.exception("Failed to append forum comment image keys")
+            raise
+        finally:
+            cur.close()
+
+
 def get_forum_thread_owner(thread_id: int) -> Optional[int]:
     with get_db_connection() as conn:
         cur = conn.cursor()
         try:
             cur.execute("SELECT user_id FROM forum_threads WHERE id = %s", (thread_id,))
+            row = cur.fetchone()
+            return int(row[0]) if row else None
+        finally:
+            cur.close()
+
+
+def get_forum_comment_owner(comment_id: int) -> Optional[int]:
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT user_id FROM forum_comments WHERE id = %s", (comment_id,))
             row = cur.fetchone()
             return int(row[0]) if row else None
         finally:

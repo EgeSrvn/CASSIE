@@ -11,6 +11,37 @@ const apiClient: AxiosInstance = axios.create({
   },
 })
 
+export const extractApiErrorMessage = (error: any, fallback: string): string => {
+  const responseData = error?.response?.data
+  const detailErrors = responseData?.error?.details?.errors
+  if (Array.isArray(detailErrors) && detailErrors.length > 0) {
+    const firstError = detailErrors[0]
+    const field = typeof firstError?.field === 'string'
+      ? firstError.field.split('.').pop()?.replace(/_/g, ' ')
+      : ''
+    const message = typeof firstError?.message === 'string' ? firstError.message : ''
+    if (field && message) {
+      return `${field.charAt(0).toUpperCase()}${field.slice(1)}: ${message}`
+    }
+    if (message) {
+      return message
+    }
+  }
+  if (typeof responseData?.error?.message === 'string' && responseData.error.message.trim()) {
+    return responseData.error.message
+  }
+  if (typeof responseData?.message === 'string' && responseData.message.trim()) {
+    return responseData.message
+  }
+  if (typeof responseData?.detail === 'string' && responseData.detail.trim()) {
+    return responseData.detail
+  }
+  if (typeof error?.message === 'string' && error.message.trim()) {
+    return error.message
+  }
+  return fallback
+}
+
 // Add token to requests
 apiClient.interceptors.request.use(
   (config) => {

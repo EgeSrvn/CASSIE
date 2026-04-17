@@ -69,6 +69,21 @@ class APIConfig:
             self.cors_origins = [origin.strip() for origin in cors_origins.split(",")]
 
 
+class EmailConfig:
+    """SMTP email delivery configuration."""
+
+    def __init__(self):
+        self.enabled = os.getenv("EMAIL_ENABLED", "false").lower() in ("true", "1", "yes")
+        self.host = os.getenv("EMAIL_HOST", "")
+        self.port = int(os.getenv("EMAIL_PORT", "587"))
+        self.username = os.getenv("EMAIL_USERNAME", "")
+        self.password = os.getenv("EMAIL_PASSWORD", "")
+        self.from_address = os.getenv("EMAIL_FROM_ADDRESS", self.username or "no-reply@cassie.local")
+        self.from_name = os.getenv("EMAIL_FROM_NAME", "CASSIE")
+        self.use_tls = os.getenv("EMAIL_USE_TLS", "true").lower() in ("true", "1", "yes")
+        self.use_ssl = os.getenv("EMAIL_USE_SSL", "false").lower() in ("true", "1", "yes")
+
+
 class AdminPanelConfig:
     """Secret admin panel configuration."""
 
@@ -229,6 +244,7 @@ class Config:
         self.database = DatabaseConfig()
         self.minio = MinIOConfig()
         self.api = APIConfig()
+        self.email = EmailConfig()
         self.admin_panel = AdminPanelConfig()
         self.nextflow = NextflowConfig()
         self.docker = DockerConfig()
@@ -292,6 +308,17 @@ class Config:
                 "log_level": self.api.log_level,
                 "log_file": self.api.log_file,
                 "cors_origins": self.api.cors_origins,
+            },
+            "email": {
+                "enabled": self.email.enabled,
+                "host": self.email.host,
+                "port": self.email.port,
+                "username": self.email.username,
+                "password": "***" if self.email.password else "",
+                "from_address": self.email.from_address,
+                "from_name": self.email.from_name,
+                "use_tls": self.email.use_tls,
+                "use_ssl": self.email.use_ssl,
             },
             "admin_panel": {
                 "path": self.admin_panel.path,

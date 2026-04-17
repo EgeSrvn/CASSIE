@@ -22,6 +22,7 @@ class UserBase(BaseModel):
     location: Optional[str] = Field(None, max_length=120, description="Location")
     website_url: Optional[str] = Field(None, max_length=500, description="Website URL")
     avatar_url: Optional[str] = Field(None, max_length=500, description="Avatar image URL")
+    email_verified: bool = Field(False, description="Whether the email address has been verified")
 
 
 class UserCreate(UserBase):
@@ -74,6 +75,10 @@ class UserInDB(UserBase):
     """User model as stored in database."""
     id: int
     password_hash: str = Field(..., alias="password_hash")
+    email_verification_code: Optional[str] = None
+    email_verification_expires_at: Optional[datetime] = None
+    password_reset_code: Optional[str] = None
+    password_reset_expires_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
 

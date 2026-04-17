@@ -8,6 +8,7 @@ import Navigation from '../components/Navigation'
 import '../styles/globals.css'
 
 export default function Community() {
+  const ITEMS_PER_PAGE = 10
   const navigate = useNavigate()
   const [allPipelines, setAllPipelines] = useState<Pipeline[]>([])
   const [loading, setLoading] = useState(true)
@@ -17,6 +18,7 @@ export default function Community() {
   const [selectedTools, setSelectedTools] = useState<string[]>([])
   const [toolFilterOpen, setToolFilterOpen] = useState(false)
   const [toolCatalog, setToolCatalog] = useState<string[]>([])
+  const [currentPage, setCurrentPage] = useState(1)
   const isAuthenticated = !!getToken()
 
   useEffect(() => {
@@ -81,6 +83,29 @@ export default function Community() {
       return matchesSearch && matchesTool
     })
   }, [allPipelines, search, selectedTools])
+
+  useEffect(() => {
+    setCurrentPage(1)
+  }, [search, selectedTools])
+
+  const totalPages = Math.max(1, Math.ceil(pipelines.length / ITEMS_PER_PAGE))
+  const currentPageSafe = Math.min(currentPage, totalPages)
+
+  const paginatedPipelines = useMemo(() => {
+    const startIndex = (currentPageSafe - 1) * ITEMS_PER_PAGE
+    return pipelines.slice(startIndex, startIndex + ITEMS_PER_PAGE)
+  }, [currentPageSafe, pipelines])
+
+  const communityPageButtons = useMemo(() => {
+    if (totalPages <= 1) {
+      return [1]
+    }
+
+    const pages = new Set<number>([1, totalPages, currentPageSafe, currentPageSafe - 1, currentPageSafe + 1])
+    return Array.from(pages)
+      .filter((page) => page >= 1 && page <= totalPages)
+      .sort((a, b) => a - b)
+  }, [currentPageSafe, totalPages])
 
   const toggleToolFilter = (toolLabel: string) => {
     setSelectedTools((current) =>
@@ -234,7 +259,8 @@ export default function Community() {
           )}
           {!loading && (
             <div className="community-filter-summary">
-              Showing {pipelines.length} of {allPipelines.length} shared pipeline{allPipelines.length === 1 ? '' : 's'}.
+              Showing {(paginatedPipelines.length > 0 ? (currentPageSafe - 1) * ITEMS_PER_PAGE + 1 : 0)}-
+              {(currentPageSafe - 1) * ITEMS_PER_PAGE + paginatedPipelines.length} of {pipelines.length} matching shared pipeline{pipelines.length === 1 ? '' : 's'}.
             </div>
           )}
         </section>
@@ -254,7 +280,7 @@ export default function Community() {
               </div>
             ) : (
               <div className="community-results-grid">
-                {pipelines.map((pipeline) => (
+                {paginatedPipelines.map((pipeline) => (
                   <div
                     key={pipeline.id}
                     className="card pipeline-card pipeline-card-immersive"
@@ -357,6 +383,47 @@ export default function Community() {
                   </div>
                 ))}
               </div>
+            )}
+
+            {pipelines.length > ITEMS_PER_PAGE && (
+              <nav className="forum-pagination forum-list-pagination community-pagination" aria-label="Community pages">
+                <button
+                  type="button"
+                  className="btn-secondary btn-small forum-page-arrow"
+                  onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
+                  disabled={currentPageSafe === 1}
+                  aria-label="Previous community page"
+                >
+                  &larr;
+                </button>
+                {communityPageButtons.map((pageNumber, index) => {
+                  const previousPage = communityPageButtons[index - 1]
+                  const showGap = previousPage && pageNumber - previousPage > 1
+
+                  return (
+                    <span key={`community-page-${pageNumber}`} className="forum-pagination-cluster">
+                      {showGap && <span className="forum-page-ellipsis">...</span>}
+                      <button
+                        type="button"
+                        className={`btn-secondary btn-small forum-page-chip ${pageNumber === currentPageSafe ? 'active' : ''}`}
+                        onClick={() => setCurrentPage(pageNumber)}
+                        aria-current={pageNumber === currentPageSafe ? 'page' : undefined}
+                      >
+                        {pageNumber}
+                      </button>
+                    </span>
+                  )
+                })}
+                <button
+                  type="button"
+                  className="btn-secondary btn-small forum-page-arrow"
+                  onClick={() => setCurrentPage((page) => Math.min(totalPages, page + 1))}
+                  disabled={currentPageSafe === totalPages}
+                  aria-label="Next community page"
+                >
+                  &rarr;
+                </button>
+              </nav>
             )}
           </>
         )}

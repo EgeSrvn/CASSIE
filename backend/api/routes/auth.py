@@ -8,7 +8,9 @@ This module provides:
 """
 
 import os
+import secrets
 import tempfile
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from uuid import uuid4
 
@@ -18,7 +20,23 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, EmailStr, Field
 
 from backend.api.models.user_model import UserCreate, UserProfileUpdate, UserResponse
-from backend.api.services.user_service import create_user, get_user_by_username, get_user_by_id, update_user_password, update_user_profile
+from backend.api.services.user_service import (
+    clear_account_deletion_code,
+    clear_password_reset_code,
+    create_user,
+    delete_user_account,
+    get_account_deletion_code_state,
+    get_user_by_email,
+    get_user_by_id,
+    get_user_by_username,
+    purge_expired_unverified_users,
+    set_account_deletion_code,
+    set_email_verification_code,
+    set_password_reset_code,
+    update_user_password,
+    update_user_profile,
+    verify_user_email,
+)
 from backend.api.services.pipeline_service import get_pipelines_by_user
 from backend.api.services.minio_client import MinIOClient
 from backend.api.services.auth_service import (
@@ -26,6 +44,7 @@ from backend.api.services.auth_service import (
     create_access_token,
     decode_access_token,
 )
+from backend.api.services.email_service import send_email
 from backend.api.utils.response_builder import (
     success_response,
     error_response,
@@ -38,6 +57,8 @@ from backend.api.utils.logger import get_logger
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["authentication"])
+CODE_EXPIRY_MINUTES = 15
+EMAIL_RESEND_COOLDOWN_SECONDS = 120
 
 # Security scheme for JWT tokens
 security = HTTPBearer()
@@ -62,6 +83,32 @@ class LoginResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     user: UserResponse
+
+
+class VerificationChallengeResponse(BaseModel):
+    email: EmailStr
+    verification_required: bool = True
+    verification_preview_code: Optional[str] = None
+    expires_in_minutes: int
+
+
+class VerifyEmailRequest(BaseModel):
+    email: EmailStr
+    code: str = Field(..., min_length=4, max_length=12)
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class PasswordResetRequest(BaseModel):
+    email: EmailStr
+    code: str = Field(..., min_length=4, max_length=12)
+    new_password: str = Field(..., min_length=8)
+
+
+class AccountDeletionCodeRequest(BaseModel):
+    code: str = Field(..., min_length=4, max_length=12)
 
 
 class TokenData(BaseModel):
@@ -106,9 +153,107 @@ def _user_response_from_model(user) -> UserResponse:
         location=getattr(user, "location", None),
         website_url=getattr(user, "website_url", None),
         avatar_url=_resolved_avatar_url(user),
+        email_verified=getattr(user, "email_verified", False),
         created_at=user.created_at,
         updated_at=user.updated_at
     )
+
+
+def _generate_one_time_code(length: int = 6) -> str:
+    digits = "0123456789"
+    return "".join(secrets.choice(digits) for _ in range(length))
+
+
+def _issue_email_verification(user_id: int) -> tuple[str, int]:
+    code = _generate_one_time_code()
+    expires_in_minutes = CODE_EXPIRY_MINUTES
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=expires_in_minutes)
+    set_email_verification_code(user_id, code, expires_at)
+    return code, expires_in_minutes
+
+
+def _issue_password_reset(user_id: int) -> tuple[str, int]:
+    code = _generate_one_time_code()
+    expires_in_minutes = CODE_EXPIRY_MINUTES
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=expires_in_minutes)
+    set_password_reset_code(user_id, code, expires_at)
+    return code, expires_in_minutes
+
+
+def _issue_account_deletion_code(user_id: int) -> tuple[str, int]:
+    code = _generate_one_time_code()
+    expires_in_minutes = CODE_EXPIRY_MINUTES
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=expires_in_minutes)
+    set_account_deletion_code(user_id, code, expires_at)
+    return code, expires_in_minutes
+
+
+def _cooldown_remaining_seconds(expires_at: Optional[datetime], expiry_minutes: int) -> int:
+    if expires_at is None:
+        return 0
+
+    normalized_expires_at = expires_at
+    if normalized_expires_at.tzinfo is None:
+        normalized_expires_at = normalized_expires_at.replace(tzinfo=timezone.utc)
+
+    issued_at = normalized_expires_at - timedelta(minutes=expiry_minutes)
+    elapsed_seconds = (datetime.now(timezone.utc) - issued_at).total_seconds()
+    remaining_seconds = EMAIL_RESEND_COOLDOWN_SECONDS - int(elapsed_seconds)
+    return max(0, remaining_seconds)
+
+
+def _build_verification_email(username: str, code: str, expires_in_minutes: int) -> tuple[str, str, str]:
+    subject = "Verify your CASSIE account"
+    text_body = (
+        f"Hello {username},\n\n"
+        f"Your CASSIE verification code is: {code}\n"
+        f"It expires in {expires_in_minutes} minutes.\n\n"
+        "If you did not create this account, you can ignore this email."
+    )
+    html_body = (
+        f"<p>Hello {username},</p>"
+        f"<p>Your CASSIE verification code is:</p>"
+        f"<p style=\"font-size:24px;font-weight:700;letter-spacing:4px;\">{code}</p>"
+        f"<p>It expires in {expires_in_minutes} minutes.</p>"
+        "<p>If you did not create this account, you can ignore this email.</p>"
+    )
+    return subject, text_body, html_body
+
+
+def _build_password_reset_email(username: str, code: str, expires_in_minutes: int) -> tuple[str, str, str]:
+    subject = "Reset your CASSIE password"
+    text_body = (
+        f"Hello {username},\n\n"
+        f"Your CASSIE password reset code is: {code}\n"
+        f"It expires in {expires_in_minutes} minutes.\n\n"
+        "If you did not request a reset, you can ignore this email."
+    )
+    html_body = (
+        f"<p>Hello {username},</p>"
+        f"<p>Your CASSIE password reset code is:</p>"
+        f"<p style=\"font-size:24px;font-weight:700;letter-spacing:4px;\">{code}</p>"
+        f"<p>It expires in {expires_in_minutes} minutes.</p>"
+        "<p>If you did not request a reset, you can ignore this email.</p>"
+    )
+    return subject, text_body, html_body
+
+
+def _build_account_deletion_email(username: str, code: str, expires_in_minutes: int) -> tuple[str, str, str]:
+    subject = "Confirm CASSIE account deletion"
+    text_body = (
+        f"Hello {username},\n\n"
+        f"Your CASSIE account deletion code is: {code}\n"
+        f"It expires in {expires_in_minutes} minutes.\n\n"
+        "If you did not request account deletion, ignore this email and your account will remain active."
+    )
+    html_body = (
+        f"<p>Hello {username},</p>"
+        "<p>Use this code to confirm permanent deletion of your CASSIE account:</p>"
+        f"<p style=\"font-size:24px;font-weight:700;letter-spacing:4px;\">{code}</p>"
+        f"<p>It expires in {expires_in_minutes} minutes.</p>"
+        "<p>If you did not request account deletion, ignore this email and your account will remain active.</p>"
+    )
+    return subject, text_body, html_body
 
 
 def _public_profile_payload(user) -> dict:
@@ -243,6 +388,8 @@ async def register(request: RegisterRequest):
         Success response with user data
     """
     # Validate input
+    purge_expired_unverified_users()
+
     is_valid, error_msg = validate_username(request.username)
     if not is_valid:
         error_data = error_response(
@@ -252,15 +399,21 @@ async def register(request: RegisterRequest):
         )
         return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
     
-    if request.email:
-        is_valid, error_msg = validate_email(request.email)
-        if not is_valid:
-            error_data = error_response(
-                error_code=ErrorCode.VALIDATION_ERROR,
-                message=error_msg,
-                status_code=status.HTTP_400_BAD_REQUEST
-            )
-            return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+    if not request.email:
+        error_data = error_response(
+            error_code=ErrorCode.VALIDATION_ERROR,
+            message="Email is required for registration",
+            status_code=status.HTTP_400_BAD_REQUEST
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+    is_valid, error_msg = validate_email(request.email)
+    if not is_valid:
+        error_data = error_response(
+            error_code=ErrorCode.VALIDATION_ERROR,
+            message=error_msg,
+            status_code=status.HTTP_400_BAD_REQUEST
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
     
     is_valid, error_msg = validate_password(request.password)
     if not is_valid:
@@ -282,13 +435,21 @@ async def register(request: RegisterRequest):
             password=request.password,
             bucket_name=bucket_name
         )
-        user = create_user(user_data)
-        
-        user_response = _user_response_from_model(user)
-        
+        user = create_user(user_data, email_verified=False)
+        verification_code, expires_in_minutes = _issue_email_verification(user.id)
+        email_sent = False
+        if user.email:
+            subject, text_body, html_body = _build_verification_email(user.username, verification_code, expires_in_minutes)
+            email_sent = send_email(user.email, subject, text_body, html_body)
+
         return success_response(
-            data=user_response.model_dump(),
-            message="User registered successfully",
+            data=VerificationChallengeResponse(
+                email=request.email,
+                verification_required=True,
+                verification_preview_code=None if email_sent else verification_code,
+                expires_in_minutes=expires_in_minutes,
+            ).model_dump(exclude_none=True),
+            message="Account created. Verify your email before logging in." if email_sent else "Account created. Verify your email before logging in. SMTP is not configured, so the code is shown in the app.",
             status_code=status.HTTP_201_CREATED
         )
         
@@ -320,6 +481,8 @@ async def login(request: LoginRequest):
     Returns:
         Login response with access token and user data
     """
+    purge_expired_unverified_users()
+
     # Get user by username
     user = get_user_by_username(request.username)
     if user is None:
@@ -330,6 +493,18 @@ async def login(request: LoginRequest):
     if not verify_password(request.password, user.password_hash):
         error_data = unauthorized_response("Invalid username or password")
         return JSONResponse(content=error_data, status_code=status.HTTP_401_UNAUTHORIZED)
+
+    if user.email and not getattr(user, "email_verified", False):
+        error_data = error_response(
+            error_code=ErrorCode.FORBIDDEN,
+            message="Please verify your email address before logging in",
+            details={
+                "verification_required": True,
+                "email": user.email,
+            },
+            status_code=status.HTTP_403_FORBIDDEN,
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_403_FORBIDDEN)
     
     # Create access token
     token_data = {
@@ -347,6 +522,206 @@ async def login(request: LoginRequest):
             user=user_response
         ).model_dump(),
         message="Login successful"
+    )
+
+
+@router.post("/verify-email/request")
+async def request_email_verification(request: ForgotPasswordRequest):
+    purge_expired_unverified_users()
+
+    user = get_user_by_email(request.email)
+    if user is None:
+        error_data = error_response(
+            error_code=ErrorCode.NOT_FOUND,
+            message="No account was found for that email address",
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_404_NOT_FOUND)
+
+    if user.email_verified:
+        return success_response(
+            data={
+                "email": request.email,
+                "verification_required": False,
+                "expires_in_minutes": 0,
+            },
+            message="That email address is already verified",
+        )
+
+    cooldown_remaining = _cooldown_remaining_seconds(user.email_verification_expires_at, CODE_EXPIRY_MINUTES)
+    if user.email_verification_code and cooldown_remaining > 0:
+        error_data = error_response(
+            error_code=ErrorCode.VALIDATION_ERROR,
+            message=f"Please wait {cooldown_remaining} seconds before requesting another verification email.",
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_429_TOO_MANY_REQUESTS)
+
+    verification_code, expires_in_minutes = _issue_email_verification(user.id)
+    email_sent = False
+    if user.email:
+        subject, text_body, html_body = _build_verification_email(user.username, verification_code, expires_in_minutes)
+        email_sent = send_email(user.email, subject, text_body, html_body)
+    return success_response(
+        data=VerificationChallengeResponse(
+            email=request.email,
+            verification_required=True,
+            verification_preview_code=None if email_sent else verification_code,
+            expires_in_minutes=expires_in_minutes,
+        ).model_dump(exclude_none=True),
+        message="Verification code sent by email" if email_sent else "Verification code generated for local email confirmation",
+    )
+
+
+@router.post("/verify-email/confirm")
+async def confirm_email_verification(request: VerifyEmailRequest):
+    purge_expired_unverified_users()
+
+    user = get_user_by_email(request.email)
+    if user is None:
+        error_data = error_response(
+            error_code=ErrorCode.NOT_FOUND,
+            message="No account was found for that email address",
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_404_NOT_FOUND)
+
+    if user.email_verified:
+        return success_response(
+            data={"email": request.email, "verified": True},
+            message="Email address is already verified",
+        )
+
+    if not user.email_verification_code or not user.email_verification_expires_at:
+        error_data = error_response(
+            error_code=ErrorCode.VALIDATION_ERROR,
+            message="No verification code is active for this account",
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+
+    now = datetime.now(timezone.utc)
+    expires_at = user.email_verification_expires_at
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if expires_at < now:
+        error_data = error_response(
+            error_code=ErrorCode.VALIDATION_ERROR,
+            message="The verification code has expired. Request a new one and try again.",
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+
+    if user.email_verification_code != request.code.strip():
+        error_data = error_response(
+            error_code=ErrorCode.VALIDATION_ERROR,
+            message="Incorrect verification code",
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+
+    updated_user = verify_user_email(user.id)
+    return success_response(
+        data={"email": request.email, "verified": True, "user": _user_response_from_model(updated_user).model_dump() if updated_user else None},
+        message="Email verified successfully",
+    )
+
+
+@router.post("/forgot-password/request")
+async def request_password_reset(request: ForgotPasswordRequest):
+    purge_expired_unverified_users()
+
+    user = get_user_by_email(request.email)
+    if user is None:
+        error_data = error_response(
+            error_code=ErrorCode.NOT_FOUND,
+            message="No account was found for that email address",
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_404_NOT_FOUND)
+
+    cooldown_remaining = _cooldown_remaining_seconds(user.password_reset_expires_at, CODE_EXPIRY_MINUTES)
+    if user.password_reset_code and cooldown_remaining > 0:
+        error_data = error_response(
+            error_code=ErrorCode.VALIDATION_ERROR,
+            message=f"Please wait {cooldown_remaining} seconds before requesting another password reset email.",
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_429_TOO_MANY_REQUESTS)
+
+    reset_code, expires_in_minutes = _issue_password_reset(user.id)
+    email_sent = False
+    if user.email:
+        subject, text_body, html_body = _build_password_reset_email(user.username, reset_code, expires_in_minutes)
+        email_sent = send_email(user.email, subject, text_body, html_body)
+    response_data = {
+        "email": request.email,
+        "expires_in_minutes": expires_in_minutes,
+    }
+    if not email_sent:
+        response_data["reset_preview_code"] = reset_code
+
+    return success_response(
+        data=response_data,
+        message="Password reset code sent by email" if email_sent else "Password reset code generated for local development",
+    )
+
+
+@router.post("/forgot-password/reset")
+async def reset_password(request: PasswordResetRequest):
+    purge_expired_unverified_users()
+
+    user = get_user_by_email(request.email)
+    if user is None:
+        error_data = error_response(
+            error_code=ErrorCode.NOT_FOUND,
+            message="No account was found for that email address",
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_404_NOT_FOUND)
+
+    is_valid, error_msg = validate_password(request.new_password)
+    if not is_valid:
+        error_data = error_response(
+            error_code=ErrorCode.VALIDATION_ERROR,
+            message=error_msg,
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+
+    if not user.password_reset_code or not user.password_reset_expires_at:
+        error_data = error_response(
+            error_code=ErrorCode.VALIDATION_ERROR,
+            message="No password reset code is active for this account",
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+
+    now = datetime.now(timezone.utc)
+    reset_expires_at = user.password_reset_expires_at
+    if reset_expires_at.tzinfo is None:
+        reset_expires_at = reset_expires_at.replace(tzinfo=timezone.utc)
+    if reset_expires_at < now:
+        error_data = error_response(
+            error_code=ErrorCode.VALIDATION_ERROR,
+            message="The reset code has expired. Request a new one and try again.",
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+
+    if user.password_reset_code != request.code.strip():
+        error_data = error_response(
+            error_code=ErrorCode.VALIDATION_ERROR,
+            message="Incorrect reset code",
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+
+    update_user_password(user.id, request.new_password)
+    clear_password_reset_code(user.id)
+    return success_response(
+        data={"email": request.email, "password_reset": True},
+        message="Password updated successfully",
     )
 
 
@@ -489,6 +864,105 @@ async def update_profile(
         data=_user_response_from_model(updated_user).model_dump(),
         message="Profile updated successfully",
     )
+
+
+@router.post("/profile/delete/request")
+async def request_account_deletion(current_user: UserResponse = Depends(get_current_user)):
+    """Send a deletion confirmation code to the verified account email."""
+    if not current_user.email or not getattr(current_user, "email_verified", False):
+        error_data = error_response(
+            error_code=ErrorCode.VALIDATION_ERROR,
+            message="A verified email address is required before deleting an account.",
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+
+    existing_code, existing_expires_at = get_account_deletion_code_state(current_user.id)
+    cooldown_remaining = _cooldown_remaining_seconds(existing_expires_at, CODE_EXPIRY_MINUTES)
+    if existing_code and cooldown_remaining > 0:
+        error_data = error_response(
+            error_code=ErrorCode.VALIDATION_ERROR,
+            message=f"Please wait {cooldown_remaining} seconds before requesting another account deletion email.",
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_429_TOO_MANY_REQUESTS)
+
+    deletion_code, expires_in_minutes = _issue_account_deletion_code(current_user.id)
+    subject, text_body, html_body = _build_account_deletion_email(current_user.username, deletion_code, expires_in_minutes)
+    email_sent = send_email(current_user.email, subject, text_body, html_body)
+
+    if not email_sent:
+        error_data = error_response(
+            error_code=ErrorCode.EXTERNAL_SERVICE_ERROR,
+            message="Failed to send the account deletion email. Please try again.",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+    return success_response(
+        data={"email": current_user.email, "expires_in_minutes": expires_in_minutes},
+        message="Account deletion confirmation code sent by email",
+    )
+
+
+@router.post("/profile/delete/confirm")
+async def confirm_account_deletion(
+    request: AccountDeletionCodeRequest,
+    current_user: UserResponse = Depends(get_current_user),
+):
+    """Delete the authenticated user after email-code confirmation."""
+    stored_code, expires_at = get_account_deletion_code_state(current_user.id)
+    if not stored_code or not expires_at:
+        error_data = error_response(
+            error_code=ErrorCode.VALIDATION_ERROR,
+            message="No account deletion confirmation code is active. Request a new one and try again.",
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+
+    normalized_expires_at = expires_at.replace(tzinfo=timezone.utc) if expires_at.tzinfo is None else expires_at
+    if normalized_expires_at < datetime.now(timezone.utc):
+        clear_account_deletion_code(current_user.id)
+        error_data = error_response(
+            error_code=ErrorCode.VALIDATION_ERROR,
+            message="The account deletion code has expired. Request a new one and try again.",
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+
+    if stored_code != request.code.strip():
+        error_data = error_response(
+            error_code=ErrorCode.VALIDATION_ERROR,
+            message="Incorrect account deletion code",
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+
+    clear_account_deletion_code(current_user.id)
+    deleted = delete_user_account(current_user.id)
+    if not deleted:
+        error_data = error_response(
+            error_code=ErrorCode.NOT_FOUND,
+            message="User account not found",
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_404_NOT_FOUND)
+
+    return success_response(
+        data={"deleted": True},
+        message="Account deleted successfully",
+    )
+
+
+@router.delete("/profile")
+async def delete_profile(current_user: UserResponse = Depends(get_current_user)):
+    """Legacy direct-delete route; deletion now requires an emailed verification step."""
+    error_data = error_response(
+        error_code=ErrorCode.VALIDATION_ERROR,
+        message="Account deletion now requires email confirmation. Request a deletion code first.",
+        status_code=status.HTTP_400_BAD_REQUEST,
+    )
+    return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
 
 
 @router.post("/profile/avatar")

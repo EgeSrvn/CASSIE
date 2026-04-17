@@ -4,13 +4,7 @@
 
 ## 2. Small ml model to predict time and price of pipelines with different length of data,tool should be trained. 
 
-## 3. Contact, About, Help Tutorial. Their content should come from a config file.
-
-## 4. Delete Account
-
-## 4. 2FA Email authentication during register. Add a library that can send emails. Also add forgot password page. Change password in edit profile should have its own confirm changes button and should ask the new password twice and compare them.
-
-## 5. Forum page might be good
+## open templates and customize shoudl be a bit seperate
 
 ## 6. Add meryl for merqury
 

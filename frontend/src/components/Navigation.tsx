@@ -1,6 +1,6 @@
 import { useNavigate, useLocation } from 'react-router-dom'
-import { useState, useEffect } from 'react'
-import { logout, getToken, getCurrentUser, User } from '../services/authService'
+import { useState, useEffect, useRef } from 'react'
+import { logout, getToken, getCurrentUser, getStoredUser, User } from '../services/authService'
 import '../styles/Navigation.css'
 
 interface NavigationProps {
@@ -11,62 +11,73 @@ export default function Navigation({ onLogout }: NavigationProps) {
   const navigate = useNavigate()
   const location = useLocation()
   const [isAuthenticated, setIsAuthenticated] = useState(!!getToken())
-  const [user, setUser] = useState<User | null>(null)
+  const [user, setUser] = useState<User | null>(() => getStoredUser())
+  const [isUserMenuOpen, setIsUserMenuOpen] = useState(false)
+  const userMenuRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
-    // Check authentication status
-    const checkAuth = () => {
+    let isMounted = true
+
+    const checkAuth = async () => {
       const token = getToken()
       const authenticated = !!token
+      if (!isMounted) {
+        return
+      }
+
       setIsAuthenticated(authenticated)
-      
-      // Fetch user info if authenticated (with delay to avoid race conditions after login)
+
       if (authenticated) {
-        // Add a small delay to ensure token is properly set after login/register
-        setTimeout(() => {
-          getCurrentUser()
-            .then((userData) => {
-              setUser(userData)
-            })
-            .catch((err) => {
-              // Silently handle errors - don't log to console unless it's a real issue
-              // If getting user fails, might be invalid token
-              if (err.response?.status === 401) {
-                logout()
-                setIsAuthenticated(false)
-                setUser(null)
-              }
-            })
-        }, 100)
+        try {
+          const userData = await getCurrentUser()
+          if (isMounted) {
+            setUser(userData)
+          }
+        } catch (err: any) {
+          if (err.response?.status === 401 && isMounted) {
+            logout()
+            setIsAuthenticated(false)
+            setUser(null)
+          }
+        }
       } else {
         setUser(null)
       }
     }
 
-    // Initial check
-    checkAuth()
+    void checkAuth()
 
-    // Listen for storage changes (logout from other tabs/windows)
     const handleStorageChange = () => {
-      checkAuth()
+      void checkAuth()
     }
 
-    // Listen for custom auth change events
     const handleAuthChange = () => {
-      checkAuth()
+      void checkAuth()
     }
 
     window.addEventListener('storage', handleStorageChange)
     window.addEventListener('auth-change', handleAuthChange)
-    
-    // Also check periodically in case of same-tab logout (but less frequently)
-    const interval = setInterval(checkAuth, 5000)
 
     return () => {
+      isMounted = false
       window.removeEventListener('storage', handleStorageChange)
       window.removeEventListener('auth-change', handleAuthChange)
-      clearInterval(interval)
     }
+  }, [])
+
+  useEffect(() => {
+    setIsUserMenuOpen(false)
+  }, [location.pathname])
+
+  useEffect(() => {
+    const handlePointerDown = (event: MouseEvent) => {
+      if (!userMenuRef.current?.contains(event.target as Node)) {
+        setIsUserMenuOpen(false)
+      }
+    }
+
+    window.addEventListener('mousedown', handlePointerDown)
+    return () => window.removeEventListener('mousedown', handlePointerDown)
   }, [])
 
   const handleLogout = () => {
@@ -135,12 +146,14 @@ export default function Navigation({ onLogout }: NavigationProps) {
 
         <div className="nav-actions">
           {isAuthenticated ? (
-            <>
+            <div className="nav-user-menu-shell" ref={userMenuRef}>
               {user && (
                 <button
                   type="button"
                   className="nav-user-chip"
-                  onClick={() => navigate('/profile')}
+                  onClick={() => setIsUserMenuOpen((current) => !current)}
+                  aria-haspopup="menu"
+                  aria-expanded={isUserMenuOpen}
                 >
                   {user.avatar_url ? (
                     <img
@@ -159,10 +172,29 @@ export default function Navigation({ onLogout }: NavigationProps) {
                   </span>
                 </button>
               )}
-              <button type="button" onClick={handleLogout} className="btn-secondary btn-small">
-                Logout
-              </button>
-            </>
+              {isUserMenuOpen && (
+                <div className="nav-user-menu" role="menu">
+                  <button type="button" className="nav-user-menu-item" onClick={() => navigate('/profile')}>
+                    Go Profile
+                  </button>
+                  <button type="button" className="nav-user-menu-item" onClick={() => navigate('/contact')}>
+                    Contact
+                  </button>
+                  <button type="button" className="nav-user-menu-item" onClick={() => navigate('/about')}>
+                    About
+                  </button>
+                  <button type="button" className="nav-user-menu-item" onClick={() => navigate('/help')}>
+                    Help
+                  </button>
+                  <button type="button" className="nav-user-menu-item" onClick={() => navigate('/tutorial')}>
+                    Tutorial
+                  </button>
+                  <button type="button" className="nav-user-menu-item nav-user-menu-item-danger" onClick={handleLogout}>
+                    Logout
+                  </button>
+                </div>
+              )}
+            </div>
           ) : (
             <>
               <button 
@@ -171,8 +203,7 @@ export default function Navigation({ onLogout }: NavigationProps) {
                   e.preventDefault()
                   navigate('/login')
                 }} 
-                className="btn-secondary btn-small"
-                style={{ backgroundColor: 'var(--secondary)', color: 'white', border: 'none' }}
+                className={`nav-link nav-auth-link ${isActive('/login') ? 'active' : ''}`}
               >
                 Login
               </button>
@@ -182,8 +213,7 @@ export default function Navigation({ onLogout }: NavigationProps) {
                   e.preventDefault()
                   navigate('/register')
                 }} 
-                className="btn-primary btn-small"
-                style={{ backgroundColor: 'white', color: 'var(--primary)', border: '1px solid var(--primary)' }}
+                className={`nav-link nav-auth-link ${isActive('/register') ? 'active' : ''}`}
               >
                 Register
               </button>

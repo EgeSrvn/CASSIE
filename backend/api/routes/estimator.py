@@ -1,17 +1,20 @@
 """
-Cost estimation routes for CASSIE backend.
-
-This module provides:
-- Job cost estimation (placeholder implementation)
+Runtime and cost estimation routes for CASSIE backend.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 
-from backend.api.routes.auth import get_current_user
+from backend.api.routes.auth import get_current_user, get_current_user_optional
 from backend.api.models.user_model import UserResponse
+from backend.api.services.pipeline_service import get_pipeline_by_id, get_pipeline_by_id_public
+from backend.api.services.runtime_estimator_service import (
+    RuntimeInputAssignment,
+    estimate_runtime_for_pipeline_graph,
+    estimate_runtime_for_tool_indices,
+)
 from backend.api.utils.response_builder import (
     success_response,
     error_response,
@@ -40,6 +43,18 @@ class CostEstimateResponse(BaseModel):
     estimated_runtime_hours: float = Field(..., description="Estimated runtime in hours")
     resource_requirements: Dict[str, Any] = Field(..., description="Resource requirements")
     breakdown: Dict[str, Any] = Field(..., description="Cost breakdown by component")
+
+
+class RuntimeEstimateRequest(BaseModel):
+    class InputAssignment(BaseModel):
+        tool_id: str
+        requirement_type: str
+        total_input_size_mib: float
+
+    tool_indices: Optional[List[int]] = None
+    pipeline_id: Optional[int] = None
+    vm_name: Optional[str] = None
+    input_assignments: Optional[List[InputAssignment]] = None
 
 
 @router.post("/estimate")
@@ -107,5 +122,83 @@ async def estimate_job_cost(
             error_code=ErrorCode.INTERNAL_ERROR,
             message="Failed to estimate job cost",
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@router.post("/runtime")
+async def estimate_runtime(
+    request: RuntimeEstimateRequest,
+    current_user: Optional[UserResponse] = Depends(get_current_user_optional),
+):
+    """Estimate job runtime from selected tools or a saved pipeline."""
+    try:
+        input_assignments = [
+            RuntimeInputAssignment(
+                tool_id=item.tool_id,
+                requirement_type=item.requirement_type,
+                total_input_size_mib=item.total_input_size_mib,
+            )
+            for item in (request.input_assignments or [])
+        ]
+
+        if request.pipeline_id:
+            pipeline = None
+            if current_user:
+                pipeline = get_pipeline_by_id(request.pipeline_id, current_user.id)
+            if pipeline is None:
+                pipeline = get_pipeline_by_id_public(request.pipeline_id)
+            if pipeline is None:
+                error_data = error_response(
+                    error_code=ErrorCode.NOT_FOUND,
+                    message="Pipeline not found for runtime estimation",
+                    status_code=status.HTTP_404_NOT_FOUND,
+                )
+                return JSONResponse(content=error_data, status_code=status.HTTP_404_NOT_FOUND)
+
+            estimate = estimate_runtime_for_pipeline_graph(
+                list(pipeline.nodes or []),
+                list(pipeline.edges or []),
+                request.vm_name,
+                input_assignments,
+            )
+        elif request.tool_indices:
+            estimate = estimate_runtime_for_tool_indices(request.tool_indices, request.vm_name, input_assignments)
+        else:
+            error_data = error_response(
+                error_code=ErrorCode.VALIDATION_ERROR,
+                message="Provide either tool_indices or pipeline_id for runtime estimation",
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+            return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+
+        return JSONResponse(
+            content=success_response(
+                data={
+                    "model_type": estimate.model_type,
+                    "vm_name": estimate.vm_name,
+                    "vm_display_name": estimate.vm_display_name,
+                    "partition_factor": estimate.partition_factor,
+                    "vm_price_per_minute": estimate.vm_price_per_minute,
+                    "total_input_size_mib": estimate.total_input_size_mib,
+                    "estimated_runtime_minutes": estimate.estimated_runtime_minutes,
+                    "estimated_runtime_hours": estimate.estimated_runtime_hours,
+                    "estimated_price_usd": estimate.estimated_price_usd,
+                    "fixed_overhead_minutes": estimate.fixed_overhead_minutes,
+                    "execution_shape": estimate.execution_shape,
+                    "tool_breakdown": estimate.tool_breakdown,
+                    "assumptions": estimate.assumptions,
+                },
+                message="Runtime estimation completed",
+                status_code=status.HTTP_200_OK,
+            ),
+            status_code=status.HTTP_200_OK,
+        )
+    except Exception as e:
+        logger.error(f"Error estimating runtime: {e}", exc_info=True)
+        error_data = error_response(
+            error_code=ErrorCode.INTERNAL_ERROR,
+            message="Failed to estimate runtime",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
         return JSONResponse(content=error_data, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)

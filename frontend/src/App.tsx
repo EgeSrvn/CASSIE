@@ -14,6 +14,9 @@ import Forum from './pages/Forum'
 import ForumComposer from './pages/ForumComposer'
 import ForumThread from './pages/ForumThread'
 import Profile from './pages/Profile'
+import StaticPage from './pages/StaticPage'
+import VerifyEmail from './pages/VerifyEmail'
+import ForgotPassword from './pages/ForgotPassword'
 import { getToken } from './services/authService'
 import { startPendingJobUploadProcessor } from './services/pendingJobUploadService'
 
@@ -63,7 +66,15 @@ function App() {
         />
         <Route 
           path="/register" 
-          element={!isAuthenticated ? <Register onRegister={() => setIsAuthenticated(true)} /> : <Navigate to="/" />} 
+          element={!isAuthenticated ? <Register /> : <Navigate to="/" />} 
+        />
+        <Route
+          path="/verify-email"
+          element={<VerifyEmail />}
+        />
+        <Route
+          path="/forgot-password"
+          element={<ForgotPassword />}
         />
         <Route 
           path="/" 
@@ -109,6 +120,26 @@ function App() {
         <Route
           path="/profile/:userId"
           element={<Profile />}
+        />
+        <Route
+          path="/contact"
+          element={<Navigate to="/pages/contact" replace />}
+        />
+        <Route
+          path="/about"
+          element={<Navigate to="/pages/about" replace />}
+        />
+        <Route
+          path="/help"
+          element={<Navigate to="/pages/help" replace />}
+        />
+        <Route
+          path="/tutorial"
+          element={<Navigate to="/pages/tutorial" replace />}
+        />
+        <Route
+          path="/pages/:slug"
+          element={<StaticPage />}
         />
         {/* Public routes - can view but not save/execute */}
         <Route 

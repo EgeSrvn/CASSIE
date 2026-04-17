@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 
 import Navigation from '../components/Navigation'
 import { ForumThreadSummary, listForumThreads } from '../services/forumService'
+import { extractApiErrorMessage } from '../services/apiClient'
 import '../styles/globals.css'
 
 export default function Forum() {
@@ -11,19 +12,34 @@ export default function Forum() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [search, setSearch] = useState('')
+  const [page, setPage] = useState(1)
+  const [totalPages, setTotalPages] = useState(1)
 
   useEffect(() => {
     void loadThreads()
-  }, [search])
+  }, [search, page])
+
+  const buildVisiblePages = () => {
+    const pages = new Set<number>([1, 2, 3, page, page + 1, totalPages])
+    return Array.from(pages)
+      .filter((value) => value >= 1 && value <= totalPages)
+      .sort((a, b) => a - b)
+  }
 
   const loadThreads = async () => {
     try {
       setLoading(true)
       setError('')
-      const response = await listForumThreads(search, 1, 10)
+      const response = await listForumThreads(search, page, 10)
+      const nextTotalPages = Math.max(1, Math.ceil(response.total / response.per_page))
+      if (page > nextTotalPages) {
+        setPage(nextTotalPages)
+        return
+      }
       setThreads(response.items)
+      setTotalPages(nextTotalPages)
     } catch (err: any) {
-      setError(err.response?.data?.message || err.message || 'Failed to load forum threads')
+      setError(extractApiErrorMessage(err, 'Failed to load forum threads'))
       setThreads([])
     } finally {
       setLoading(false)
@@ -43,7 +59,10 @@ export default function Forum() {
             <input
               type="search"
               value={search}
-              onChange={(e) => setSearch(e.target.value)}
+              onChange={(e) => {
+                setSearch(e.target.value)
+                setPage(1)
+              }}
               className="community-search-input"
               placeholder="Search forum discussions"
             />
@@ -71,7 +90,6 @@ export default function Forum() {
                 onClick={() => navigate(`/forum/${thread.id}`)}
               >
                 <div className="forum-thread-topline">
-                  <span className="entry-badge">Discussion</span>
                   <span>{new Date(thread.last_activity_at).toLocaleString()}</span>
                 </div>
                 <h3>{thread.title}</h3>
@@ -106,6 +124,40 @@ export default function Forum() {
             ))
           )}
         </section>
+        {totalPages > 1 && (
+          <nav className="forum-pagination forum-list-pagination" aria-label="Forum pages">
+            <button
+              type="button"
+              className="btn-secondary btn-small forum-page-arrow"
+              disabled={page === 1}
+              onClick={() => setPage((current) => Math.max(1, current - 1))}
+              aria-label="Previous page"
+            >
+              ←
+            </button>
+            {buildVisiblePages().map((pageNumber, index, pages) => (
+              <span key={`forum-page-${pageNumber}`} className="forum-pagination-cluster">
+                {index > 0 && pageNumber - pages[index - 1] > 1 ? <span className="forum-page-ellipsis">…</span> : null}
+                <button
+                  type="button"
+                  className={`btn-secondary btn-small forum-page-chip ${page === pageNumber ? 'active' : ''}`}
+                  onClick={() => setPage(pageNumber)}
+                >
+                  {pageNumber}
+                </button>
+              </span>
+            ))}
+            <button
+              type="button"
+              className="btn-secondary btn-small forum-page-arrow"
+              disabled={page === totalPages}
+              onClick={() => setPage((current) => Math.min(totalPages, current + 1))}
+              aria-label="Next page"
+            >
+              →
+            </button>
+          </nav>
+        )}
       </div>
     </div>
   )

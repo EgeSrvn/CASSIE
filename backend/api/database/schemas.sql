@@ -14,8 +14,15 @@ CREATE TABLE IF NOT EXISTS users (
     email VARCHAR(100) UNIQUE,
     password_hash VARCHAR(255) NOT NULL,
     bucket_name VARCHAR(100) UNIQUE NOT NULL,
+    email_verified BOOLEAN NOT NULL DEFAULT FALSE,
+    email_verification_code VARCHAR(12),
+    email_verification_expires_at TIMESTAMP,
+    password_reset_code VARCHAR(12),
+    password_reset_expires_at TIMESTAMP,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    account_deletion_code VARCHAR(12),
+    account_deletion_expires_at TIMESTAMP
 );
 
 -- Indexes for users table
@@ -66,6 +73,48 @@ BEGIN
         WHERE table_name = 'users' AND column_name = 'avatar_url'
     ) THEN
         ALTER TABLE users ADD COLUMN avatar_url VARCHAR(500);
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'users' AND column_name = 'email_verified'
+    ) THEN
+        ALTER TABLE users ADD COLUMN email_verified BOOLEAN NOT NULL DEFAULT FALSE;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'users' AND column_name = 'email_verification_code'
+    ) THEN
+        ALTER TABLE users ADD COLUMN email_verification_code VARCHAR(12);
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'users' AND column_name = 'email_verification_expires_at'
+    ) THEN
+        ALTER TABLE users ADD COLUMN email_verification_expires_at TIMESTAMP;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'users' AND column_name = 'password_reset_code'
+    ) THEN
+        ALTER TABLE users ADD COLUMN password_reset_code VARCHAR(12);
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'users' AND column_name = 'password_reset_expires_at'
+    ) THEN
+        ALTER TABLE users ADD COLUMN password_reset_expires_at TIMESTAMP;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'users' AND column_name = 'account_deletion_code'
+    ) THEN
+        ALTER TABLE users ADD COLUMN account_deletion_code VARCHAR(12);
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'users' AND column_name = 'account_deletion_expires_at'
+    ) THEN
+        ALTER TABLE users ADD COLUMN account_deletion_expires_at TIMESTAMP;
     END IF;
 END $$;
 
@@ -129,6 +178,7 @@ CREATE TABLE IF NOT EXISTS forum_comments (
     parent_comment_id INTEGER REFERENCES forum_comments(id) ON DELETE CASCADE,
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     body TEXT NOT NULL,
+    image_keys JSONB DEFAULT '[]'::jsonb,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL
 );
@@ -140,6 +190,16 @@ BEGIN
         WHERE table_name = 'forum_comments' AND column_name = 'parent_comment_id'
     ) THEN
         ALTER TABLE forum_comments ADD COLUMN parent_comment_id INTEGER REFERENCES forum_comments(id) ON DELETE CASCADE;
+    END IF;
+END $$;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'forum_comments' AND column_name = 'image_keys'
+    ) THEN
+        ALTER TABLE forum_comments ADD COLUMN image_keys JSONB DEFAULT '[]'::jsonb;
     END IF;
 END $$;
 

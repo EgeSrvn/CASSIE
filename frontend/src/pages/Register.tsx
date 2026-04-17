@@ -1,10 +1,11 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { register, RegisterRequest } from '../services/authService'
+import { extractApiErrorMessage } from '../services/apiClient'
 import '../styles/globals.css'
 
 interface RegisterProps {
-  onRegister: () => void
+  onRegister?: () => void
 }
 
 export default function Register({ onRegister }: RegisterProps) {
@@ -15,34 +16,35 @@ export default function Register({ onRegister }: RegisterProps) {
   })
   const [error, setError] = useState<string>('')
   const [loading, setLoading] = useState(false)
+  const submitLockedRef = useRef(false)
   const navigate = useNavigate()
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     e.stopPropagation()
+
+    if (submitLockedRef.current || loading) {
+      return
+    }
+
+    submitLockedRef.current = true
     setError('')
     setLoading(true)
 
     try {
-      const result = await register(formData)
-      // Ensure token is set before updating state
-      if (result && result.access_token) {
-        onRegister()
-        // Small delay to ensure token is saved before navigation
-        setTimeout(() => {
-          // Trigger auth change event for Navigation component
-          window.dispatchEvent(new Event('auth-change'))
-          navigate('/dashboard')
-        }, 50)
-      } else {
-        throw new Error('Registration failed: No token received')
-      }
+      const challenge = await register(formData)
+      onRegister?.()
+      navigate('/verify-email', {
+        state: {
+          email: challenge.email,
+        },
+      })
     } catch (err: any) {
-      // Extract error message - could be from axios error or Error object
-      const errorMessage = err.message || err.response?.data?.message || err.response?.data?.detail || 'Registration failed. Please try again.'
+      const errorMessage = extractApiErrorMessage(err, 'Registration failed. Please try again.')
       setError(errorMessage)
       console.error('Registration error:', err)
       setLoading(false)
+      submitLockedRef.current = false
     }
   }
 

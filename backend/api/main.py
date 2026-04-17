@@ -334,9 +334,16 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     error_details = {"errors": errors}
     if request_id:
         error_details["request_id"] = request_id
+
+    first_error = errors[0] if errors else None
+    if first_error:
+        field_name = first_error["field"].split(".")[-1].replace("_", " ")
+        message = f"{field_name.capitalize()}: {first_error['message']}"
+    else:
+        message = "Validation error"
     
     error_data = validation_error_response(
-        message="Validation error",
+        message=message,
         details=error_details
     )
     return JSONResponse(

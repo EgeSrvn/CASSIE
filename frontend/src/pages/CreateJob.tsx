@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
-import { createJob, JobCreate, executeJob, getAvailableVMs, VM } from '../services/jobService'
+import { createJob, JobCreate, executeJob, estimateRuntime, getAvailableVMs, RuntimeEstimate, RuntimeInputAssignment, VM } from '../services/jobService'
 import {
   getAvailableTools,
   Tool,
@@ -23,6 +23,15 @@ const formatVmCpu = (cpuMillis: number): string => `${(cpuMillis / 1000).toFixed
 const formatVmMemory = (memoryMib: number): string => `${(memoryMib / 1024).toFixed(2)} GiB`
 const formatVmStorage = (storageMib: number): string => storageMib > 0 ? `${(storageMib / 1024).toFixed(2)} GiB` : 'Auto'
 const formatVmSlots = (vm: VM): string => `${vm.available_job_slots}/${vm.max_jobs} jobs available`
+const formatUsd = (value: number): string => `$${value.toFixed(2)}`
+const formatRuntimeEstimate = (minutes: number): string => {
+  if (minutes < 60) {
+    return `${minutes} min`
+  }
+  const hours = Math.floor(minutes / 60)
+  const remainingMinutes = minutes % 60
+  return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`
+}
 
 const TOOL_OUTPUTS_BY_ID: Record<string, string[]> = {
   FASTQC: ['qc_report'],
@@ -106,6 +115,9 @@ export default function CreateJob() {
   const [availableVMs, setAvailableVMs] = useState<VM[]>([])
   const [loadingVMs, setLoadingVMs] = useState(false)
   const [selectedVM, setSelectedVM] = useState<string>('')
+  const [runtimeEstimate, setRuntimeEstimate] = useState<RuntimeEstimate | null>(null)
+  const [loadingRuntimeEstimate, setLoadingRuntimeEstimate] = useState(false)
+  const [runtimeEstimateError, setRuntimeEstimateError] = useState('')
   const [toolRequirements, setToolRequirements] = useState<ToolRequirementInfo[]>([])
   const [loadingToolRequirements, setLoadingToolRequirements] = useState(false)
   const [toolFileMappings, setToolFileMappings] = useState<Record<string, Record<string, number[]>>>({}) // Maps tool_index -> requirement_type -> file_id[]
@@ -161,6 +173,67 @@ export default function CreateJob() {
     }
     fetchTools()
   }, [isAuthenticated])
+
+  useEffect(() => {
+    let cancelled = false
+
+    const runEstimate = async () => {
+      if (!selectedVM) {
+        setRuntimeEstimate(null)
+        setRuntimeEstimateError('')
+        return
+      }
+
+      if (selectionMode === 'tools' && selectedTools.length === 0) {
+        setRuntimeEstimate(null)
+        setRuntimeEstimateError('')
+        return
+      }
+
+      if (selectionMode === 'pipeline' && !selectedPipelineId) {
+        setRuntimeEstimate(null)
+        setRuntimeEstimateError('')
+        return
+      }
+
+      try {
+        setLoadingRuntimeEstimate(true)
+        setRuntimeEstimateError('')
+        const estimate = await estimateRuntime(
+          selectionMode === 'pipeline'
+            ? {
+                pipeline_id: selectedPipelineId || undefined,
+                vm_name: selectedVM,
+                input_assignments: getRuntimeInputAssignments(),
+              }
+            : {
+                tool_indices: selectedTools,
+                vm_name: selectedVM,
+                input_assignments: getRuntimeInputAssignments(),
+              }
+        )
+
+        if (!cancelled) {
+          setRuntimeEstimate(estimate)
+        }
+      } catch (err: any) {
+        if (!cancelled) {
+          setRuntimeEstimate(null)
+          setRuntimeEstimateError(err.message || 'Failed to estimate runtime')
+        }
+      } finally {
+        if (!cancelled) {
+          setLoadingRuntimeEstimate(false)
+        }
+      }
+    }
+
+    void runEstimate()
+
+    return () => {
+      cancelled = true
+    }
+  }, [selectedVM, selectionMode, selectedPipelineId, selectedTools, toolFileMappings, pendingLocalFiles, dataFileTree])
 
   useEffect(() => {
     const fetchIntents = async () => {
@@ -500,6 +573,40 @@ export default function CreateJob() {
     return [...pendingFilesAsItems, ...libraryFiles]
   }
 
+  const getRuntimeInputAssignments = (): RuntimeInputAssignment[] => {
+    const selectableFiles = getCombinedSelectableFiles()
+    const fileById = new Map<number, FileItem & { folderPath?: string }>(
+      selectableFiles.map((file) => [file.id, file])
+    )
+
+    const assignments: RuntimeInputAssignment[] = []
+    activeToolRequirementCards.forEach((toolReq) => {
+      const toolKey = toolReq.tool_index.toString()
+      toolReq.requirements.forEach((req) => {
+        if (req.is_intermediate) {
+          return
+        }
+
+        const mappedFileIds = toolFileMappings[toolKey]?.[req.type] || []
+        const totalInputSizeMib = mappedFileIds.reduce((sum, fileId) => {
+          const file = fileById.get(fileId)
+          const sizeBytes = typeof file?.size_bytes === 'number' ? file.size_bytes : 0
+          return sum + (sizeBytes > 0 ? sizeBytes / (1024 * 1024) : 0)
+        }, 0)
+
+        if (totalInputSizeMib > 0) {
+          assignments.push({
+            tool_id: toolReq.tool_id,
+            requirement_type: req.type,
+            total_input_size_mib: Number(totalInputSizeMib.toFixed(2)),
+          })
+        }
+      })
+    })
+
+    return assignments
+  }
+
   const getCompatibleCandidateFileIds = (
     requirement: { type: string; formats: string[] },
     candidateFiles: Array<FileItem & { folderPath?: string }>
@@ -802,6 +909,51 @@ export default function CreateJob() {
                 <div style={{ color: '#64748b', fontSize: '0.875rem', marginTop: '0.35rem' }}>
                   Hard limit per job on this VM profile: total resources / number of VMs / max concurrent jobs on this VM.
                 </div>
+              </div>
+            )}
+            {(loadingRuntimeEstimate || runtimeEstimate || runtimeEstimateError) && (
+              <div className="runtime-estimate-card">
+                <div className="runtime-estimate-header">
+                  <strong>Predicted Job Estimate</strong>
+                  <span>Deterministic model</span>
+                </div>
+                {loadingRuntimeEstimate ? (
+                  <p className="runtime-estimate-copy">Calculating runtime for the current selection...</p>
+                ) : runtimeEstimate ? (
+                  <>
+                    <div className="runtime-estimate-summary-grid">
+                      <div className="runtime-estimate-panel">
+                        <span className="runtime-estimate-label">Estimated Runtime</span>
+                        <span className="runtime-estimate-value">{formatRuntimeEstimate(runtimeEstimate.estimated_runtime_minutes)}</span>
+                        <span className="runtime-estimate-subtle">
+                          about {runtimeEstimate.estimated_runtime_hours.toFixed(2)} hours on {runtimeEstimate.vm_display_name}
+                        </span>
+                      </div>
+                      <div className="runtime-estimate-panel">
+                        <span className="runtime-estimate-label">Estimated Price</span>
+                        <span className="runtime-estimate-value">{formatUsd(runtimeEstimate.estimated_price_usd)}</span>
+                        <span className="runtime-estimate-subtle">
+                          {formatUsd(runtimeEstimate.vm_price_per_minute)} per minute on {runtimeEstimate.vm_display_name}
+                        </span>
+                      </div>
+                    </div>
+                    <p className="runtime-estimate-copy">
+                      Model: {runtimeEstimate.execution_shape}. Partition factor: {runtimeEstimate.partition_factor.toFixed(2)}x. Input size: {runtimeEstimate.total_input_size_mib.toFixed(2)} MiB.
+                    </p>
+                    <div className="runtime-estimate-breakdown">
+                      {runtimeEstimate.tool_breakdown.map((tool) => (
+                        <span key={`${tool.tool_id}-${tool.tool_name}`} className="runtime-estimate-chip">
+                          {tool.tool_name}: {Math.round(tool.adjusted_minutes)}m, {tool.input_size_mib.toFixed(1)} MiB
+                        </span>
+                      ))}
+                    </div>
+                    {runtimeEstimate.assumptions.length > 0 && (
+                      <p className="runtime-estimate-copy">{runtimeEstimate.assumptions[0]}</p>
+                    )}
+                  </>
+                ) : (
+                  <p className="runtime-estimate-error">{runtimeEstimateError}</p>
+                )}
               </div>
             )}
           </div>
