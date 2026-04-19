@@ -11,6 +11,7 @@ This module is the single source of truth for tool metadata that is used by:
 from __future__ import annotations
 
 from copy import deepcopy
+import re
 from typing import Any, Dict, List, Optional
 
 
@@ -559,15 +560,480 @@ process GENOMESCOPE2 {
 ]
 
 
+TOOL_EDITABLE_FLAGS: Dict[str, List[Dict[str, Any]]] = {
+    "FASTQC": [
+        {
+            "key": "nogroup",
+            "label": "Disable Base Grouping",
+            "description": "Do not group bases >50 bp into bins in the plots.",
+            "type": "boolean",
+            "default": False,
+        },
+        {
+            "key": "noextract",
+            "label": "Keep ZIP Only",
+            "description": "Do not unzip the FastQC archive after analysis.",
+            "type": "boolean",
+            "default": False,
+        },
+        {
+            "key": "svg",
+            "label": "Generate SVG Icons",
+            "description": "Use SVG images in the HTML report where supported.",
+            "type": "boolean",
+            "default": False,
+        },
+        {
+            "key": "casava",
+            "label": "CASAVA Mode",
+            "description": "Treat the input as CASAVA-grouped reads.",
+            "type": "boolean",
+            "default": False,
+        },
+        {
+            "key": "nano",
+            "label": "Nanopore Mode",
+            "description": "Enable Nanopore-specific processing mode.",
+            "type": "boolean",
+            "default": False,
+        },
+    ],
+    "SPADES": [
+        {
+            "key": "careful",
+            "label": "Careful Mode",
+            "description": "Reduce mismatches and short indels in the assembly.",
+            "type": "boolean",
+            "default": False,
+        },
+        {
+            "key": "only_assembler",
+            "label": "Skip Error Correction",
+            "description": "Run the assembler stage only.",
+            "type": "boolean",
+            "default": False,
+        },
+        {
+            "key": "cov_cutoff",
+            "label": "Coverage Cutoff",
+            "description": "Use a positive number, auto, or off.",
+            "type": "string",
+            "default": "off",
+            "pattern": r"^(auto|off|\d+(?:\.\d+)?)$",
+            "placeholder": "auto, off, or 10.5",
+            "example": "auto",
+            "error_message": "Enter auto, off, or a positive number such as 10.5.",
+        },
+        {
+            "key": "phred_offset",
+            "label": "PHRED Offset",
+            "description": "Leave on auto unless the read encoding is known.",
+            "type": "select",
+            "default": "auto",
+            "options": [
+                {"label": "Auto Detect", "value": "auto"},
+                {"label": "PHRED+33", "value": "33"},
+                {"label": "PHRED+64", "value": "64"},
+            ],
+        },
+    ],
+    "QUAST": [
+        {
+            "key": "gene_finding",
+            "label": "Run Gene Finding",
+            "description": "Enable QUAST gene finding when appropriate.",
+            "type": "boolean",
+            "default": False,
+        },
+        {
+            "key": "large",
+            "label": "Large Genome Mode",
+            "description": "Tune QUAST for larger and more complex genomes.",
+            "type": "boolean",
+            "default": False,
+        },
+        {
+            "key": "fragmented",
+            "label": "Fragmented Genome Mode",
+            "description": "Use QUAST fragmented reference mode.",
+            "type": "boolean",
+            "default": False,
+        },
+        {
+            "key": "memory_efficient",
+            "label": "Memory Efficient Mode",
+            "description": "Prefer lower-memory QUAST behavior.",
+            "type": "boolean",
+            "default": False,
+        },
+    ],
+    "GENOMESCOPE2": [
+        {
+            "key": "ploidy",
+            "label": "Expected Ploidy",
+            "description": "Expected ploidy used by GenomeScope2.",
+            "type": "integer",
+            "default": 1,
+            "min": 1,
+            "max": 16,
+            "placeholder": "e.g. 2",
+            "example": "2",
+        },
+        {
+            "key": "initial_coverage",
+            "label": "Initial Coverage Guess",
+            "description": "Optional initial estimate for the homozygous coverage peak.",
+            "type": "integer",
+            "default": 0,
+            "min": 0,
+            "placeholder": "e.g. 40",
+            "example": "40",
+        },
+        {
+            "key": "max_kmer_coverage",
+            "label": "Maximum K-mer Coverage",
+            "description": "Ignore k-mers above this coverage during fitting.",
+            "type": "integer",
+            "default": 0,
+            "min": 0,
+            "placeholder": "e.g. 10000",
+            "example": "10000",
+        },
+        {
+            "key": "jellyfish_hash_size",
+            "label": "Jellyfish Hash Size",
+            "description": "Jellyfish count table size such as 50M or 2G.",
+            "type": "string",
+            "default": "50M",
+            "pattern": r"^\d+[KMG]$",
+            "placeholder": "e.g. 1G",
+            "example": "1G",
+            "error_message": "Use a value like 50M, 500M, or 2G.",
+        },
+    ],
+    "METASPADES": [
+        {
+            "key": "only_assembler",
+            "label": "Skip Error Correction",
+            "description": "Run the assembler stage only.",
+            "type": "boolean",
+            "default": False,
+        },
+        {
+            "key": "phred_offset",
+            "label": "PHRED Offset",
+            "description": "Leave on auto unless the read encoding is known.",
+            "type": "select",
+            "default": "auto",
+            "options": [
+                {"label": "Auto Detect", "value": "auto"},
+                {"label": "PHRED+33", "value": "33"},
+                {"label": "PHRED+64", "value": "64"},
+            ],
+        },
+    ],
+    "HIFIASM": [
+        {
+            "key": "mode",
+            "label": "Assembly Mode",
+            "description": "Choose PacBio HiFi or ONT assembly mode.",
+            "type": "select",
+            "default": "hifi",
+            "options": [
+                {"label": "PacBio HiFi", "value": "hifi"},
+                {"label": "Oxford Nanopore", "value": "ont"},
+            ],
+        },
+        {
+            "key": "disable_dup_purging",
+            "label": "Disable Duplication Purging",
+            "description": "Equivalent to hifiasm -l0 for inbred or homozygous genomes.",
+            "type": "boolean",
+            "default": False,
+        },
+        {
+            "key": "small_genome_no_bloom",
+            "label": "Disable Bloom Filter",
+            "description": "Equivalent to hifiasm -f0 for smaller genomes.",
+            "type": "boolean",
+            "default": False,
+        },
+        {
+            "key": "write_paf",
+            "label": "Write PAF Alignments",
+            "description": "Emit additional PAF overlap output.",
+            "type": "boolean",
+            "default": False,
+        },
+    ],
+    "VERKKO": [
+        {
+            "key": "haploid",
+            "label": "Haploid Mode",
+            "description": "Run Verkko in haploid mode.",
+            "type": "boolean",
+            "default": False,
+        },
+        {
+            "key": "uneven_depth",
+            "label": "Uneven Depth Mode",
+            "description": "Use settings intended for uneven sequencing depth.",
+            "type": "boolean",
+            "default": False,
+        },
+        {
+            "key": "telomere_motif",
+            "label": "Telomere Motif",
+            "description": "Override the default vertebrate telomere repeat motif.",
+            "type": "string",
+            "default": "",
+            "pattern": r"^$|^[ACGTacgt]+$",
+            "placeholder": "e.g. CCCTAA",
+            "example": "CCCTAA",
+            "error_message": "Use only A, C, G, and T characters.",
+        },
+    ],
+    "LIFTOFF": [
+        {
+            "key": "coverage_threshold",
+            "label": "Coverage Threshold",
+            "description": "Minimum alignment coverage required for a mapping.",
+            "type": "number",
+            "default": 0.5,
+            "min": 0.0,
+            "max": 1.0,
+            "placeholder": "e.g. 0.75",
+            "example": "0.75",
+        },
+        {
+            "key": "identity_threshold",
+            "label": "Sequence Identity Threshold",
+            "description": "Minimum child feature sequence identity required for a mapping.",
+            "type": "number",
+            "default": 0.5,
+            "min": 0.0,
+            "max": 1.0,
+            "placeholder": "e.g. 0.9",
+            "example": "0.9",
+        },
+        {
+            "key": "flank_fraction",
+            "label": "Flanking Fraction",
+            "description": "Fraction of flanking sequence to align with each gene.",
+            "type": "number",
+            "default": 0.0,
+            "min": 0.0,
+            "max": 1.0,
+            "placeholder": "e.g. 0.2",
+            "example": "0.2",
+        },
+        {
+            "key": "exclude_partial",
+            "label": "Exclude Partial Mappings",
+            "description": "Write partial or low-identity mappings to the unmapped file instead of the main output.",
+            "type": "boolean",
+            "default": False,
+        },
+        {
+            "key": "copies",
+            "label": "Search for Extra Gene Copies",
+            "description": "Look for additional gene copies in the target assembly.",
+            "type": "boolean",
+            "default": False,
+        },
+    ],
+    "CAT": [
+        {
+            "key": "augustus",
+            "label": "Run Augustus",
+            "description": "Enable CAT Augustus annotation stages.",
+            "type": "boolean",
+            "default": False,
+        },
+        {
+            "key": "augustus_species",
+            "label": "Augustus Species",
+            "description": "Species model used by Augustus when enabled.",
+            "type": "string",
+            "default": "",
+            "placeholder": "e.g. human",
+            "example": "human",
+        },
+        {
+            "key": "augustus_utr_off",
+            "label": "Disable Augustus UTR Prediction",
+            "description": "Turn off Augustus UTR prediction when the species model lacks a UTR model.",
+            "type": "boolean",
+            "default": False,
+        },
+        {
+            "key": "assembly_hub",
+            "label": "Build Assembly Hub",
+            "description": "Generate CAT assembly hub outputs.",
+            "type": "boolean",
+            "default": False,
+        },
+    ],
+    "BUSCO": [
+        {
+            "key": "mode",
+            "label": "BUSCO Mode",
+            "description": "Choose the BUSCO analysis mode.",
+            "type": "select",
+            "default": "genome",
+            "options": [
+                {"label": "Genome", "value": "genome"},
+                {"label": "Proteins", "value": "proteins"},
+                {"label": "Transcriptome", "value": "transcriptome"},
+            ],
+        },
+        {
+            "key": "lineage_dataset",
+            "label": "Lineage Dataset",
+            "description": "Dataset name or local path used by BUSCO.",
+            "type": "string",
+            "default": "",
+            "placeholder": "e.g. eukaryota_odb12",
+            "example": "eukaryota_odb12",
+        },
+        {
+            "key": "auto_lineage",
+            "label": "Auto Lineage",
+            "description": "Let BUSCO choose the most appropriate lineage automatically.",
+            "type": "select",
+            "default": "off",
+            "options": [
+                {"label": "Off", "value": "off"},
+                {"label": "Auto", "value": "auto-lineage"},
+                {"label": "Auto (Eukaryota)", "value": "auto-lineage-euk"},
+                {"label": "Auto (Prokaryota)", "value": "auto-lineage-prok"},
+            ],
+        },
+        {
+            "key": "augustus",
+            "label": "Use Augustus",
+            "description": "Enable Augustus in supported BUSCO runs.",
+            "type": "boolean",
+            "default": False,
+        },
+        {
+            "key": "augustus_species",
+            "label": "Augustus Species",
+            "description": "Species model used when Augustus is enabled.",
+            "type": "string",
+            "default": "",
+            "placeholder": "e.g. fly",
+            "example": "fly",
+        },
+    ],
+    "MERQURY": [],
+}
+
+
+def _build_default_flag_values(flag_definitions: List[Dict[str, Any]]) -> Dict[str, Any]:
+    return {
+        str(flag.get("key")): deepcopy(flag.get("default"))
+        for flag in flag_definitions
+        if str(flag.get("key") or "").strip()
+    }
+
+
+def _enrich_tool(tool: Dict[str, Any]) -> Dict[str, Any]:
+    enriched = deepcopy(tool)
+    flag_definitions = deepcopy(TOOL_EDITABLE_FLAGS.get(str(tool.get("id") or ""), []))
+    enriched["editable_flags"] = flag_definitions
+    enriched["default_flag_values"] = _build_default_flag_values(flag_definitions)
+    return enriched
+
+
+def get_tool_editable_flags(tool_id: str) -> List[Dict[str, Any]]:
+    """Return editable flag definitions for a tool."""
+    return deepcopy(TOOL_EDITABLE_FLAGS.get(str(tool_id or "").strip().upper(), []))
+
+
+def get_tool_default_flag_values(tool_id: str) -> Dict[str, Any]:
+    """Return default editable flag values for a tool."""
+    return _build_default_flag_values(get_tool_editable_flags(tool_id))
+
+
+def validate_tool_flag_values(tool_id: str, values: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Validate and normalize per-tool editable flag values."""
+    provided = dict(values or {})
+    normalized = get_tool_default_flag_values(tool_id)
+    errors: Dict[str, str] = {}
+
+    for flag in get_tool_editable_flags(tool_id):
+        key = str(flag.get("key") or "").strip()
+        if not key:
+            continue
+
+        flag_type = str(flag.get("type") or "string").strip().lower()
+        raw_value = provided.get(key, normalized.get(key))
+        if isinstance(raw_value, str):
+            raw_value = raw_value.strip()
+        if raw_value in {"", None} and flag_type != "boolean":
+            raw_value = flag.get("default")
+
+        try:
+            if flag_type == "boolean":
+                if isinstance(raw_value, bool):
+                    value = raw_value
+                elif isinstance(raw_value, (int, float)):
+                    value = bool(raw_value)
+                else:
+                    value = str(raw_value or "").strip().lower() in {"1", "true", "yes", "on"}
+            elif flag_type == "integer":
+                value = int(raw_value)
+                min_value = flag.get("min")
+                max_value = flag.get("max")
+                if min_value is not None and value < int(min_value):
+                    raise ValueError(f"Value must be at least {min_value}.")
+                if max_value is not None and value > int(max_value):
+                    raise ValueError(f"Value must be at most {max_value}.")
+            elif flag_type == "number":
+                value = float(raw_value)
+                min_value = flag.get("min")
+                max_value = flag.get("max")
+                if min_value is not None and value < float(min_value):
+                    raise ValueError(f"Value must be at least {min_value}.")
+                if max_value is not None and value > float(max_value):
+                    raise ValueError(f"Value must be at most {max_value}.")
+            elif flag_type == "select":
+                valid_options = {
+                    str(option.get("value"))
+                    for option in (flag.get("options") or [])
+                    if str(option.get("value") or "").strip()
+                }
+                value = str(raw_value or flag.get("default") or "").strip()
+                if valid_options and value not in valid_options:
+                    raise ValueError("Select one of the available options.")
+            else:
+                value = str(raw_value or "")
+                pattern = str(flag.get("pattern") or "").strip()
+                if pattern and value:
+                    if re.fullmatch(pattern, value) is None:
+                        raise ValueError(str(flag.get("error_message") or "Invalid value."))
+        except (TypeError, ValueError) as exc:
+            errors[key] = str(exc)
+            continue
+
+        normalized[key] = value
+
+    return {
+        "values": normalized,
+        "errors": errors,
+    }
+
+
 def get_tool_registry() -> List[Dict[str, Any]]:
     """Return a copy of the full registry."""
-    return deepcopy(TOOL_REGISTRY)
+    return [_enrich_tool(tool) for tool in TOOL_REGISTRY]
 
 
 def get_tool_by_index(index: int) -> Optional[Dict[str, Any]]:
     """Return a tool by its current registry index."""
     if 0 <= index < len(TOOL_REGISTRY):
-        return deepcopy(TOOL_REGISTRY[index])
+        return _enrich_tool(TOOL_REGISTRY[index])
     return None
 
 
@@ -575,7 +1041,7 @@ def get_tool_by_id(tool_id: str) -> Optional[Dict[str, Any]]:
     """Return a tool by its stable string identifier."""
     for tool in TOOL_REGISTRY:
         if tool["id"] == tool_id:
-            return deepcopy(tool)
+            return _enrich_tool(tool)
     return None
 
 

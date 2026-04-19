@@ -13,6 +13,7 @@ from backend.api.utils.logger import get_logger
 from tool_registry import get_tool_by_index
 
 logger = get_logger(__name__)
+RESERVED_QUEUE_STATE = "reserved_for_upload"
 
 
 def _infer_file_formats(file_record) -> set[str]:
@@ -98,6 +99,18 @@ def job_has_active_execution(job_id: int) -> bool:
     return any(execution.status == ExecutionStatus.RUNNING for execution in executions)
 
 
+def job_has_reserved_execution(job_id: int) -> bool:
+    from backend.api.models.job_model import ExecutionStatus
+
+    executions = get_executions_by_job(job_id)
+    for execution in executions:
+        parameters_used = getattr(execution, "parameters_used", None) or {}
+        queue_state = str(parameters_used.get("queue_state") or "").strip().lower()
+        if execution.status == ExecutionStatus.PENDING and queue_state == RESERVED_QUEUE_STATE:
+            return True
+    return False
+
+
 def get_job_execution_readiness(job, user_id: int) -> Tuple[List[int], Optional[str]]:
     from backend.api.services.pipeline_analyzer import analyze_pipeline_requirements
     from backend.api.services.pipeline_service import get_pipeline_by_id
@@ -170,17 +183,18 @@ def get_auto_start_payload(job_id: int, user_id: int) -> Tuple[Optional[object],
     if job_has_active_execution(job_id):
         return job, None, "Job already has an active execution"
 
-    user = get_user_by_id(user_id)
-    can_start, current_running_jobs, max_running_jobs = can_user_start_more_jobs(
-        user_id=user_id,
-        username=user.username if user else None,
-    )
-    if not can_start:
-        return (
-            job,
-            None,
-            f"You already have {current_running_jobs} running jobs. The limit is {max_running_jobs}.",
+    if not job_has_reserved_execution(job_id):
+        user = get_user_by_id(user_id)
+        can_start, current_running_jobs, max_running_jobs = can_user_start_more_jobs(
+            user_id=user_id,
+            username=user.username if user else None,
         )
+        if not can_start:
+            return (
+                job,
+                None,
+                f"You already have {current_running_jobs} active jobs. The limit is {max_running_jobs}.",
+            )
 
     input_file_ids, readiness_error = get_job_execution_readiness(job, user_id)
     if readiness_error:

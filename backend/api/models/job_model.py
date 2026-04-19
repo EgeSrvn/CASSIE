@@ -47,6 +47,7 @@ class JobBase(BaseModel):
     assembler: Optional[str] = Field(None, max_length=50, description="Assembler tool name")
     data_types: Optional[List[str]] = Field(None, description="List of data types (e.g., ['pacbio', 'hic'])")
     cloud_provider: Optional[CloudProvider] = Field(None, description="Cloud provider for execution")
+    execution_preferences: Optional[Dict[str, Any]] = Field(None, description="Per-job execution ordering preferences")
     vm_name: Optional[str] = Field(None, max_length=50, description="Virtual machine name for execution (e.g., 'vm1', 'vm2')")
     input_file_ids: Optional[List[int]] = Field(None, description="List of pre-uploaded file IDs to associate with this job")
 
@@ -64,6 +65,7 @@ class JobUpdate(BaseModel):
     assembler: Optional[str] = None
     data_types: Optional[List[str]] = None
     cloud_provider: Optional[CloudProvider] = None
+    execution_preferences: Optional[Dict[str, Any]] = None
     vm_name: Optional[str] = Field(None, max_length=50)
 
 

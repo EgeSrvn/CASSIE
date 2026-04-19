@@ -23,6 +23,7 @@ export interface Job {
   assembler?: string
   data_types?: string[]
   cloud_provider?: string
+  execution_preferences?: Record<string, unknown>
   vm_name?: string
   interactive_outputs_enabled?: boolean
   upload_session_token?: string
@@ -86,6 +87,7 @@ export interface JobCreate {
   assembler?: string
   data_types?: string[]
   cloud_provider?: string
+  execution_preferences?: Record<string, unknown>
   vm_name?: string // Virtual machine name for execution (e.g., 'vm1', 'vm2')
   input_file_ids?: number[] // Pre-uploaded file IDs to associate with this job
   pending_upload_count?: number
@@ -234,6 +236,7 @@ export interface VM {
   max_jobs: number
   max_pods: number
   running_jobs: number
+  active_jobs?: number
   available_job_slots: number
   available_cpu_millis: number
   available_memory_mib: number

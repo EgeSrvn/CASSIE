@@ -44,6 +44,7 @@ export default function Profile() {
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
   const [avatarFile, setAvatarFile] = useState<File | null>(null)
+  const [confirmNewPassword, setConfirmNewPassword] = useState('')
   const editSectionRef = useRef<HTMLElement | null>(null)
 
   const avatarPreviewUrl = useMemo(() => {
@@ -91,6 +92,7 @@ export default function Profile() {
             }
       )
       setAvatarFile(null)
+      setConfirmNewPassword('')
     } catch (err: any) {
       const message = extractApiErrorMessage(err, 'Failed to load profile')
       setError(message)
@@ -151,6 +153,17 @@ export default function Profile() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    const isPasswordChangeRequested = Boolean((formData.new_password || '').trim() || (confirmNewPassword || '').trim())
+    if (isPasswordChangeRequested) {
+      if (!confirmNewPassword.trim()) {
+        setError('Please confirm your new password.')
+        return
+      }
+      if ((formData.new_password || '') !== confirmNewPassword) {
+        setError('New passwords do not match.')
+        return
+      }
+    }
     setSaving(true)
     setError('')
     setSuccess('')
@@ -168,6 +181,7 @@ export default function Profile() {
         current_password: '',
         new_password: '',
       }))
+      setConfirmNewPassword('')
       window.dispatchEvent(new Event('auth-change'))
     } catch (err: any) {
       const message = extractApiErrorMessage(err, 'Failed to update profile')
@@ -405,6 +419,21 @@ export default function Profile() {
                         placeholder="At least 8 characters"
                       />
                     </div>
+                    <div className="form-group">
+                      <label htmlFor="confirm_new_password">Confirm New Password</label>
+                      <input
+                        id="confirm_new_password"
+                        type="password"
+                        minLength={8}
+                        value={confirmNewPassword}
+                        onChange={(e) => setConfirmNewPassword(e.target.value)}
+                        placeholder="Re-enter your new password"
+                      />
+                      {!!((formData.new_password || '').trim() || confirmNewPassword.trim()) &&
+                        (formData.new_password || '') !== confirmNewPassword && (
+                          <small style={{ color: '#b91c1c' }}>New passwords must match.</small>
+                        )}
+                    </div>
                   </div>
                 </div>
               </div>
@@ -413,7 +442,14 @@ export default function Profile() {
                 <button className="btn-primary" type="submit" disabled={saving}>
                   {saving ? 'Saving Profile...' : 'Save Changes'}
                 </button>
-                <button className="btn-secondary" type="button" onClick={() => setIsEditing(false)}>
+                <button
+                  className="btn-secondary"
+                  type="button"
+                  onClick={() => {
+                    setIsEditing(false)
+                    setConfirmNewPassword('')
+                  }}
+                >
                   Cancel
                 </button>
                 <button className="btn-secondary" type="button" onClick={() => navigate('/dashboard')}>

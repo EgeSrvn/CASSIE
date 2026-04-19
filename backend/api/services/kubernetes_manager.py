@@ -45,6 +45,7 @@ from tool_registry import (
     get_tool_id_from_label,
     get_tool_registry,
     tool_produces_requirement as registry_tool_produces_requirement,
+    validate_tool_flag_values,
 )
 
 logger = get_logger(__name__)
@@ -57,6 +58,9 @@ class KubernetesPipelineRunner:
         self._config = get_config()
         self._logger = get_logger(__name__)
         self._resource_cache: Optional[Tuple[float, Dict[str, int]]] = None
+        self._checkpoint_events: Dict[int, asyncio.Event] = {}
+        self._checkpoint_releases: Dict[int, set[str]] = {}
+        self._execution_loops: Dict[int, asyncio.AbstractEventLoop] = {}
 
     async def start_pipeline(
         self,
@@ -172,7 +176,11 @@ class KubernetesPipelineRunner:
             if not stage_specs:
                 raise ValueError(f"No valid tools found in workflow {workflow_id}")
 
-            parameters_used["tool_sequence"] = [spec["tool"]["id"] for spec in stage_specs]
+            parameters_used["tool_sequence"] = [
+                spec["tool"]["id"]
+                for spec in stage_specs
+                if str(spec.get("stage_kind") or "tool") == "tool"
+            ]
             parameters_used["execution_mode"] = "parallel-dag" if getattr(job, "pipeline_id", None) else "sequential"
             parameters_used["stages"] = []
             for spec in stage_specs:
@@ -181,6 +189,7 @@ class KubernetesPipelineRunner:
                     "stage_number": spec["stage_number"],
                     "tool_id": spec["tool"]["id"],
                     "tool_name": spec["tool"]["name"],
+                    "stage_kind": spec.get("stage_kind", "tool"),
                     "dependency_stage_ids": list(spec["dependency_ids"]),
                     "status": "waiting_for_dependencies" if spec["dependency_ids"] else "pending",
                 }
@@ -195,10 +204,17 @@ class KubernetesPipelineRunner:
             job_budget = self._detect_effective_cluster_capacity(vm_name=vm_name)
             reserved = {"cpu_millis": 0, "memory_mib": 0, "storage_mib": 0}
             loop = asyncio.get_event_loop()
+            checkpoint_event = asyncio.Event()
+            released_checkpoints: set[str] = set()
+            self._checkpoint_events[execution_id] = checkpoint_event
+            self._checkpoint_releases[execution_id] = released_checkpoints
+            self._execution_loops[execution_id] = loop
 
             while len(completed_stage_ids) < len(stage_specs):
                 launched_any = False
                 ready_without_capacity = False
+                waiting_for_checkpoint = False
+                state_changed = False
 
                 for spec in stage_specs:
                     stage_id = spec["stage_id"]
@@ -210,6 +226,23 @@ class KubernetesPipelineRunner:
                     if not dependencies_met:
                         if stage_info.get("status") not in {"completed", "running", "failed"}:
                             stage_info["status"] = "waiting_for_dependencies"
+                        continue
+
+                    if str(spec.get("stage_kind") or "tool") == "checkpoint":
+                        if stage_id in released_checkpoints:
+                            released_checkpoints.discard(stage_id)
+                            completed_stage_ids.add(stage_id)
+                            outputs_by_stage[stage_id] = self._collect_stage_inputs(spec, current_inputs, outputs_by_stage)
+                            stage_info["status"] = "completed"
+                            stage_info.setdefault("started_at", datetime.now().isoformat())
+                            stage_info["completed_at"] = datetime.now().isoformat()
+                            state_changed = True
+                            continue
+
+                        waiting_for_checkpoint = True
+                        if stage_info.get("status") != "waiting_for_checkpoint":
+                            stage_info["status"] = "waiting_for_checkpoint"
+                            state_changed = True
                         continue
 
                     stage_inputs = self._collect_stage_inputs(spec, current_inputs, outputs_by_stage)
@@ -227,6 +260,7 @@ class KubernetesPipelineRunner:
                         stage_info["threads"] = tool_plan["threads"]
                         stage_info["memory_limit_mib"] = tool_plan["memory_limit_mib"]
                         stage_info["storage_limit_mib"] = tool_plan["storage_limit_mib"]
+                        state_changed = True
 
                         self._reserve_plan_resources(reserved, tool_plan, direction=1)
                         running_stages[stage_id] = {
@@ -246,6 +280,7 @@ class KubernetesPipelineRunner:
                                     stage_info=stage_info,
                                     parameters_used=parameters_used,
                                     tool_plan=spec["tool_plan"],
+                                    tool_config=spec.get("tool_config"),
                                 ),
                             ),
                         }
@@ -253,14 +288,20 @@ class KubernetesPipelineRunner:
                         launched_any = True
                     else:
                         ready_without_capacity = True
-                        stage_info["status"] = "waiting_for_resources"
+                        if stage_info.get("status") != "waiting_for_resources":
+                            stage_info["status"] = "waiting_for_resources"
+                            state_changed = True
 
-                if launched_any:
+                if launched_any or state_changed:
                     self._persist_execution_state(execution_id, parameters_used, tool_versions=tool_versions)
 
                 if not running_stages:
                     if ready_without_capacity:
                         raise RuntimeError("Pipeline scheduling stalled because no stage could fit inside the selected VM job budget.")
+                    if waiting_for_checkpoint:
+                        await checkpoint_event.wait()
+                        checkpoint_event.clear()
+                        continue
                     raise RuntimeError("Pipeline scheduling deadlocked. Check the pipeline dependency graph.")
 
                 done, _ = await asyncio.wait(
@@ -338,6 +379,9 @@ class KubernetesPipelineRunner:
 
             update_job(job_id, user_id, JobUpdate(status=JobStatus.FAILED))
         finally:
+            self._checkpoint_events.pop(execution_id, None)
+            self._checkpoint_releases.pop(execution_id, None)
+            self._execution_loops.pop(execution_id, None)
             try:
                 await schedule_queued_jobs(vm_name)
             except Exception as queue_error:
@@ -440,6 +484,7 @@ class KubernetesPipelineRunner:
             "started:",
             "completed:",
             "current progress:",
+            "cassie resource profile:",
         )
         for raw_line in raw_error.splitlines():
             line = raw_line.strip()
@@ -528,22 +573,47 @@ class KubernetesPipelineRunner:
         user_id: int,
         initial_inputs: List[Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
+        execution_preferences = getattr(job, "execution_preferences", None) if job else None
         if getattr(job, "pipeline_id", None):
-            pipeline_specs = self._build_stage_specs_from_pipeline(job.pipeline_id, user_id)
+            pipeline_specs = self._build_stage_specs_from_pipeline(
+                job.pipeline_id,
+                user_id,
+                execution_preferences=execution_preferences,
+            )
             if pipeline_specs:
                 return pipeline_specs
 
-        workflow_specs = self._build_stage_specs_from_workflow(workflow)
+        workflow_specs = self._build_stage_specs_from_workflow(
+            workflow,
+            execution_preferences=execution_preferences,
+        )
         if workflow_specs and any(spec.get("dependency_ids") for spec in workflow_specs):
             return workflow_specs
 
         tools = self._resolve_workflow_tools(workflow)
         if workflow_specs:
             tools = [spec["tool"] for spec in workflow_specs]
-        return self._infer_stage_specs_from_tools(tools, initial_inputs)
+        return self._infer_stage_specs_from_tools(tools, initial_inputs, execution_preferences=execution_preferences)
 
-    def _build_stage_specs_from_workflow(self, workflow: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def _build_stage_specs_from_workflow(
+        self,
+        workflow: Dict[str, Any],
+        execution_preferences: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
         specs: List[Dict[str, Any]] = []
+        manual_override_positions: Dict[int, int] = {}
+
+        if isinstance(execution_preferences, dict):
+            for group in execution_preferences.get("manual_priority_groups") or []:
+                if not isinstance(group, dict):
+                    continue
+                ordered_tool_ids = group.get("ordered_tool_ids") or []
+                if not isinstance(ordered_tool_ids, list):
+                    continue
+                for index, tool_id in enumerate(ordered_tool_ids):
+                    normalized_tool_id = str(tool_id).strip().upper()
+                    if normalized_tool_id and normalized_tool_id not in manual_override_positions:
+                        manual_override_positions[normalized_tool_id] = index
 
         for stage_number, step in enumerate(workflow.get("workflow_steps", []) or [], start=1):
             tool_id = str(step.get("tool") or "").strip().upper()
@@ -559,8 +629,13 @@ class KubernetesPipelineRunner:
                     "stage_number": stage_number,
                     "tool": tool,
                     "dependency_ids": dependency_ids,
+                    "priority_order": manual_override_positions.get(tool_id, stage_number - 1),
                 }
             )
+
+        specs.sort(key=lambda spec: (int(spec.get("priority_order") or 0), int(spec.get("stage_number") or 0)))
+        for stage_number, spec in enumerate(specs, start=1):
+            spec["stage_number"] = stage_number
 
         return specs
 
@@ -568,8 +643,22 @@ class KubernetesPipelineRunner:
         self,
         tools: List[Dict[str, Any]],
         initial_inputs: List[Dict[str, Any]],
+        execution_preferences: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         specs: List[Dict[str, Any]] = []
+        manual_override_positions: Dict[str, int] = {}
+
+        if isinstance(execution_preferences, dict):
+            for group in execution_preferences.get("manual_priority_groups") or []:
+                if not isinstance(group, dict):
+                    continue
+                ordered_tool_ids = group.get("ordered_tool_ids") or []
+                if not isinstance(ordered_tool_ids, list):
+                    continue
+                for index, tool_id in enumerate(ordered_tool_ids):
+                    normalized_tool_id = str(tool_id).strip().upper()
+                    if normalized_tool_id and normalized_tool_id not in manual_override_positions:
+                        manual_override_positions[normalized_tool_id] = index
 
         for stage_number, tool in enumerate(tools, start=1):
             stage_id = f"step-{stage_number}"
@@ -601,6 +690,7 @@ class KubernetesPipelineRunner:
                     "stage_number": stage_number,
                     "tool": tool,
                     "dependency_ids": deduped_dependencies,
+                    "priority_order": manual_override_positions.get(str(tool.get("id") or "").strip().upper(), stage_number - 1),
                 }
             )
 
@@ -609,43 +699,72 @@ class KubernetesPipelineRunner:
     def _tool_produces_requirement(self, tool: Dict[str, Any], requirement_type: str) -> bool:
         return registry_tool_produces_requirement(tool, requirement_type)
 
-    def _build_stage_specs_from_pipeline(self, pipeline_id: int, user_id: int) -> List[Dict[str, Any]]:
-        from backend.api.services.pipeline_converter import extract_edges, extract_tool_nodes, topological_sort_tools
+    def _build_stage_specs_from_pipeline(
+        self,
+        pipeline_id: int,
+        user_id: int,
+        execution_preferences: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        from backend.api.services.pipeline_converter import extract_edges, extract_stage_nodes, sort_tool_nodes_by_priority
         from backend.api.services.pipeline_service import get_pipeline_by_id
 
         pipeline = get_pipeline_by_id(pipeline_id, user_id)
         if not pipeline:
             return []
 
-        tool_nodes = extract_tool_nodes(pipeline.nodes)
-        if not tool_nodes:
+        stage_nodes = extract_stage_nodes(pipeline.nodes)
+        if not stage_nodes:
             return []
 
         edges = extract_edges(pipeline.edges)
-        dependency_map: Dict[str, List[str]] = {node_id: [] for node_id in tool_nodes}
+        dependency_map: Dict[str, List[str]] = {node_id: [] for node_id in stage_nodes}
         for edge in edges:
             source = str(edge.get("source") or "").strip()
             target = str(edge.get("target") or "").strip()
-            if source in tool_nodes and target in tool_nodes and source not in dependency_map[target]:
+            if source in stage_nodes and target in stage_nodes and source not in dependency_map[target]:
                 dependency_map[target].append(source)
 
-        ordered_node_ids = topological_sort_tools(tool_nodes, edges)
+        priority_overrides = []
+        if isinstance(execution_preferences, dict):
+            priority_overrides = execution_preferences.get("pipeline_priority_groups") or []
+
+        ordered_node_ids = sort_tool_nodes_by_priority(
+            stage_nodes,
+            edges,
+            priority_overrides=priority_overrides,
+        )
         specs: List[Dict[str, Any]] = []
         stage_number = 1
         for node_id in ordered_node_ids:
-            node = tool_nodes.get(node_id)
+            node = stage_nodes.get(node_id)
             if not node:
                 continue
-            tool_id = get_tool_id_from_label(str(node.get("label") or ""))
-            tool = get_tool_by_id(tool_id) if tool_id else None
-            if not tool:
-                continue
+            node_type = str(node.get("type") or "").strip().lower()
+            if node_type == "checkpoint":
+                tool = {
+                    "id": "CHECKPOINT",
+                    "name": str(node.get("label") or "Checkpoint"),
+                    "docker": {},
+                    "input_requirements": [],
+                }
+                tool_config = {}
+                stage_kind = "checkpoint"
+            else:
+                tool_id = get_tool_id_from_label(str(node.get("label") or ""))
+                tool = get_tool_by_id(tool_id) if tool_id else None
+                if not tool:
+                    continue
+                tool_config = self._extract_pipeline_node_config(node)
+                stage_kind = "tool"
             specs.append(
                 {
                     "stage_id": node_id,
                     "stage_number": stage_number,
                     "tool": tool,
                     "dependency_ids": list(dependency_map.get(node_id, [])),
+                    "tool_config": tool_config,
+                    "stage_kind": stage_kind,
+                    "priority_order": int(((node.get("data") or {}).get("priorityOrder")) or stage_number - 1),
                 }
             )
             stage_number += 1
@@ -673,6 +792,25 @@ class KubernetesPipelineRunner:
                 seen_keys.add(dedupe_key)
 
         return artifacts
+
+    def _extract_pipeline_node_config(self, node: Dict[str, Any]) -> Dict[str, Any]:
+        node_data = node.get("data") if isinstance(node.get("data"), dict) else {}
+        raw_values = node_data.get("flagValues") or node_data.get("toolConfig") or {}
+        if not isinstance(raw_values, dict):
+            return {}
+
+        label = str(node_data.get("label") or node.get("label") or "").strip()
+        tool_id = get_tool_id_from_label(label)
+        if not tool_id:
+            return {}
+
+        validation = validate_tool_flag_values(tool_id, raw_values)
+        if validation["errors"]:
+            raise ValueError(
+                f'Pipeline tool "{label or tool_id}" has invalid configuration: '
+                + "; ".join(f"{key}: {value}" for key, value in validation["errors"].items())
+            )
+        return validation["values"]
 
     def _plan_usage(self, tool_plan: Dict[str, Any]) -> Dict[str, int]:
         return {
@@ -739,6 +877,7 @@ class KubernetesPipelineRunner:
         stage_info: Dict[str, Any],
         parameters_used: Dict[str, Any],
         tool_plan: Optional[Dict[str, Any]] = None,
+        tool_config: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         manifest = self._build_manifest(
             job_id=job_id,
@@ -750,6 +889,7 @@ class KubernetesPipelineRunner:
             current_inputs=current_inputs,
             vm_name=vm_name,
             tool_plan=tool_plan,
+            tool_config=tool_config,
         )
         namespace = self._config.kubernetes.namespace
 
@@ -807,6 +947,7 @@ class KubernetesPipelineRunner:
         current_inputs: List[Dict[str, Any]],
         vm_name: Optional[str],
         tool_plan: Optional[Dict[str, Any]] = None,
+        tool_config: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         config = self._config
         namespace = config.kubernetes.namespace
@@ -814,7 +955,7 @@ class KubernetesPipelineRunner:
         bucket_name = minio_client.ensure_user_bucket(user_id=user_id)
         download_script = self._build_init_download_script(bucket_name, current_inputs)
         tool_plan = tool_plan or self._plan_tool_resources(tool["id"], current_inputs, vm_name=vm_name)
-        tool_script = self._build_tool_script(tool, current_inputs, tool_plan)
+        tool_script = self._build_tool_script(tool, current_inputs, tool_plan, tool_config=tool_config)
         artifact_grace_seconds = self._env_int("CASSIE_ARTIFACT_SIDECAR_GRACE_SECONDS") or 600
 
         labels = {
@@ -951,8 +1092,10 @@ class KubernetesPipelineRunner:
         tool: Dict[str, Any],
         current_inputs: List[Dict[str, Any]],
         tool_plan: Optional[Dict[str, Any]] = None,
+        tool_config: Optional[Dict[str, Any]] = None,
     ) -> str:
         tool_plan = tool_plan or self._plan_tool_resources(tool["id"], current_inputs)
+        tool_config = self._normalize_tool_config(tool["id"], tool_config)
         classified = self._classify_inputs(current_inputs)
         input_dir = "/workspace/input"
         output_dir = "/workspace/output"
@@ -971,11 +1114,51 @@ class KubernetesPipelineRunner:
                 f'"{input_dir}/{os.path.basename(read["filename"])}"'
                 for read in reads
             )
+            fastqc_flags: List[str] = []
+            if tool_config.get("nogroup"):
+                fastqc_flags.append("--nogroup")
+            if tool_config.get("noextract"):
+                fastqc_flags.append("--noextract")
+            if tool_config.get("svg"):
+                fastqc_flags.append("--svg")
+            if tool_config.get("casava"):
+                fastqc_flags.append("--casava")
+            if tool_config.get("nano"):
+                fastqc_flags.append("--nano")
+            min_length = int(tool_config.get("min_length") or 0)
+            requested_dup_length = int(tool_config.get("dup_length") or 0)
+            if min_length > 0:
+                fastqc_flags.append(f"--min_length {min_length}")
+            fastqc_flag_str = f'{" ".join(fastqc_flags)} ' if fastqc_flags else ""
             return self._wrap_tool_script(
                 [
                     profile_note,
                     f"mkdir -p {output_dir}",
-                    f'fastqc --threads {tool_plan["threads"]} -o {output_dir} {fastqc_inputs}',
+                    f'REQUESTED_DUP_LENGTH={requested_dup_length}',
+                    'FASTQC_DUP_FLAG=""',
+                    'if [ "${REQUESTED_DUP_LENGTH}" -gt 0 ]; then',
+                    '  OBSERVED_MIN_READ_LENGTH=""',
+                    f'  for fastqc_input in {fastqc_inputs}; do',
+                    '    if printf "%s" "${fastqc_input}" | grep -q "\\.gz$"; then',
+                    '      current_min=$(gzip -cd "${fastqc_input}" | awk \'NR % 4 == 2 { len = length($0); if (min == 0 || len < min) min = len; if (++count >= 200) { print min; exit } } END { if (min > 0) print min }\')',
+                    '    else',
+                    '      current_min=$(cat "${fastqc_input}" | awk \'NR % 4 == 2 { len = length($0); if (min == 0 || len < min) min = len; if (++count >= 200) { print min; exit } } END { if (min > 0) print min }\')',
+                    '    fi',
+                    '    if [ -n "${current_min}" ]; then',
+                    '      if [ -z "${OBSERVED_MIN_READ_LENGTH}" ] || [ "${current_min}" -lt "${OBSERVED_MIN_READ_LENGTH}" ]; then',
+                    '        OBSERVED_MIN_READ_LENGTH="${current_min}"',
+                    '      fi',
+                    '    fi',
+                    '  done',
+                    '  EFFECTIVE_DUP_LENGTH="${REQUESTED_DUP_LENGTH}"',
+                    '  if [ -n "${OBSERVED_MIN_READ_LENGTH}" ] && [ "${OBSERVED_MIN_READ_LENGTH}" -lt "${EFFECTIVE_DUP_LENGTH}" ]; then',
+                    '    EFFECTIVE_DUP_LENGTH="${OBSERVED_MIN_READ_LENGTH}"',
+                    '  fi',
+                    '  if [ "${EFFECTIVE_DUP_LENGTH}" -gt 0 ]; then',
+                    '    FASTQC_DUP_FLAG="--dup_length ${EFFECTIVE_DUP_LENGTH}"',
+                    '  fi',
+                    'fi',
+                    f'fastqc {fastqc_flag_str}${{FASTQC_DUP_FLAG}} --threads {tool_plan["threads"]} -o {output_dir} {fastqc_inputs}',
                 ]
             )
 
@@ -988,8 +1171,18 @@ class KubernetesPipelineRunner:
             threads = tool_plan["threads"]
             memory_gb = tool_plan["memory_gb"]
             low_resource = bool(tool_plan["low_resource"])
-            low_resource_flag = " --only-assembler" if low_resource else ""
-            kmers = str(tool_plan.get("kmers", "") or "").strip()
+            user_only_assembler = bool(tool_config.get("only_assembler"))
+            only_assembler_flag = " --only-assembler" if (low_resource or user_only_assembler) else ""
+            careful_flag = " --careful" if bool(tool_config.get("careful")) else ""
+            cov_cutoff = str(tool_config.get("cov_cutoff") or "off").strip()
+            cov_cutoff_flag = (
+                f" --cov-cutoff {cov_cutoff}"
+                if cov_cutoff and cov_cutoff.lower() != "off"
+                else " --cov-cutoff off"
+            )
+            phred_offset = str(tool_config.get("phred_offset") or "auto").strip()
+            phred_offset_flag = f" --phred-offset {phred_offset}" if phred_offset in {"33", "64"} else ""
+            kmers = str(tool_config.get("kmers") or tool_plan.get("kmers", "") or "").strip()
             kmers_flag = f" -k {kmers}" if kmers and re.fullmatch(r"\d+(,\d+)*", kmers) else ""
             return self._wrap_tool_script(
                 [
@@ -998,7 +1191,7 @@ class KubernetesPipelineRunner:
                     "mkdir -p /workspace/tmp",
                     f"mkdir -p {output_dir}/spades_out",
                     (
-                        f'spades.py --threads {threads} --memory {memory_gb}{low_resource_flag}{kmers_flag} '
+                        f'spades.py --threads {threads} --memory {memory_gb}{only_assembler_flag}{careful_flag}{cov_cutoff_flag}{phred_offset_flag}{kmers_flag} '
                         f'--tmp-dir /workspace/tmp '
                         f'-1 "{input_dir}/{r1}" -2 "{input_dir}/{r2}" '
                         f'-o "{output_dir}/spades_out"'
@@ -1012,6 +1205,11 @@ class KubernetesPipelineRunner:
                 raise ValueError("metaSPAdes requires paired-end reads (at least two FASTQ files)")
             r1 = os.path.basename(fastq_reads[0]["filename"])
             r2 = os.path.basename(fastq_reads[1]["filename"])
+            only_assembler_flag = " --only-assembler" if bool(tool_config.get("only_assembler")) else ""
+            phred_offset = str(tool_config.get("phred_offset") or "auto").strip()
+            phred_offset_flag = f" --phred-offset {phred_offset}" if phred_offset in {"33", "64"} else ""
+            kmers = str(tool_config.get("kmers") or "").strip()
+            kmers_flag = f" -k {kmers}" if kmers and re.fullmatch(r"\d+(,\d+)*", kmers) else ""
             return self._wrap_tool_script(
                 [
                     profile_note,
@@ -1019,7 +1217,7 @@ class KubernetesPipelineRunner:
                     "mkdir -p /workspace/tmp",
                     f"mkdir -p {output_dir}/metaspades_out",
                     (
-                        f'spades.py --meta --threads {tool_plan["threads"]} --memory {tool_plan["memory_gb"]} '
+                        f'spades.py --meta --threads {tool_plan["threads"]} --memory {tool_plan["memory_gb"]}{only_assembler_flag}{phred_offset_flag}{kmers_flag} '
                         f'--tmp-dir /workspace/tmp '
                         f'-1 "{input_dir}/{r1}" -2 "{input_dir}/{r2}" '
                         f'-o "{output_dir}/metaspades_out"'
@@ -1030,14 +1228,26 @@ class KubernetesPipelineRunner:
         if tool["id"] == "QUAST":
             assembly, reference = self._resolve_quast_inputs(classified["fasta"])
             threads = tool_plan["threads"]
-            memory_flag = " --memory-efficient" if tool_plan["low_resource"] else ""
+            quast_flags: List[str] = []
+            min_contig = int(tool_config.get("min_contig") or 0)
+            if min_contig > 0:
+                quast_flags.append(f"--min-contig {min_contig}")
+            if tool_config.get("gene_finding"):
+                quast_flags.append("--gene-finding")
+            if tool_config.get("large"):
+                quast_flags.append("--large")
+            if tool_config.get("fragmented"):
+                quast_flags.append("--fragmented")
+            if tool_plan["low_resource"] or tool_config.get("memory_efficient"):
+                quast_flags.append("--memory-efficient")
+            quast_flag_str = f'{" ".join(quast_flags)} ' if quast_flags else ""
             return self._wrap_tool_script(
                 [
                     profile_note,
                     f"mkdir -p {output_dir}/quast_out",
                     f'quast.py "{input_dir}/{os.path.basename(assembly["filename"])}" '
                     f'-r "{input_dir}/{os.path.basename(reference["filename"])}" '
-                    f'-t {threads}{memory_flag} -o "{output_dir}/quast_out"',
+                    f'{quast_flag_str}-t {threads} -o "{output_dir}/quast_out"',
                 ]
             )
 
@@ -1056,18 +1266,28 @@ class KubernetesPipelineRunner:
                     stream_commands.append(f'cat "{src}"')
 
             stream_expr = "; ".join(stream_commands)
-            jellyfish_size = tool_plan.get("jellyfish_size", "50M")
+            jellyfish_size = str(tool_config.get("jellyfish_hash_size") or tool_plan.get("jellyfish_size", "50M"))
+            kmer_length = int(tool_config.get("kmer_length") or 21)
+            ploidy = int(tool_config.get("ploidy") or 1)
+            initial_coverage = int(tool_config.get("initial_coverage") or 0)
+            max_kmer_coverage = int(tool_config.get("max_kmer_coverage") or 0)
             gs_out = f"{output_dir}/genomescope2_out"
+            optional_fit_flags = []
+            if initial_coverage > 0:
+                optional_fit_flags.append(f"-l {initial_coverage}")
+            if max_kmer_coverage > 0:
+                optional_fit_flags.append(f"-m {max_kmer_coverage}")
+            optional_fit_flag_str = f' {" ".join(optional_fit_flags)}' if optional_fit_flags else ""
             return self._wrap_tool_script(
                 [
                     profile_note,
                     f"mkdir -p {gs_out}",
                     (
-                        f'jellyfish count -C -m 21 -s {jellyfish_size} -t {threads} '
+                        f'jellyfish count -C -m {kmer_length} -s {jellyfish_size} -t {threads} '
                         f'<({stream_expr}) -o "{gs_out}/reads.jf"'
                     ),
                     f'jellyfish histo "{gs_out}/reads.jf" > "{gs_out}/reads.histo"',
-                    f'Rscript /opt/genomescope2.0/genomescope.R -i "{gs_out}/reads.histo" -o "{gs_out}" -k 21 -p 1',
+                    f'Rscript /opt/genomescope2.0/genomescope.R -i "{gs_out}/reads.histo" -o "{gs_out}" -k {kmer_length} -p {ploidy}{optional_fit_flag_str}',
                 ]
             )
 
@@ -1078,12 +1298,25 @@ class KubernetesPipelineRunner:
             hifiasm_inputs = self._quoted_input_paths(input_dir, hifi_reads)
             hifiasm_out = f"{output_dir}/hifiasm_out"
             prefix = f"{hifiasm_out}/assembly"
+            hifiasm_flags: List[str] = []
+            if str(tool_config.get("mode") or "hifi").strip().lower() == "ont":
+                hifiasm_flags.append("--ont")
+            if tool_config.get("disable_dup_purging"):
+                hifiasm_flags.append("-l0")
+            trim_bp = int(tool_config.get("trim_bp") or 0)
+            if trim_bp > 0:
+                hifiasm_flags.append(f"-z{trim_bp}")
+            if tool_config.get("small_genome_no_bloom"):
+                hifiasm_flags.append("-f0")
+            if tool_config.get("write_paf"):
+                hifiasm_flags.append("--write-paf")
+            hifiasm_flag_str = f'{" ".join(hifiasm_flags)} ' if hifiasm_flags else ""
             return self._wrap_tool_script(
                 [
                     profile_note,
                     f"mkdir -p {hifiasm_out}",
                     (
-                        f'hifiasm -o "{prefix}" -t {tool_plan["threads"]} {hifiasm_inputs} '
+                        f'hifiasm {hifiasm_flag_str}-o "{prefix}" -t {tool_plan["threads"]} {hifiasm_inputs} '
                         f'2> "{hifiasm_out}/hifiasm.log"'
                     ),
                     f'PRIMARY_GFA="$(find "{hifiasm_out}" -maxdepth 1 -type f \\( -name "assembly*.bp.p_ctg.gfa" -o -name "assembly*.p_ctg.gfa" \\) | head -n 1)"',
@@ -1101,12 +1334,21 @@ class KubernetesPipelineRunner:
             nano_flag = ""
             if nano_reads:
                 nano_flag = f" --nano {self._quoted_input_paths(input_dir, nano_reads)}"
+            extra_flags = []
+            if tool_config.get("haploid"):
+                extra_flags.append("--haploid")
+            if tool_config.get("uneven_depth"):
+                extra_flags.append("--uneven-depth")
+            telomere_motif = str(tool_config.get("telomere_motif") or "").strip()
+            if telomere_motif:
+                extra_flags.append(f'--telomere-motif {telomere_motif}')
+            extra_flag_str = f' {" ".join(extra_flags)}' if extra_flags else ""
             return self._wrap_tool_script(
                 [
                     profile_note,
                     f"mkdir -p {verkko_out}",
                     (
-                        f'verkko -d "{verkko_out}" --hifi {hifi_args}{nano_flag} '
+                        f'verkko -d "{verkko_out}" --hifi {hifi_args}{nano_flag}{extra_flag_str} '
                         f'--snakeopts "--cores {tool_plan["threads"]}"'
                     ),
                 ]
@@ -1116,12 +1358,22 @@ class KubernetesPipelineRunner:
             target, reference = self._resolve_target_reference_genomes(classified["fasta"])
             annotation = self._resolve_annotation_input(classified["annotation"])
             liftoff_out = f"{output_dir}/liftoff_out"
+            liftoff_flags: List[str] = []
+            liftoff_flags.append(f'-a {tool_config.get("coverage_threshold")}')
+            liftoff_flags.append(f'-s {tool_config.get("identity_threshold")}')
+            liftoff_flags.append(f'-flank {tool_config.get("flank_fraction")}')
+            if tool_config.get("exclude_partial"):
+                liftoff_flags.append("-exclude_partial")
+            if tool_config.get("copies"):
+                liftoff_flags.append("-copies")
+            liftoff_flag_str = " ".join(liftoff_flags)
             return self._wrap_tool_script(
                 [
                     profile_note,
                     f"mkdir -p {liftoff_out}",
                     (
                         f'liftoff -p {tool_plan["threads"]} '
+                        f'{liftoff_flag_str} '
                         f'-g "{input_dir}/{os.path.basename(annotation["filename"])}" '
                         f'-o "{liftoff_out}/liftoff.gff3" '
                         f'"{input_dir}/{os.path.basename(target["filename"])}" '
@@ -1141,6 +1393,17 @@ class KubernetesPipelineRunner:
             cat_out = f"{output_dir}/cat_out"
             cat_work = f"{output_dir}/cat_work"
             cat_config = f"{output_dir}/generated.cat.ini"
+            cat_flags: List[str] = ['--local-scheduler']
+            if tool_config.get("augustus"):
+                cat_flags.append("--augustus")
+            augustus_species = str(tool_config.get("augustus_species") or "").strip()
+            if augustus_species:
+                cat_flags.append(f'--augustus-species "{augustus_species}"')
+            if tool_config.get("augustus_utr_off"):
+                cat_flags.append("--augustus-utr-off")
+            if tool_config.get("assembly_hub"):
+                cat_flags.append("--assembly-hub")
+            cat_flag_str = " ".join(cat_flags)
             return self._wrap_tool_script(
                 [
                     profile_note,
@@ -1156,7 +1419,8 @@ class KubernetesPipelineRunner:
                         f'--binary-mode local '
                         f'--workers {tool_plan["threads"]} '
                         f'--out-dir "{cat_out}" '
-                        f'--work-dir "{cat_work}"'
+                        f'--work-dir "{cat_work}" '
+                        f'{cat_flag_str}'
                     ),
                 ]
             )
@@ -1164,9 +1428,27 @@ class KubernetesPipelineRunner:
         if tool["id"] == "BUSCO":
             assembly = self._resolve_busco_input(classified["fasta"])
             busco_out = f"{output_dir}/busco_out"
-            default_lineage = self._config.tools.busco_default_lineage
+            configured_lineage = str(tool_config.get("lineage_dataset") or "").strip()
+            default_lineage = configured_lineage or self._config.tools.busco_default_lineage
             download_path = self._config.tools.busco_download_path
             lineage_dir = f'{download_path.rstrip("/")}/lineages/{default_lineage}'
+            busco_mode = str(tool_config.get("mode") or "genome").strip()
+            auto_lineage = str(tool_config.get("auto_lineage") or "off").strip()
+            busco_extra_flags: List[str] = []
+            if auto_lineage == "auto-lineage":
+                busco_extra_flags.append("--auto-lineage")
+            elif auto_lineage == "auto-lineage-euk":
+                busco_extra_flags.append("--auto-lineage-euk")
+            elif auto_lineage == "auto-lineage-prok":
+                busco_extra_flags.append("--auto-lineage-prok")
+            else:
+                busco_extra_flags.append(f'-l "${{BUSCO_LINEAGE}}"')
+            if tool_config.get("augustus"):
+                busco_extra_flags.append("--augustus")
+            augustus_species = str(tool_config.get("augustus_species") or "").strip()
+            if augustus_species:
+                busco_extra_flags.append(f'--augustus_species {augustus_species}')
+            busco_extra_flag_str = " ".join(busco_extra_flags)
             return self._wrap_tool_script(
                 [
                     profile_note,
@@ -1180,7 +1462,7 @@ class KubernetesPipelineRunner:
                     (
                         f'cd "{busco_out}" && '
                         f'busco -i "{input_dir}/{os.path.basename(assembly["filename"])}" '
-                        f'-m genome -l "${{BUSCO_LINEAGE}}" '
+                        f'-m {busco_mode} {busco_extra_flag_str} '
                         f'--download_path "${{BUSCO_DOWNLOAD_PATH}}" --offline '
                         f'-c {tool_plan["threads"]} -o busco_run'
                     ),
@@ -1221,6 +1503,15 @@ class KubernetesPipelineRunner:
             )
 
         raise ValueError(f"Kubernetes runner does not yet support tool {tool['id']}")
+
+    def _normalize_tool_config(self, tool_id: str, tool_config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        validation = validate_tool_flag_values(tool_id, tool_config or {})
+        if validation["errors"]:
+            raise ValueError(
+                f"Invalid configuration for {tool_id}: "
+                + "; ".join(f"{key}: {value}" for key, value in validation["errors"].items())
+            )
+        return validation["values"]
 
     def _quoted_input_paths(self, input_dir: str, artifacts: List[Dict[str, Any]]) -> str:
         return " ".join(f'"{input_dir}/{os.path.basename(item["filename"])}"' for item in artifacts)
@@ -1771,6 +2062,7 @@ class KubernetesPipelineRunner:
                     "max_jobs": partition.max_jobs,
                     "max_pods": partition.max_jobs,
                     "running_jobs": slot_usage["running_jobs"],
+                    "active_jobs": slot_usage.get("active_jobs", slot_usage["running_jobs"]),
                     "available_job_slots": slot_usage["available_job_slots"],
                     "available_cpu_millis": capacity["cpu_millis"],
                     "available_memory_mib": capacity["memory_mib"],
@@ -2511,6 +2803,56 @@ class KubernetesPipelineRunner:
                 tool_versions=tool_versions,
             ),
         )
+
+    def resume_execution_from_checkpoint(self, job_id: int, user_id: int) -> Dict[str, Any]:
+        """Release all currently waiting checkpoints for the latest running execution."""
+        executions = get_running_executions()
+        target_execution = next((execution for execution in executions if execution.job_id == job_id), None)
+        if target_execution is None:
+            raise ValueError("No running execution is waiting on a checkpoint for this job.")
+
+        parameters_used = getattr(target_execution, "parameters_used", None) or {}
+        stages = parameters_used.get("stages") if isinstance(parameters_used, dict) else None
+        if not isinstance(stages, list):
+            raise ValueError("This job has no checkpoint state to resume.")
+
+        waiting_checkpoint_ids = [
+            str(stage.get("stage_id") or "").strip()
+            for stage in stages
+            if isinstance(stage, dict) and str(stage.get("status") or "").strip().lower() == "waiting_for_checkpoint"
+        ]
+        waiting_checkpoint_ids = [stage_id for stage_id in waiting_checkpoint_ids if stage_id]
+        if not waiting_checkpoint_ids:
+            raise ValueError("This job is not currently waiting on any checkpoint.")
+
+        release_bucket = self._checkpoint_releases.get(target_execution.id)
+        resume_event = self._checkpoint_events.get(target_execution.id)
+        event_loop = self._execution_loops.get(target_execution.id)
+        if release_bucket is None or resume_event is None or event_loop is None:
+            raise RuntimeError("Checkpoint state is not available in the active backend process. Please retry the job.")
+
+        for stage in stages:
+            if not isinstance(stage, dict):
+                continue
+            if str(stage.get("stage_id") or "").strip() not in waiting_checkpoint_ids:
+                continue
+            stage["status"] = "pending"
+            stage["resume_requested_at"] = datetime.now().isoformat()
+
+        update_job_execution(
+            target_execution.id,
+            JobExecutionUpdate(parameters_used=parameters_used),
+        )
+
+        def _release() -> None:
+            release_bucket.update(waiting_checkpoint_ids)
+            resume_event.set()
+
+        event_loop.call_soon_threadsafe(_release)
+        return {
+            "execution_id": target_execution.id,
+            "released_checkpoints": waiting_checkpoint_ids,
+        }
 
     def _terminate_stage_job(self, stage_job_name: str) -> None:
         namespace = self._config.kubernetes.namespace

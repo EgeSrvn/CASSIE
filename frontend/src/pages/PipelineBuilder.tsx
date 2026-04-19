@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useMemo } from 'react'
+import { ReactNode, useState, useCallback, useEffect, useMemo } from 'react'
 import { useNavigate, useParams, useLocation } from 'react-router-dom'
 import ReactFlow, {
   Background,
@@ -17,17 +17,101 @@ import 'reactflow/dist/style.css'
 import { createPipeline, updatePipeline, getPipeline, Pipeline } from '../services/pipelineService'
 import { getToken, isTokenExpired, logout } from '../services/authService'
 import { StarterPipelineTemplate } from '../services/starterPipelines'
+import { EditableFlagDefinition, getAvailableTools, Tool } from '../services/toolService'
 import Navigation from '../components/Navigation'
+import {
+  applyPipelinePriorityGroupOrder,
+  computePipelinePriorityGroups,
+  PriorityGroup,
+} from '../utils/pipelinePriority'
 import './PipelineBuilder.css'
 import '../styles/globals.css'
+
+type FlagValue = string | number | boolean
 
 interface NodeData {
   label: string
   description?: string[]
+  toolId?: string
+  flagValues?: Record<string, FlagValue>
+  priorityOrder?: number
+  prioritySelected?: boolean
+  isMenuOpen?: boolean
+  hasCustomConfig?: boolean
+  onToggleMenu?: () => void
+  onEdit?: () => void
+  onCopy?: () => void
+  onDelete?: () => void
+}
+
+interface ToolNodeTemplate {
+  toolId: string
+  label: string
+  description: string[]
 }
 
 const INPUT_NODE_TYPES = new Set(['fastqinput', 'fastainput', 'input', 'inputnode', 'start'])
 const RESULT_NODE_TYPES = new Set(['result', 'end'])
+const CHECKPOINT_NODE_TYPES = new Set(['checkpoint'])
+const STAGE_NODE_TYPES = new Set(['tool', 'checkpoint'])
+
+const TOOL_NODE_TEMPLATES: ToolNodeTemplate[] = [
+  {
+    toolId: 'FASTQC',
+    label: 'Read Quality (FastQC)',
+    description: ['Input: FASTQ', 'Output: QC reports (HTML/JSON)'],
+  },
+  {
+    toolId: 'GENOMESCOPE2',
+    label: 'Genomic Property Estimation (GenomeScope2)',
+    description: ['Input: k-mer histogram', 'Output: genome size, heterozygosity, repeats'],
+  },
+  {
+    toolId: 'SPADES',
+    label: 'Assembly (Spades)',
+    description: ['Input: paired/long reads', 'Output: assembled contigs/scaffolds (FASTA)', 'Note: outputs are collected automatically'],
+  },
+  {
+    toolId: 'METASPADES',
+    label: 'Metagenome Assembly (metaSPAdes)',
+    description: ['Input: paired metagenomic reads', 'Output: metagenome contigs (FASTA)'],
+  },
+  {
+    toolId: 'HIFIASM',
+    label: 'Assembly (Hifiasm)',
+    description: ['Input: PacBio HiFi reads (FASTQ/FASTA)', 'Output: primary contigs and assembly graph'],
+  },
+  {
+    toolId: 'VERKKO',
+    label: 'Assembly (Verkko)',
+    description: ['Input: HiFi reads, optional ONT reads', 'Output: phased assembly FASTA/GFA'],
+  },
+  {
+    toolId: 'QUAST',
+    label: 'Quality Assessment for Assembly (QUAST)',
+    description: ['Input: assembly FASTA', 'Output: assembly metrics (TSV/HTML)'],
+  },
+  {
+    toolId: 'LIFTOFF',
+    label: 'Annotation Lift Over (Liftoff)',
+    description: ['Input: target FASTA, reference FASTA, annotation GFF/GTF', 'Output: lifted annotation'],
+  },
+  {
+    toolId: 'CAT',
+    label: 'Comparative Annotation Toolkit (CAT)',
+    description: ['Input: HAL alignment, reference annotation, reference genome name', 'Output: comparative annotations'],
+  },
+  {
+    toolId: 'BUSCO',
+    label: 'Assembly Completeness (BUSCO)',
+    description: ['Input: assembly or genome FASTA', 'Output: completeness summaries'],
+  },
+  {
+    toolId: 'MERQURY',
+    label: 'Assembly k-mer Evaluation (Merqury)',
+    description: ['Input: assembly FASTA and Meryl DB', 'Output: reference-free assembly quality reports'],
+  },
+]
 
 const createUniqueNodeId = () => {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -61,6 +145,10 @@ const clonePipelineGraph = (
       data: {
         ...(node.data || { label: 'Node' }),
         description: Array.isArray(node.data?.description) ? [...node.data.description] : node.data?.description,
+        toolId: typeof node.data?.toolId === 'string' ? node.data.toolId : undefined,
+        flagValues: node.data?.flagValues ? { ...node.data.flagValues } : undefined,
+        priorityOrder: Number.isFinite(Number(node.data?.priorityOrder)) ? Number(node.data?.priorityOrder) : undefined,
+        prioritySelected: Boolean(node.data?.prioritySelected),
       },
       position: {
         x: Number(node.position?.x ?? 0),
@@ -105,6 +193,7 @@ const validatePipelineGraph = (nodes: Node<NodeData>[], edges: Edge[]) => {
 
   const inputs = nodes.filter((node) => INPUT_NODE_TYPES.has(String(node.type || '').toLowerCase()))
   const tools = nodes.filter((node) => String(node.type || '').toLowerCase() === 'tool')
+  const checkpoints = nodes.filter((node) => CHECKPOINT_NODE_TYPES.has(String(node.type || '').toLowerCase()))
   const results = nodes.filter((node) => RESULT_NODE_TYPES.has(String(node.type || '').toLowerCase()))
 
   if (nodes.length === 0) {
@@ -143,6 +232,17 @@ const validatePipelineGraph = (nodes: Node<NodeData>[], edges: Edge[]) => {
     }
   })
 
+  checkpoints.forEach((node) => {
+    const label = node.data?.label || 'Checkpoint'
+    const nodeId = String(node.id || '')
+    if ((incoming.get(nodeId) || []).length === 0) {
+      errors.push(`Checkpoint "${label}" must have at least one incoming connection.`)
+    }
+    if ((outgoing.get(nodeId) || []).length === 0) {
+      errors.push(`Checkpoint "${label}" must connect to a downstream tool or result.`)
+    }
+  })
+
   results.forEach((node) => {
     const label = node.data?.label || 'Result'
     if ((incoming.get(node.id) || []).length === 0) {
@@ -168,11 +268,14 @@ const validatePipelineGraph = (nodes: Node<NodeData>[], edges: Edge[]) => {
     })
   }
 
-  tools.forEach((node) => {
+  nodes
+    .filter((node) => STAGE_NODE_TYPES.has(String(node.type || '').toLowerCase()))
+    .forEach((node) => {
     if (!reachableFromInputs.has(node.id)) {
-      errors.push(`Tool "${node.data?.label || 'Tool'}" is not reachable from any input node.`)
+      const nodeType = CHECKPOINT_NODE_TYPES.has(String(node.type || '').toLowerCase()) ? 'Checkpoint' : 'Tool'
+      errors.push(`${nodeType} "${node.data?.label || nodeType}" is not reachable from any input node.`)
     }
-  })
+    })
 
   const reachableToResults = new Set<string>()
   const reverseStack = results.map((node) => node.id)
@@ -189,11 +292,14 @@ const validatePipelineGraph = (nodes: Node<NodeData>[], edges: Edge[]) => {
     })
   }
 
-  tools.forEach((node) => {
+  nodes
+    .filter((node) => STAGE_NODE_TYPES.has(String(node.type || '').toLowerCase()))
+    .forEach((node) => {
     if (!reachableToResults.has(node.id)) {
-      errors.push(`Tool "${node.data?.label || 'Tool'}" does not lead to a result node.`)
+      const nodeType = CHECKPOINT_NODE_TYPES.has(String(node.type || '').toLowerCase()) ? 'Checkpoint' : 'Tool'
+      errors.push(`${nodeType} "${node.data?.label || nodeType}" does not lead to a result node.`)
     }
-  })
+    })
 
   const visiting = new Set<string>()
   const visited = new Set<string>()
@@ -222,18 +328,123 @@ const validatePipelineGraph = (nodes: Node<NodeData>[], edges: Edge[]) => {
   return Array.from(new Set(errors))
 }
 
+const buildDefaultFlagValues = (flagDefinitions: EditableFlagDefinition[]) =>
+  flagDefinitions.reduce<Record<string, FlagValue>>((acc, flag) => {
+    if (!flag.key) {
+      return acc
+    }
+    acc[flag.key] = (flag.default as FlagValue) ?? (flag.type === 'boolean' ? false : '')
+    return acc
+  }, {})
+
+const normalizeDraftFlagValues = (
+  flagDefinitions: EditableFlagDefinition[],
+  draftValues: Record<string, FlagValue>
+) => {
+  const normalized = buildDefaultFlagValues(flagDefinitions)
+  const errors: Record<string, string> = {}
+
+  flagDefinitions.forEach((flag) => {
+    const raw = draftValues[flag.key] ?? normalized[flag.key]
+
+    try {
+      if (flag.type === 'boolean') {
+        normalized[flag.key] = Boolean(raw)
+        return
+      }
+
+      const stringValue = String(raw ?? '').trim()
+      const effectiveString = stringValue === '' ? String(flag.default ?? '') : stringValue
+
+      if (flag.type === 'integer') {
+        if (effectiveString === '') {
+          normalized[flag.key] = Number(flag.default ?? 0)
+          return
+        }
+        const parsed = Number.parseInt(effectiveString, 10)
+        if (Number.isNaN(parsed)) {
+          throw new Error('Enter a whole number.')
+        }
+        if (typeof flag.min === 'number' && parsed < flag.min) {
+          throw new Error(`Enter a value of at least ${flag.min}.`)
+        }
+        if (typeof flag.max === 'number' && parsed > flag.max) {
+          throw new Error(`Enter a value of at most ${flag.max}.`)
+        }
+        normalized[flag.key] = parsed
+        return
+      }
+
+      if (flag.type === 'number') {
+        if (effectiveString === '') {
+          normalized[flag.key] = Number(flag.default ?? 0)
+          return
+        }
+        const parsed = Number.parseFloat(effectiveString)
+        if (Number.isNaN(parsed)) {
+          throw new Error('Enter a numeric value.')
+        }
+        if (typeof flag.min === 'number' && parsed < flag.min) {
+          throw new Error(`Enter a value of at least ${flag.min}.`)
+        }
+        if (typeof flag.max === 'number' && parsed > flag.max) {
+          throw new Error(`Enter a value of at most ${flag.max}.`)
+        }
+        normalized[flag.key] = parsed
+        return
+      }
+
+      if (flag.type === 'select') {
+        const options = new Set((flag.options || []).map((option) => option.value))
+        if (options.size > 0 && !options.has(effectiveString)) {
+          throw new Error('Choose one of the available options.')
+        }
+        normalized[flag.key] = effectiveString
+        return
+      }
+
+      if (flag.pattern && effectiveString) {
+        const regex = new RegExp(flag.pattern)
+        if (!regex.test(effectiveString)) {
+          throw new Error(flag.error_message || 'Invalid value.')
+        }
+      }
+      normalized[flag.key] = effectiveString
+    } catch (error) {
+      errors[flag.key] = error instanceof Error ? error.message : 'Invalid value.'
+    }
+  })
+
+  return { normalized, errors }
+}
+
+const hasCustomizedFlagValues = (
+  flagDefinitions: EditableFlagDefinition[],
+  flagValues?: Record<string, FlagValue>
+) => {
+  const defaults = buildDefaultFlagValues(flagDefinitions)
+  return flagDefinitions.some((flag) => {
+    const currentValue = flagValues?.[flag.key] ?? defaults[flag.key]
+    return String(currentValue) !== String(defaults[flag.key])
+  })
+}
+
 const NodeBox = ({
   label,
   description,
   color,
   showTarget = true,
   showSource = true,
+  menuSlot,
+  footerBadge,
 }: {
   label: string
   description?: string[]
   color: string
   showTarget?: boolean
   showSource?: boolean
+  menuSlot?: ReactNode
+  footerBadge?: ReactNode
 }) => (
   <div className="pipeline-node-box">
     {showTarget && (
@@ -244,6 +455,7 @@ const NodeBox = ({
       />
     )}
     <div className="pipeline-node-header" style={{ backgroundColor: color }}>
+      {menuSlot}
       <p className="pipeline-node-label">{label}</p>
     </div>
     {description && (
@@ -251,8 +463,10 @@ const NodeBox = ({
         {description.map((line, idx) => (
           <p key={idx} className="pipeline-node-description">- {line}</p>
         ))}
+        {footerBadge}
       </div>
     )}
+    {!description && footerBadge}
     {showSource && (
       <Handle
         type="source"
@@ -265,9 +479,77 @@ const NodeBox = ({
   </div>
 )
 
+const ToolNode = ({ data }: { data: NodeData }) => (
+  <NodeBox
+    label={data.label}
+    description={data.description}
+    color="#2563eb"
+    menuSlot={
+      <div className="pipeline-node-menu-wrap">
+        <button
+          type="button"
+          className="pipeline-node-menu-trigger"
+          onClick={(event) => {
+            event.preventDefault()
+            event.stopPropagation()
+            data.onToggleMenu?.()
+          }}
+        >
+          ⋮
+        </button>
+        {data.isMenuOpen && (
+          <div className="pipeline-node-menu">
+            <button
+              type="button"
+              onClick={(event) => {
+                event.preventDefault()
+                event.stopPropagation()
+                data.onEdit?.()
+              }}
+            >
+              Edit
+            </button>
+            <button
+              type="button"
+              onClick={(event) => {
+                event.preventDefault()
+                event.stopPropagation()
+                data.onCopy?.()
+              }}
+            >
+              Copy
+            </button>
+            <button
+              type="button"
+              className="danger"
+              onClick={(event) => {
+                event.preventDefault()
+                event.stopPropagation()
+                data.onDelete?.()
+              }}
+            >
+              Delete
+            </button>
+          </div>
+        )}
+      </div>
+    }
+    footerBadge={
+      <div className={`pipeline-node-config-chip ${data.hasCustomConfig ? 'custom' : 'default'}`}>
+        {data.hasCustomConfig ? 'Custom flags' : 'Default flags'}
+      </div>
+    }
+  />
+)
+
 const nodeTypes = {
-  tool: ({ data }: { data: NodeData }) => (
-    <NodeBox label={data.label} description={data.description} color="#2563eb" />
+  tool: ({ data }: { data: NodeData }) => <ToolNode data={data} />,
+  checkpoint: ({ data }: { data: NodeData }) => (
+    <NodeBox
+      label={data.label}
+      description={data.description}
+      color="#f59e0b"
+    />
   ),
   fastqInput: ({ data }: { data: NodeData }) => (
     <NodeBox label={data.label} description={data.description} color="#7c3aed" showTarget={false} />
@@ -304,7 +586,47 @@ export default function PipelineBuilder() {
   const [loading, setLoading] = useState(false)
   const [isAuthenticated, setIsAuthenticated] = useState(() => !!getToken())
   const [saveValidationPopup, setSaveValidationPopup] = useState<string[] | null>(null)
+  const [toolCatalog, setToolCatalog] = useState<Tool[]>([])
+  const [openNodeMenuId, setOpenNodeMenuId] = useState<string | null>(null)
+  const [editingNodeId, setEditingNodeId] = useState<string | null>(null)
+  const [editingTool, setEditingTool] = useState<Tool | null>(null)
+  const [editingDraftValues, setEditingDraftValues] = useState<Record<string, FlagValue>>({})
+  const [editingErrors, setEditingErrors] = useState<Record<string, string>>({})
+  const [openPriorityGroups, setOpenPriorityGroups] = useState<number[]>([0])
+  const [isPriorityModalOpen, setIsPriorityModalOpen] = useState(false)
   const validationErrors = useMemo(() => validatePipelineGraph(nodes, edges), [nodes, edges])
+  const priorityGroups = useMemo(
+    () => computePipelinePriorityGroups(nodes as any[], edges as any[]),
+    [nodes, edges]
+  )
+  const selectedPriorityToolCount = useMemo(
+    () => priorityGroups.reduce((count, group) => count + group.items.filter((item) => item.selected).length, 0),
+    [priorityGroups]
+  )
+
+  const toolCatalogById = useMemo(() => {
+    const map = new Map<string, Tool>()
+    toolCatalog.forEach((tool) => {
+      if (tool.tool_id) {
+        map.set(tool.tool_id, tool)
+      }
+    })
+    return map
+  }, [toolCatalog])
+
+  const resolveToolForNode = useCallback((nodeData?: NodeData | null) => {
+    if (!nodeData) {
+      return null
+    }
+    if (nodeData.toolId && toolCatalogById.has(nodeData.toolId)) {
+      return toolCatalogById.get(nodeData.toolId) || null
+    }
+    const template = TOOL_NODE_TEMPLATES.find((item) => item.label === nodeData.label)
+    if (template && toolCatalogById.has(template.toolId)) {
+      return toolCatalogById.get(template.toolId) || null
+    }
+    return toolCatalog.find((tool) => tool.name.toLowerCase() === String(nodeData.label || '').toLowerCase()) || null
+  }, [toolCatalog, toolCatalogById])
 
   useEffect(() => {
     const syncAuthState = () => {
@@ -319,6 +641,15 @@ export default function PipelineBuilder() {
       window.removeEventListener('auth-change', syncAuthState)
       window.removeEventListener('storage', syncAuthState)
     }
+  }, [])
+
+  useEffect(() => {
+    getAvailableTools()
+      .then((tools) => setToolCatalog(tools.filter((tool) => tool.enabled)))
+      .catch((error) => {
+        console.error('Failed to load tool catalog for pipeline builder:', error)
+        setToolCatalog([])
+      })
   }, [])
 
   useEffect(() => {
@@ -379,23 +710,7 @@ export default function PipelineBuilder() {
     }
   }, [id, setNodes, setEdges, isAuthenticated])
 
-  const onConnect = useCallback(
-    (params: Connection) =>
-      setEdges((eds) =>
-        addEdge(
-          {
-            ...params,
-            type: 'smoothstep',
-            markerEnd: { type: MarkerType.ArrowClosed, color: '#2563eb' },
-            style: { stroke: '#2563eb' },
-          },
-          eds
-        )
-      ),
-    [setEdges]
-  )
-
-  const addNode = (type: string, label: string, description: string[] = []) => {
+  const addNode = useCallback((type: string, label: string, description: string[] = []) => {
     const newNode: Node<NodeData> = {
       id: createUniqueNodeId(),
       type,
@@ -407,7 +722,224 @@ export default function PipelineBuilder() {
     }
 
     setNodes((nds) => [...nds, newNode])
-  }
+  }, [setNodes])
+
+  const addToolNode = useCallback((template: ToolNodeTemplate) => {
+    const toolDefinition = toolCatalogById.get(template.toolId)
+    const defaultFlagValues = toolDefinition?.default_flag_values
+      ? { ...toolDefinition.default_flag_values }
+      : buildDefaultFlagValues(toolDefinition?.editable_flags || [])
+
+    const newNode: Node<NodeData> = {
+      id: createUniqueNodeId(),
+      type: 'tool',
+      data: {
+        label: template.label,
+        description: [...template.description],
+        toolId: template.toolId,
+        flagValues: defaultFlagValues,
+        priorityOrder: 10_000,
+        prioritySelected: false,
+      },
+      position: {
+        x: Math.random() * 400 + 100,
+        y: Math.random() * 400 + 100,
+      },
+    }
+
+    setNodes((nds) => [...nds, newNode])
+  }, [setNodes, toolCatalogById])
+
+  const handleDeleteNode = useCallback((nodeId: string) => {
+    setNodes((currentNodes) => currentNodes.filter((node) => node.id !== nodeId))
+    setEdges((currentEdges) => currentEdges.filter((edge) => edge.source !== nodeId && edge.target !== nodeId))
+    setOpenNodeMenuId((current) => current === nodeId ? null : current)
+    setEditingNodeId((current) => current === nodeId ? null : current)
+  }, [setEdges, setNodes])
+
+  const handleCopyNode = useCallback((nodeId: string) => {
+    const sourceNode = nodes.find((node) => node.id === nodeId)
+    if (!sourceNode) {
+      return
+    }
+
+    const clonedNode: Node<NodeData> = {
+      id: createUniqueNodeId(),
+      type: sourceNode.type,
+      data: {
+        label: sourceNode.data.label,
+        description: Array.isArray(sourceNode.data.description) ? [...sourceNode.data.description] : sourceNode.data.description,
+        toolId: sourceNode.data.toolId,
+        flagValues: sourceNode.data.flagValues ? { ...sourceNode.data.flagValues } : undefined,
+        priorityOrder: 10_000,
+        prioritySelected: false,
+      },
+      position: {
+        x: Number(sourceNode.position?.x ?? 0) + 40,
+        y: Number(sourceNode.position?.y ?? 0) + 40,
+      },
+      style: sourceNode.style ? { ...sourceNode.style } : sourceNode.style,
+    }
+
+    setNodes((currentNodes) => [...currentNodes, clonedNode])
+    setOpenNodeMenuId(null)
+  }, [nodes, setNodes])
+
+  const handlePriorityItemToggle = useCallback((group: PriorityGroup, itemId: string) => {
+    const selectedNodeIds = group.items
+      .filter((item) => item.selected)
+      .map((item) => item.nodeId || item.id)
+    const targetNodeId = group.items.find((item) => (item.nodeId || item.id) === itemId)?.nodeId || itemId
+    const nextSelectedNodeIds = selectedNodeIds.includes(targetNodeId)
+      ? selectedNodeIds.filter((nodeId) => nodeId !== targetNodeId)
+      : [...selectedNodeIds, targetNodeId]
+
+    setNodes((currentNodes) =>
+      applyPipelinePriorityGroupOrder(
+        currentNodes as any[],
+        group.priority,
+        group.items.map((item) => item.nodeId || item.id),
+        nextSelectedNodeIds,
+        nextSelectedNodeIds,
+      ) as Node<NodeData>[]
+    )
+  }, [setNodes])
+
+  const handlePriorityReorder = useCallback((group: PriorityGroup, itemIndex: number, direction: -1 | 1) => {
+    const selectedItems = group.items.filter((item) => item.selected)
+    const nextIndex = itemIndex + direction
+    if (nextIndex < 0 || nextIndex >= selectedItems.length) {
+      return
+    }
+
+    const reorderedItems = selectedItems.slice()
+    const [moved] = reorderedItems.splice(itemIndex, 1)
+    reorderedItems.splice(nextIndex, 0, moved)
+    const selectedNodeIds = reorderedItems.map((item) => item.nodeId || item.id)
+    const orderedNodeIds = reorderedItems.map((item) => item.nodeId || item.id)
+    setNodes((currentNodes) =>
+      applyPipelinePriorityGroupOrder(
+        currentNodes as any[],
+        group.priority,
+        group.items.map((item) => item.nodeId || item.id),
+        selectedNodeIds,
+        orderedNodeIds,
+      ) as Node<NodeData>[]
+    )
+  }, [setNodes])
+
+  const openEditModal = useCallback((nodeId: string) => {
+    const node = nodes.find((candidate) => candidate.id === nodeId)
+    if (!node) {
+      return
+    }
+
+    const tool = resolveToolForNode(node.data)
+    const flagDefinitions = tool?.editable_flags || []
+    const defaultValues = tool?.default_flag_values
+      ? { ...tool.default_flag_values }
+      : buildDefaultFlagValues(flagDefinitions)
+    const draftValues = {
+      ...defaultValues,
+      ...(node.data.flagValues || {}),
+    }
+    const validation = normalizeDraftFlagValues(flagDefinitions, draftValues)
+
+    setEditingNodeId(nodeId)
+    setEditingTool(tool)
+    setEditingDraftValues(validation.normalized)
+    setEditingErrors(validation.errors)
+    setOpenNodeMenuId(null)
+  }, [nodes, resolveToolForNode])
+
+  const closeEditModal = useCallback(() => {
+    setEditingNodeId(null)
+    setEditingTool(null)
+    setEditingDraftValues({})
+    setEditingErrors({})
+  }, [])
+
+  const handleEditFieldChange = useCallback((flag: EditableFlagDefinition, value: FlagValue) => {
+    const nextDraftValues = {
+      ...editingDraftValues,
+      [flag.key]: value,
+    }
+    const validation = normalizeDraftFlagValues(editingTool?.editable_flags || [], nextDraftValues)
+    setEditingDraftValues(nextDraftValues)
+    setEditingErrors(validation.errors)
+  }, [editingDraftValues, editingTool])
+
+  const saveToolConfiguration = useCallback(() => {
+    if (!editingNodeId || !editingTool) {
+      return
+    }
+
+    const validation = normalizeDraftFlagValues(editingTool.editable_flags || [], editingDraftValues)
+    setEditingErrors(validation.errors)
+    if (Object.keys(validation.errors).length > 0) {
+      return
+    }
+
+    setNodes((currentNodes) =>
+      currentNodes.map((node) => {
+        if (node.id !== editingNodeId) {
+          return node
+        }
+        return {
+          ...node,
+          data: {
+            ...node.data,
+            toolId: editingTool.tool_id,
+            flagValues: validation.normalized,
+          },
+        }
+      })
+    )
+    closeEditModal()
+  }, [closeEditModal, editingDraftValues, editingNodeId, editingTool, setNodes])
+
+  const decoratedNodes = useMemo(
+    () =>
+      nodes.map((node) => {
+        if (String(node.type || '').toLowerCase() !== 'tool') {
+          return node
+        }
+
+        const tool = resolveToolForNode(node.data)
+        const flagDefinitions = tool?.editable_flags || []
+        return {
+          ...node,
+          data: {
+            ...node.data,
+            toolId: node.data.toolId || tool?.tool_id,
+            isMenuOpen: openNodeMenuId === node.id,
+            hasCustomConfig: hasCustomizedFlagValues(flagDefinitions, node.data.flagValues),
+            onToggleMenu: () => setOpenNodeMenuId((current) => current === node.id ? null : node.id),
+            onEdit: () => openEditModal(node.id),
+            onCopy: () => handleCopyNode(node.id),
+            onDelete: () => handleDeleteNode(node.id),
+          },
+        }
+      }),
+    [handleCopyNode, handleDeleteNode, nodes, openEditModal, openNodeMenuId, resolveToolForNode]
+  )
+
+  const onConnect = useCallback(
+    (params: Connection) =>
+      setEdges((eds) =>
+        addEdge(
+          {
+            ...params,
+            id: createUniqueEdgeId(),
+            type: 'smoothstep',
+            markerEnd: { type: MarkerType.ArrowClosed, color: '#2563eb' },
+            style: { stroke: '#2563eb' },
+          },
+          eds
+        )
+      ),
+    [setEdges]
+  )
 
   const handleSave = async () => {
     const currentToken = getToken()
@@ -437,10 +969,34 @@ export default function PipelineBuilder() {
 
     setSaving(true)
     try {
+      const normalizedNodes = priorityGroups.reduce(
+        (currentNodes, group) =>
+          applyPipelinePriorityGroupOrder(
+            currentNodes as any[],
+            group.priority,
+            group.items.map((item) => item.nodeId || item.id),
+            group.items.filter((item) => item.selected).map((item) => item.nodeId || item.id),
+            group.items.filter((item) => item.selected).map((item) => item.nodeId || item.id),
+          ) as Node<NodeData>[],
+        nodes as Node<NodeData>[]
+      )
+
+      const cleanNodes = normalizedNodes.map((node) => ({
+        ...node,
+        data: {
+          label: node.data.label,
+          description: Array.isArray(node.data.description) ? [...node.data.description] : node.data.description,
+          toolId: node.data.toolId,
+          flagValues: node.data.flagValues ? { ...node.data.flagValues } : undefined,
+          priorityOrder: node.data.priorityOrder,
+          prioritySelected: node.data.prioritySelected,
+        },
+      }))
+
       const pipelineData = {
         name: pipelineName,
         description: pipelineDescription || undefined,
-        nodes,
+        nodes: cleanNodes,
         edges,
       }
 
@@ -484,8 +1040,8 @@ export default function PipelineBuilder() {
               <div className="card">
                 <h2 className="sidebar-title">Components</h2>
                 <p className="sidebar-description">
-                  Click a component to add it to the canvas. Connect nodes by dragging from blue dots
-                  (right) to gray dots (left).
+                  Click a component to add it to the canvas. Tool blocks keep their own default flags, and each tool block
+                  can be edited, copied, or deleted from its menu.
                 </p>
                 <div className="sidebar-buttons">
                   <button
@@ -551,131 +1107,29 @@ export default function PipelineBuilder() {
                       ])
                     }
                     className="btn-primary"
-                  >
-                    Meryl Input
-                  </button>
+                    >
+                      Meryl Input
+                    </button>
                   <button
                     onClick={() =>
-                      addNode('tool', 'Read Quality (FastQC)', [
-                        'Input: FASTQ',
-                        'Output: QC reports (HTML/JSON)',
+                      addNode('checkpoint', 'Checkpoint', [
+                        'Pause only this branch until the job is resumed',
+                        'Other independent branches can continue normally',
                       ])
                     }
                     className="btn-secondary"
                   >
-                    Read Quality (FastQC)
+                    Checkpoint
                   </button>
-                  <button
-                    onClick={() =>
-                      addNode('tool', 'Genomic Property Estimation (GenomeScope2)', [
-                        'Input: k-mer histogram',
-                        'Output: genome size, heterozygosity, repeats',
-                      ])
-                    }
-                    className="btn-secondary"
-                  >
-                    Genomic Property Estimation (GenomeScope2)
-                  </button>
-                  <button
-                    onClick={() =>
-                      addNode('tool', 'Assembly (Spades)', [
-                        'Input: paired/long reads',
-                        'Output: assembled contigs/scaffolds (FASTA)',
-                        'Note: outputs are collected automatically',
-                      ])
-                    }
-                    className="btn-secondary"
-                  >
-                    Assembly (Spades)
-                  </button>
-                  <button
-                    onClick={() =>
-                      addNode('tool', 'Metagenome Assembly (metaSPAdes)', [
-                        'Input: paired metagenomic reads',
-                        'Output: metagenome contigs (FASTA)',
-                      ])
-                    }
-                    className="btn-secondary"
-                  >
-                    Metagenome Assembly (metaSPAdes)
-                  </button>
-                  <button
-                    onClick={() =>
-                      addNode('tool', 'Assembly (Hifiasm)', [
-                        'Input: PacBio HiFi reads (FASTQ/FASTA)',
-                        'Output: primary contigs and assembly graph',
-                      ])
-                    }
-                    className="btn-secondary"
-                  >
-                    Assembly (Hifiasm)
-                  </button>
-                  <button
-                    onClick={() =>
-                      addNode('tool', 'Assembly (Verkko)', [
-                        'Input: HiFi reads, optional ONT reads',
-                        'Output: phased assembly FASTA/GFA',
-                      ])
-                    }
-                    className="btn-secondary"
-                  >
-                    Assembly (Verkko)
-                  </button>
-                  <button
-                    onClick={() =>
-                      addNode('tool', 'Quality Assessment for Assembly (QUAST)', [
-                        'Input: assembly FASTA',
-                        'Output: assembly metrics (TSV/HTML)',
-                      ])
-                    }
-                    className="btn-secondary"
-                  >
-                    Quality Assessment for Assembly (QUAST)
-                  </button>
-                  <button
-                    onClick={() =>
-                      addNode('tool', 'Annotation Lift Over (Liftoff)', [
-                        'Input: target FASTA, reference FASTA, annotation GFF/GTF',
-                        'Output: lifted annotation',
-                      ])
-                    }
-                    className="btn-secondary"
-                  >
-                    Annotation Lift Over (Liftoff)
-                  </button>
-                  <button
-                    onClick={() =>
-                      addNode('tool', 'Comparative Annotation Toolkit (CAT)', [
-                        'Input: HAL alignment, reference annotation, reference genome name',
-                        'Output: comparative annotations',
-                      ])
-                    }
-                    className="btn-secondary"
-                  >
-                    Comparative Annotation Toolkit (CAT)
-                  </button>
-                  <button
-                    onClick={() =>
-                      addNode('tool', 'Assembly Completeness (BUSCO)', [
-                        'Input: assembly or genome FASTA',
-                        'Output: completeness summaries',
-                      ])
-                    }
-                    className="btn-secondary"
-                  >
-                    Assembly Completeness (BUSCO)
-                  </button>
-                  <button
-                    onClick={() =>
-                      addNode('tool', 'Assembly k-mer Evaluation (Merqury)', [
-                        'Input: assembly FASTA and Meryl DB',
-                        'Output: reference-free assembly quality reports',
-                      ])
-                    }
-                    className="btn-secondary"
-                  >
-                    Assembly k-mer Evaluation (Merqury)
-                  </button>
+                  {TOOL_NODE_TEMPLATES.map((toolTemplate) => (
+                    <button
+                      key={toolTemplate.toolId}
+                      onClick={() => addToolNode(toolTemplate)}
+                      className="btn-secondary"
+                    >
+                      {toolTemplate.label}
+                    </button>
+                  ))}
                   <button
                     onClick={() =>
                       addNode('result', 'Result Block', [
@@ -714,9 +1168,9 @@ export default function PipelineBuilder() {
                     rows={3}
                   />
                 </div>
-              <div className="form-actions">
-                {isAuthenticated ? (
-                  <button
+                <div className="form-actions">
+                  {isAuthenticated ? (
+                    <button
                       onClick={handleSave}
                       disabled={saving}
                       className="btn-primary"
@@ -745,14 +1199,34 @@ export default function PipelineBuilder() {
             </div>
 
             <div className="pipeline-canvas">
+              <div className="pipeline-canvas-header">
+                <h2>Visual Pipeline Builder</h2>
+                <div className="pipeline-canvas-header-actions">
+                  {validationErrors.length > 0 && (
+                    <p className="pipeline-inline-validation">
+                      {validationErrors[0].length > 120 ? `${validationErrors[0].slice(0, 117)}...` : validationErrors[0]}
+                    </p>
+                  )}
+                  {priorityGroups.length > 0 && (
+                    <button
+                      type="button"
+                      className="btn-secondary pipeline-priority-launch"
+                      onClick={() => setIsPriorityModalOpen(true)}
+                    >
+                      Priority Sets ({selectedPriorityToolCount})
+                    </button>
+                  )}
+                </div>
+              </div>
               <ReactFlow
-                nodes={nodes}
+                nodes={decoratedNodes}
                 edges={edges}
                 onNodesChange={onNodesChange}
                 onEdgesChange={onEdgesChange}
                 onConnect={onConnect}
                 nodeTypes={nodeTypes}
                 fitView
+                onPaneClick={() => setOpenNodeMenuId(null)}
                 defaultEdgeOptions={{
                   type: 'smoothstep',
                   markerEnd: { type: MarkerType.ArrowClosed, color: '#2563eb' },
@@ -766,6 +1240,188 @@ export default function PipelineBuilder() {
           </div>
         </div>
       </div>
+
+      {editingNodeId && (
+        <div className="modal-overlay" onClick={closeEditModal}>
+          <div className="modal-content pipeline-flag-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-header">
+              <h2>{editingTool?.name || 'Tool'} Settings</h2>
+              <button type="button" className="modal-close" onClick={closeEditModal}>
+                ×
+              </button>
+            </div>
+            <div className="modal-body">
+              {editingTool?.editable_flags && editingTool.editable_flags.length > 0 ? (
+                <div className="pipeline-flag-form">
+                  {editingTool.editable_flags.map((flag) => {
+                    const placeholder = [flag.placeholder, flag.example ? `Example: ${flag.example}` : '']
+                      .filter(Boolean)
+                      .join(' ')
+                    const currentValue = editingDraftValues[flag.key]
+
+                    return (
+                      <div key={flag.key} className="form-group pipeline-flag-field">
+                        <label htmlFor={`flag-${flag.key}`}>{flag.label}</label>
+                        {flag.type === 'boolean' ? (
+                          <label className="pipeline-flag-checkbox">
+                            <input
+                              id={`flag-${flag.key}`}
+                              type="checkbox"
+                              checked={Boolean(currentValue)}
+                              onChange={(event) => handleEditFieldChange(flag, event.target.checked)}
+                            />
+                            <span>{flag.description || 'Enable this option for the tool block.'}</span>
+                          </label>
+                        ) : flag.type === 'select' ? (
+                          <select
+                            id={`flag-${flag.key}`}
+                            value={String(currentValue ?? flag.default ?? '')}
+                            className="form-input"
+                            onChange={(event) => handleEditFieldChange(flag, event.target.value)}
+                          >
+                            {(flag.options || []).map((option) => (
+                              <option key={option.value} value={option.value}>
+                                {option.label}
+                              </option>
+                            ))}
+                          </select>
+                        ) : (
+                          <input
+                            id={`flag-${flag.key}`}
+                            type="text"
+                            className="form-input"
+                            value={String(currentValue ?? '')}
+                            placeholder={placeholder}
+                            onChange={(event) => handleEditFieldChange(flag, event.target.value)}
+                          />
+                        )}
+                        {flag.type !== 'boolean' && flag.description && (
+                          <p className="pipeline-flag-help">{flag.description}</p>
+                        )}
+                        {editingErrors[flag.key] && (
+                          <p className="pipeline-flag-error">{editingErrors[flag.key]}</p>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              ) : (
+                <p className="pipeline-flag-empty-state">
+                  This tool currently runs with its default settings in CASSIE and has no user-editable flags in the builder.
+                </p>
+              )}
+            </div>
+            <div className="modal-footer">
+              <button type="button" className="btn-secondary" onClick={closeEditModal}>
+                Cancel
+              </button>
+              <button type="button" className="btn-primary" onClick={saveToolConfiguration}>
+                Save Tool Settings
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isPriorityModalOpen && (
+        <div className="modal-overlay" onClick={() => setIsPriorityModalOpen(false)}>
+          <div className="modal-content pipeline-priority-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-header">
+              <h2>Priority Sets</h2>
+              <button type="button" className="modal-close" onClick={() => setIsPriorityModalOpen(false)}>
+                ×
+              </button>
+            </div>
+            <div className="modal-body">
+              <p className="pipeline-priority-modal-copy">
+                Check only the tools you want CASSIE to prioritize inside each level. After those selected tools finish,
+                the rest of that level can follow the default scheduler order.
+              </p>
+              <div className="pipeline-priority-modal-groups">
+                {priorityGroups.map((group) => {
+                  const isOpen = openPriorityGroups.includes(group.priority)
+                  const selectedItems = group.items.filter((item) => item.selected)
+                  return (
+                    <div key={group.priority} className="pipeline-priority-card">
+                      <button
+                        type="button"
+                        className="pipeline-priority-toggle"
+                        onClick={() =>
+                          setOpenPriorityGroups((current) =>
+                            current.includes(group.priority)
+                              ? current.filter((item) => item !== group.priority)
+                              : [...current, group.priority].sort((a, b) => a - b)
+                          )
+                        }
+                      >
+                        <span>{group.title}</span>
+                        <strong>{isOpen ? '−' : '+'}</strong>
+                      </button>
+                      {isOpen && (
+                        <div className="pipeline-priority-body">
+                          <div className="pipeline-priority-current-tools">
+                            <p className="pipeline-priority-section-title">Current tools in this level</p>
+                            <div className="pipeline-priority-checkbox-list">
+                              {group.items.map((item) => (
+                                <label key={item.id} className="pipeline-priority-checkbox-row">
+                                  <input
+                                    type="checkbox"
+                                    checked={Boolean(item.selected)}
+                                    onChange={() => handlePriorityItemToggle(group, item.nodeId || item.id)}
+                                  />
+                                  <span>{item.label}</span>
+                                </label>
+                              ))}
+                            </div>
+                          </div>
+                          <div className="pipeline-priority-selected-tools">
+                            <p className="pipeline-priority-section-title">Selected order for this level</p>
+                            {selectedItems.length === 0 ? (
+                              <p className="pipeline-priority-empty">
+                                No tools selected here. This level will use the default scheduler order.
+                              </p>
+                            ) : (
+                              selectedItems.map((item, index) => (
+                                <div key={item.id} className="pipeline-priority-row">
+                                  <span>{item.label}</span>
+                                  <div className="pipeline-priority-actions">
+                                    <button
+                                      type="button"
+                                      className="pipeline-priority-move"
+                                      disabled={index === 0}
+                                      onClick={() => handlePriorityReorder(group, index, -1)}
+                                    >
+                                      ↑
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="pipeline-priority-move"
+                                      disabled={index === selectedItems.length - 1}
+                                      onClick={() => handlePriorityReorder(group, index, 1)}
+                                    >
+                                      ↓
+                                    </button>
+                                  </div>
+                                </div>
+                              ))
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button type="button" className="btn-primary" onClick={() => setIsPriorityModalOpen(false)}>
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {saveValidationPopup && (
         <div className="modal-overlay" onClick={() => setSaveValidationPopup(null)}>
           <div className="modal-content pipeline-save-modal" onClick={(e) => e.stopPropagation()}>

@@ -63,7 +63,9 @@ async def get_available_tools():
                 "name": tool["name"],
                 "description": tool.get("description", ""),
                 "type": tool.get("type", "unknown"),
-                "enabled": True  # All tools from emulation are enabled
+                "enabled": True,  # All tools from emulation are enabled
+                "editable_flags": tool.get("editable_flags", []),
+                "default_flag_values": tool.get("default_flag_values", {}),
             })
         
         return success_response(

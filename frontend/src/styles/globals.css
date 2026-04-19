@@ -1525,6 +1525,23 @@ body {
   justify-content: space-between;
 }
 
+.starter-template-grid-page {
+  margin-top: 1.5rem;
+}
+
+.starter-template-card {
+  min-height: 220px;
+}
+
+.starter-template-actions {
+  gap: 1rem;
+}
+
+.starter-templates-intro-card {
+  border-radius: 24px;
+  padding: 2rem 2.2rem;
+}
+
 .community-template-title {
   margin-bottom: 0.55rem;
   font-size: 1.1rem;

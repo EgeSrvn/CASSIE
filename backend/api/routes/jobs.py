@@ -39,10 +39,11 @@ from backend.api.services.job_service import (
 )
 from backend.api.services.job_launch_service import (
     get_auto_start_payload,
+    job_has_reserved_execution,
     start_job_execution_task,
 )
 from backend.api.services.user_limit_service import can_user_start_more_jobs, can_user_interact_with_job_outputs
-from backend.api.services.vm_queue_service import queue_or_start_job
+from backend.api.services.vm_queue_service import get_vm_slot_usage, queue_or_start_job, reserve_vm_slot_for_job
 from backend.api.services.job_execution_service import get_executions_by_job
 from backend.api.services.kubernetes_manager import get_kubernetes_pipeline_runner, kubernetes_is_available
 from backend.api.services.vm_partition_service import get_vm_partitions, get_vm_partition
@@ -88,6 +89,7 @@ def _job_response_for_user(job, username: Optional[str]) -> dict:
         assembler=job.assembler,
         data_types=job.data_types,
         cloud_provider=job.cloud_provider,
+        execution_preferences=job.execution_preferences,
         vm_name=job.vm_name,
         created_at=job.created_at,
         updated_at=job.updated_at,
@@ -448,12 +450,59 @@ async def create_job_endpoint(
             status_code=status.HTTP_400_BAD_REQUEST
         )
         return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+
+    should_reserve_vm_slot = bool(
+        (job_data.input_file_ids and len(job_data.input_file_ids) > 0)
+        or (job_data.pending_upload_count and job_data.pending_upload_count > 0)
+    )
+
+    if should_reserve_vm_slot:
+        can_start_more, current_active_jobs, max_active_jobs = can_user_start_more_jobs(
+            user_id=current_user.id,
+            username=current_user.username,
+        )
+        if not can_start_more:
+            error_data = error_response(
+                error_code=ErrorCode.VALIDATION_ERROR,
+                message=(
+                    f"You already have {current_active_jobs} active jobs. "
+                    f"The limit is {max_active_jobs}."
+                ),
+                status_code=status.HTTP_400_BAD_REQUEST
+            )
+            return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+
+        vm_slot_usage = get_vm_slot_usage(job_data.vm_name)
+        if vm_slot_usage["available_job_slots"] <= 0:
+            selected_vm = get_vm_partition(job_data.vm_name)
+            error_data = error_response(
+                error_code=ErrorCode.VALIDATION_ERROR,
+                message=(
+                    f"{selected_vm.display_name if selected_vm else job_data.vm_name} has no available job slots right now. "
+                    "Choose another VM or wait for an active job to finish."
+                ),
+                status_code=status.HTTP_400_BAD_REQUEST
+            )
+            return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
     
     # Create job
     try:
         logger.info(f"[JOB CREATE] Calling create_job with user_id={current_user.id}, pipeline_id={job_data.pipeline_id}")
         job = create_job(current_user.id, job_data)
         logger.info(f"[JOB CREATE] Job created successfully: id={job.id}, workflow_id={job.workflow_id}, pipeline_id={job.pipeline_id}")
+
+        if should_reserve_vm_slot:
+            try:
+                reserve_vm_slot_for_job(
+                    job_id=job.id,
+                    user_id=current_user.id,
+                    workflow_id=job.workflow_id,
+                    input_file_ids=list(job_data.input_file_ids or []),
+                    vm_name=job.vm_name,
+                )
+            except Exception:
+                delete_job(job.id, current_user.id)
+                raise
         
         # Link pre-uploaded files to this job if provided
         # Handle both staging files and data library files
@@ -661,6 +710,40 @@ async def execute_job(
             error_data = not_found_response("Job", job_id)
             return JSONResponse(content=error_data, status_code=status.HTTP_404_NOT_FOUND)
         
+        if job.status == JobStatus.RUNNING:
+            executions = get_executions_by_job(job_id)
+            waiting_checkpoint_execution = next(
+                (
+                    execution
+                    for execution in executions
+                    if execution.status.value == "running"
+                    and any(
+                        isinstance(stage, dict)
+                        and str(stage.get("status") or "").strip().lower() == "waiting_for_checkpoint"
+                        for stage in (execution.parameters_used or {}).get("stages", [])
+                    )
+                ),
+                None,
+            )
+            if waiting_checkpoint_execution is None:
+                error_data = error_response(
+                    error_code=ErrorCode.VALIDATION_ERROR,
+                    message=f"Job must be in PENDING status to execute. Current status: {job.status.value}",
+                    status_code=status.HTTP_400_BAD_REQUEST
+                )
+                return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+
+            resume_result = get_kubernetes_pipeline_runner().resume_execution_from_checkpoint(job_id, current_user.id)
+            return success_response(
+                data={
+                    "job_id": job_id,
+                    "status": "running",
+                    "message": "Checkpointed pipeline branches resumed successfully",
+                    "released_checkpoints": resume_result.get("released_checkpoints", []),
+                },
+                message="Checkpoint resumed successfully",
+            )
+
         # Verify job is in PENDING status
         if job.status != JobStatus.PENDING:
             error_data = error_response(
@@ -670,20 +753,21 @@ async def execute_job(
             )
             return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
 
-        can_start, current_running_jobs, max_running_jobs = can_user_start_more_jobs(
-            user_id=current_user.id,
-            username=current_user.username,
-        )
-        if not can_start:
-            error_data = error_response(
-                error_code=ErrorCode.VALIDATION_ERROR,
-                message=(
-                    f"You already have {current_running_jobs} running jobs. "
-                    f"The limit is {max_running_jobs}."
-                ),
-                status_code=status.HTTP_400_BAD_REQUEST
+        if not job_has_reserved_execution(job_id):
+            can_start, current_running_jobs, max_running_jobs = can_user_start_more_jobs(
+                user_id=current_user.id,
+                username=current_user.username,
             )
-            return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+            if not can_start:
+                error_data = error_response(
+                    error_code=ErrorCode.VALIDATION_ERROR,
+                    message=(
+                        f"You already have {current_running_jobs} active jobs. "
+                        f"The limit is {max_running_jobs}."
+                    ),
+                    status_code=status.HTTP_400_BAD_REQUEST
+                )
+                return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
         
         _, input_file_ids, readiness_error = get_auto_start_payload(job_id, current_user.id)
         if readiness_error or not input_file_ids:
@@ -716,7 +800,13 @@ async def execute_job(
             },
             message="Job queued successfully" if queued else "Job execution started"
         )
-        
+    except ValueError as e:
+        error_data = error_response(
+            error_code=ErrorCode.VALIDATION_ERROR,
+            message=str(e),
+            status_code=status.HTTP_400_BAD_REQUEST
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
     except Exception as e:
         logger.error(f"Error executing job: {e}", exc_info=True)
         error_data = error_response(
@@ -908,6 +998,7 @@ async def add_files_to_job(
                 assembler=updated_job.assembler,
                 data_types=updated_job.data_types,
                 cloud_provider=updated_job.cloud_provider,
+                execution_preferences=updated_job.execution_preferences,
                 vm_name=updated_job.vm_name,
                 created_at=updated_job.created_at,
                 updated_at=updated_job.updated_at
@@ -999,9 +1090,11 @@ async def update_job_endpoint(
                 status=job.status,
                 workflow_id=job.workflow_id,
                 pipeline_config_id=job.pipeline_config_id,
+                pipeline_id=job.pipeline_id,
                 assembler=job.assembler,
                 data_types=job.data_types,
                 cloud_provider=job.cloud_provider,
+                execution_preferences=job.execution_preferences,
                 vm_name=job.vm_name,
                 created_at=job.created_at,
                 updated_at=job.updated_at

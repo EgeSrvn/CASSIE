@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { createPipeline, getPipeline, getSharedPipelines, Pipeline, PipelineCreate } from '../services/pipelineService'
 import { getToken } from '../services/authService'
-import { STARTER_PIPELINE_TEMPLATES, StarterPipelineTemplate } from '../services/starterPipelines'
 import { getAvailableTools } from '../services/toolService'
 import Navigation from '../components/Navigation'
 import '../styles/globals.css'
@@ -119,10 +118,6 @@ export default function Community() {
     navigate(`/pipelines/builder/${pipelineId}`)
   }
 
-  const handleUseTemplate = (template: StarterPipelineTemplate) => {
-    navigate('/pipelines/builder', { state: { starterTemplate: template } })
-  }
-
   const handleSavePipeline = async (pipelineId: number, e: React.MouseEvent) => {
     e.stopPropagation()
 
@@ -160,55 +155,6 @@ export default function Community() {
     <div className="page-container">
       <Navigation />
       <div className="page-content">
-        <section className="feature-hero">
-          <div className="feature-hero-copy community-hero-copy">
-            <span className="page-kicker">Community</span>
-
-            <div className="community-template-strip">
-              <div className="section-heading">
-                <h2>Starter Templates</h2>
-                <p>Start from a curated template directly from the top of the community workspace.</p>
-              </div>
-              <div className="community-template-grid">
-                {STARTER_PIPELINE_TEMPLATES.map((template) => (
-                  <div key={template.id} className="card pipeline-card community-template-card">
-                    <h3 className="pipeline-card-title community-template-title">{template.name}</h3>
-                    <p className="pipeline-card-description community-template-description">{template.description}</p>
-                    <div className="pipeline-card-actions">
-                      <button onClick={() => handleUseTemplate(template)} className="btn-secondary">
-                        Open Template
-                      </button>
-                      {isAuthenticated && (
-                        <button onClick={() => handleUseTemplate(template)} className="btn-primary">
-                          Customize
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          <div className="hero-info-card">
-            <span className="hero-stat-label">How this page helps</span>
-            <div className="hero-stat-grid">
-              <div>
-                <strong>Search</strong>
-                <span>Find workflows by partial pipeline names or tool labels.</span>
-              </div>
-              <div>
-                <strong>Inspect</strong>
-                <span>Open the shared pipeline or visit the publisher&apos;s profile.</span>
-              </div>
-              <div>
-                <strong>Reuse</strong>
-                <span>Copy a community workflow into your own private workspace.</span>
-              </div>
-            </div>
-          </div>
-        </section>
-
         <section className="card profile-community-card profile-community-main">
           <div className="section-heading">
             <h2>Search Community Pipelines</h2>

@@ -92,9 +92,14 @@ export default function Pipelines() {
       <div className="page-content">
         <header className="page-header">
           <h1 className="page-title">Pipelines</h1>
-          <button onClick={handleCreatePipeline} className="btn-primary">
-            {isAuthenticated ? 'Create New Pipeline' : 'Login to Create Pipeline'}
-          </button>
+          <div className="header-actions">
+            <button type="button" onClick={() => navigate('/pipelines/templates')} className="btn-secondary">
+              Starter Templates
+            </button>
+            <button onClick={handleCreatePipeline} className="btn-primary">
+              {isAuthenticated ? 'Create New Pipeline' : 'Login to Create Pipeline'}
+            </button>
+          </div>
         </header>
 
         <div className="jobs-page-content">
@@ -105,7 +110,7 @@ export default function Pipelines() {
               <p>
                 {authRequired || !isAuthenticated
                   ? 'Login to view and save your own pipelines.'
-                  : 'No pipelines yet. Create your first pipeline or start from a starter template below.'}
+                  : 'No pipelines yet. Create your first pipeline or start from a starter template.'}
               </p>
               <button onClick={handleCreatePipeline} className="btn-primary">
                 {isAuthenticated ? 'Create Pipeline' : 'Login to Create Pipeline'}

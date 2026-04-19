@@ -5,7 +5,7 @@ User-specific runtime limits for job execution and output access.
 from typing import Optional, Set
 
 from backend.api.database.db_init import get_db_connection
-from backend.api.models.job_model import JobStatus
+from backend.api.models.job_model import ExecutionStatus, JobStatus
 from backend.api.models.pipeline_model import FileType
 from backend.api.utils.config_loader import get_config
 
@@ -14,6 +14,10 @@ TERMINAL_JOB_STATUSES = {
     JobStatus.COMPLETED.value,
     JobStatus.FAILED.value,
     JobStatus.CANCELLED.value,
+}
+
+ACTIVE_EXECUTION_QUEUE_STATES = {
+    "reserved_for_upload",
 }
 
 
@@ -51,10 +55,29 @@ def count_running_jobs_for_user(user_id: int) -> int:
         cur = conn.cursor()
         try:
             cur.execute(
-                "SELECT COUNT(*) FROM jobs WHERE user_id = %s AND status = %s",
-                (user_id, JobStatus.RUNNING.value),
+                """
+                SELECT COUNT(DISTINCT e.job_id)
+                FROM job_executions e
+                JOIN jobs j ON j.id = e.job_id
+                WHERE j.user_id = %s
+                  AND (
+                        e.status = %s
+                        OR (
+                            e.status = %s
+                            AND COALESCE(e.parameters_used->>'queue_state', '') = ANY(%s)
+                        )
+                  )
+                  AND j.status = ANY(%s)
+                """,
+                (
+                    user_id,
+                    ExecutionStatus.RUNNING.value,
+                    ExecutionStatus.PENDING.value,
+                    list(ACTIVE_EXECUTION_QUEUE_STATES),
+                    [JobStatus.PENDING.value, JobStatus.RUNNING.value],
+                ),
             )
-            return int(cur.fetchone()[0])
+            return int(cur.fetchone()[0] or 0)
         finally:
             cur.close()
 

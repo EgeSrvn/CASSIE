@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { createJob, JobCreate, executeJob, estimateRuntime, getAvailableVMs, RuntimeEstimate, RuntimeInputAssignment, VM } from '../services/jobService'
 import {
@@ -17,6 +17,14 @@ import { FolderTreeItem, FileItem } from '../services/folderService'
 import { getToken } from '../services/authService'
 import { PendingJobUploadFile, enqueuePendingJobUploads } from '../services/pendingJobUploadService'
 import Navigation from '../components/Navigation'
+import {
+  buildManualExecutionPreferences,
+  buildPipelineExecutionPreferences,
+  computeManualPriorityGroups,
+  computePipelinePriorityGroups,
+  PriorityGroup,
+} from '../utils/pipelinePriority'
+import './PipelineBuilder.css'
 import '../styles/globals.css'
 
 const formatVmCpu = (cpuMillis: number): string => `${(cpuMillis / 1000).toFixed(2)} cores`
@@ -127,6 +135,9 @@ export default function CreateJob() {
   const [recommendationOptions, setRecommendationOptions] = useState<RecommendationOption[]>([])
   const [loadingRecommendations, setLoadingRecommendations] = useState(false)
   const [appliedRecommendationFileIds, setAppliedRecommendationFileIds] = useState<number[] | null>(null)
+  const [priorityGroups, setPriorityGroups] = useState<PriorityGroup[]>([])
+  const [openPriorityGroups, setOpenPriorityGroups] = useState<number[]>([0])
+  const [isPriorityModalOpen, setIsPriorityModalOpen] = useState(false)
   const navigate = useNavigate()
   const sharedRequirementCardStyle = {
     display: 'flex',
@@ -138,6 +149,10 @@ export default function CreateJob() {
     backgroundColor: 'white',
   }
   const selectedVMDetails = availableVMs.find(vm => vm.name === selectedVM) || null
+  const selectedPipeline = useMemo(
+    () => pipelines.find((pipeline) => pipeline.id === selectedPipelineId) || null,
+    [pipelines, selectedPipelineId]
+  )
 
   // Check if pipeline_id was passed via navigation state
   useEffect(() => {
@@ -332,6 +347,8 @@ export default function CreateJob() {
       }
     }
     fetchVMs()
+    const intervalId = window.setInterval(fetchVMs, 5000)
+    return () => window.clearInterval(intervalId)
   }, [isAuthenticated])
 
   const handleToolToggle = (toolId: number) => {
@@ -354,6 +371,74 @@ export default function CreateJob() {
     }
   }
 
+  const handlePriorityReorder = (group: PriorityGroup, itemIndex: number, direction: -1 | 1) => {
+    const selectedItems = group.items.filter((item) => item.selected)
+    const nextIndex = itemIndex + direction
+    if (nextIndex < 0 || nextIndex >= selectedItems.length) {
+      return
+    }
+
+    setPriorityGroups((currentGroups) =>
+      currentGroups.map((currentGroup) => {
+        if (currentGroup.priority !== group.priority) {
+          return currentGroup
+        }
+        const reorderedSelectedItems = currentGroup.items.filter((item) => item.selected)
+        const [moved] = reorderedSelectedItems.splice(itemIndex, 1)
+        reorderedSelectedItems.splice(nextIndex, 0, moved)
+        const reorderedSelectedIds = reorderedSelectedItems.map((item) => item.id)
+        return {
+          ...currentGroup,
+          items: currentGroup.items.map((item) => ({
+            ...item,
+            priorityOrder: item.selected
+              ? reorderedSelectedIds.indexOf(item.id)
+              : item.priorityOrder,
+          })).sort((left, right) => {
+            if (Boolean(left.selected) !== Boolean(right.selected)) {
+              return left.selected ? -1 : 1
+            }
+            return left.priorityOrder - right.priorityOrder || left.label.localeCompare(right.label)
+          }),
+        }
+      })
+    )
+  }
+
+  const handlePriorityItemToggle = (group: PriorityGroup, itemId: string) => {
+    setPriorityGroups((currentGroups) =>
+      currentGroups.map((currentGroup) => {
+        if (currentGroup.priority !== group.priority) {
+          return currentGroup
+        }
+
+        const updatedItems = currentGroup.items.map((item) =>
+          item.id === itemId
+            ? { ...item, selected: !item.selected }
+            : item
+        )
+
+        const selectedItems = updatedItems.filter((item) => item.selected)
+        return {
+          ...currentGroup,
+          items: updatedItems
+            .map((item) => ({
+              ...item,
+              priorityOrder: item.selected
+                ? selectedItems.findIndex((selectedItem) => selectedItem.id === item.id)
+                : item.priorityOrder,
+            }))
+            .sort((left, right) => {
+              if (Boolean(left.selected) !== Boolean(right.selected)) {
+                return left.selected ? -1 : 1
+              }
+              return left.priorityOrder - right.priorityOrder || left.label.localeCompare(right.label)
+            }),
+        }
+      })
+    )
+  }
+
   const handleIntentToggle = (intentId: string) => {
     setSelectedIntentIds(prev => (
       prev.includes(intentId)
@@ -366,6 +451,32 @@ export default function CreateJob() {
     ? (pipelineRequirements?.tool_requirements || [])
     : toolRequirements
   const activeToolRequirementCards = markIntermediateRequirements(rawToolRequirementCards)
+  const selectedToolIds = useMemo(
+    () => selectedTools
+      .map((toolIndex) => availableTools.find((tool) => tool.id === toolIndex)?.tool_id)
+      .filter((toolId): toolId is string => Boolean(toolId)),
+    [availableTools, selectedTools]
+  )
+  const defaultPriorityGroups = useMemo(() => {
+    if (selectionMode === 'pipeline' && selectedPipeline) {
+      const nodes = Array.isArray(selectedPipeline.nodes) ? selectedPipeline.nodes : []
+      const edges = Array.isArray(selectedPipeline.edges) ? selectedPipeline.edges : []
+      return computePipelinePriorityGroups(nodes as any[], edges as any[])
+    }
+    if (selectionMode === 'tools' && activeToolRequirementCards.length > 0 && selectedToolIds.length > 0) {
+      return computeManualPriorityGroups(activeToolRequirementCards, selectedToolIds)
+    }
+    return []
+  }, [activeToolRequirementCards, selectedPipeline, selectedToolIds, selectionMode])
+  const selectedPriorityToolCount = useMemo(
+    () => priorityGroups.reduce((count, group) => count + group.items.filter((item) => item.selected).length, 0),
+    [priorityGroups]
+  )
+
+  useEffect(() => {
+    setPriorityGroups(defaultPriorityGroups)
+    setOpenPriorityGroups(defaultPriorityGroups.length > 0 ? [defaultPriorityGroups[0].priority] : [])
+  }, [defaultPriorityGroups])
 
   // Fetch tool requirements when tools are selected
   useEffect(() => {
@@ -549,10 +660,24 @@ export default function CreateJob() {
 
   const fileMatchesRequirement = (
     file: FileItem & { folderPath?: string },
-    requirement: { formats: string[] }
+    requirement: { formats: string[]; filename_pattern?: string }
   ): boolean => {
     const normalizedFormats = new Set(normalizeFileFormats(file))
-    return requirement.formats.some(format => normalizedFormats.has(format.toLowerCase()))
+    const formatMatches = requirement.formats.some(format => normalizedFormats.has(format.toLowerCase()))
+    if (!formatMatches) {
+      return false
+    }
+
+    if (requirement.filename_pattern) {
+      try {
+        const regex = new RegExp(requirement.filename_pattern, 'i')
+        return regex.test(file.filename || '')
+      } catch (error) {
+        console.warn('Invalid filename pattern in requirement', requirement.filename_pattern, error)
+      }
+    }
+
+    return true
   }
 
   const getCombinedSelectableFiles = (): Array<FileItem & { folderPath?: string }> => {
@@ -783,6 +908,9 @@ export default function CreateJob() {
           return
         }
         jobData.pipeline_id = selectedPipelineId
+        if (priorityGroups.length > 0) {
+          jobData.execution_preferences = buildPipelineExecutionPreferences(priorityGroups)
+        }
       } else {
         if (selectedTools.length === 0) {
           setError('Please select at least one tool')
@@ -790,6 +918,9 @@ export default function CreateJob() {
           return
         }
         jobData.tool_indices = selectedTools
+        if (priorityGroups.length > 0) {
+          jobData.execution_preferences = buildManualExecutionPreferences(priorityGroups)
+        }
       }
       
       // Remove undefined values to ensure clean JSON serialization
@@ -899,6 +1030,8 @@ export default function CreateJob() {
                 </div>
                 <div style={{ color: '#475569', fontSize: '0.95rem', lineHeight: 1.6 }}>
                   Available slots: {selectedVMDetails.available_job_slots}/{selectedVMDetails.max_jobs}
+                  {' | '}
+                  Active jobs: {selectedVMDetails.active_jobs ?? selectedVMDetails.running_jobs}/{selectedVMDetails.max_jobs}
                   {' | '}
                   CPU: {formatVmCpu(selectedVMDetails.available_cpu_millis)}
                   {' | '}
@@ -1201,9 +1334,28 @@ export default function CreateJob() {
                 </div>
               ) : null}
             </div>
-          )}
+            )}
 
-          {/* Tool Input Requirements Section */}
+            {priorityGroups.length > 0 && (
+              <div className="form-group">
+                <label>Priority Sets</label>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                  <p style={{ margin: 0, color: '#64748b', fontSize: '0.9rem' }}>
+                    Choose only the tools you want to prioritize inside each same-level set. Everything else can keep the default scheduler order.
+                  </p>
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    style={{ alignSelf: 'flex-start' }}
+                    onClick={() => setIsPriorityModalOpen(true)}
+                  >
+                    Configure Priority Sets ({selectedPriorityToolCount})
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Tool Input Requirements Section */}
           {activeToolRequirementCards.length > 0 && (
             <div className="form-group">
               <label>Tool Input Requirements *</label>
@@ -1289,6 +1441,12 @@ export default function CreateJob() {
                                       </span>
                                     )}
                                   </div>
+                                  {!req.is_intermediate && req.validation_message ? (
+                                    <p style={{ margin: '0 0 0.75rem 0', color: '#6b7280', fontSize: '0.8rem', lineHeight: 1.5 }}>
+                                      {req.validation_message}
+                                      {req.filename_example ? ` Example: ${req.filename_example}` : ''}
+                                    </p>
+                                  ) : null}
                                   
                                   {req.is_intermediate ? (
                                     <p style={{ color: '#6b7280', fontStyle: 'italic', fontSize: '0.875rem', padding: '0.5rem', backgroundColor: '#eff6ff', borderRadius: '4px' }}>
@@ -1297,6 +1455,7 @@ export default function CreateJob() {
                                   ) : compatibleFiles.length === 0 ? (
                                     <p style={{ color: '#666', fontStyle: 'italic', fontSize: '0.875rem' }}>
                                       No compatible files found. Upload files with formats: {req.formats.join(', ').toUpperCase()}
+                                      {req.filename_example ? ` and names like ${req.filename_example}` : ''}
                                     </p>
                                   ) : (
                                     <div style={sharedRequirementCardStyle}>
@@ -1352,6 +1511,105 @@ export default function CreateJob() {
                   Select tools above to see their input requirements.
                 </p>
               )}
+            </div>
+          )}
+
+          {isPriorityModalOpen && (
+            <div className="modal-overlay" onClick={() => setIsPriorityModalOpen(false)}>
+              <div className="modal-content pipeline-priority-modal" onClick={(event) => event.stopPropagation()}>
+                <div className="modal-header">
+                  <h2>Priority Sets</h2>
+                  <button type="button" className="modal-close" onClick={() => setIsPriorityModalOpen(false)}>
+                    ×
+                  </button>
+                </div>
+                <div className="modal-body">
+                  <p className="pipeline-priority-modal-copy">
+                    Check only the tools you want CASSIE to prioritize inside each level. Once those selected tools finish,
+                    the rest of the same level can continue with the default scheduler order.
+                  </p>
+                  <div className="pipeline-priority-modal-groups">
+                    {priorityGroups.map((group) => {
+                      const isOpen = openPriorityGroups.includes(group.priority)
+                      const selectedItems = group.items.filter((item) => item.selected)
+                      return (
+                        <div key={group.priority} className="pipeline-priority-card">
+                          <button
+                            type="button"
+                            className="pipeline-priority-toggle"
+                            onClick={() =>
+                              setOpenPriorityGroups((current) =>
+                                current.includes(group.priority)
+                                  ? current.filter((item) => item !== group.priority)
+                                  : [...current, group.priority].sort((a, b) => a - b)
+                              )
+                            }
+                          >
+                            <span>{group.title}</span>
+                            <strong>{isOpen ? '−' : '+'}</strong>
+                          </button>
+                          {isOpen && (
+                            <div className="pipeline-priority-body">
+                              <div className="pipeline-priority-current-tools">
+                                <p className="pipeline-priority-section-title">Current tools in this level</p>
+                                <div className="pipeline-priority-checkbox-list">
+                                  {group.items.map((item) => (
+                                    <label key={item.id} className="pipeline-priority-checkbox-row">
+                                      <input
+                                        type="checkbox"
+                                        checked={Boolean(item.selected)}
+                                        onChange={() => handlePriorityItemToggle(group, item.id)}
+                                      />
+                                      <span>{item.label}</span>
+                                    </label>
+                                  ))}
+                                </div>
+                              </div>
+                              <div className="pipeline-priority-selected-tools">
+                                <p className="pipeline-priority-section-title">Selected order for this level</p>
+                                {selectedItems.length === 0 ? (
+                                  <p className="pipeline-priority-empty">
+                                    No tools selected here. This level will use the default scheduler order.
+                                  </p>
+                                ) : (
+                                  selectedItems.map((item, index) => (
+                                    <div key={item.id} className="pipeline-priority-row">
+                                      <span>{item.label}</span>
+                                      <div className="pipeline-priority-actions">
+                                        <button
+                                          type="button"
+                                          className="pipeline-priority-move"
+                                          disabled={index === 0}
+                                          onClick={() => handlePriorityReorder(group, index, -1)}
+                                        >
+                                          ↑
+                                        </button>
+                                        <button
+                                          type="button"
+                                          className="pipeline-priority-move"
+                                          disabled={index === selectedItems.length - 1}
+                                          onClick={() => handlePriorityReorder(group, index, 1)}
+                                        >
+                                          ↓
+                                        </button>
+                                      </div>
+                                    </div>
+                                  ))
+                                )}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+                <div className="modal-footer">
+                  <button type="button" className="btn-primary" onClick={() => setIsPriorityModalOpen(false)}>
+                    Done
+                  </button>
+                </div>
+              </div>
             </div>
           )}
 

@@ -205,6 +205,10 @@ export default function JobDetails() {
   const visibleInputCount = inputFiles.length + pendingQueuedFiles.length
   const selectedVMDetails = job?.vm_name ? availableVMs.find(vm => vm.name === job.vm_name) || null : null
   const latestExecution = executions.length > 0 ? executions[0] : null
+  const hasWaitingCheckpoint = executions.some((execution) =>
+    execution.status === 'running' &&
+    (execution.parameters_used?.stages || []).some((stage) => stage.status === 'waiting_for_checkpoint')
+  )
   const latestQueuePosition = (
     latestExecution?.status === 'pending' &&
     String(latestExecution.parameters_used?.queue_state || '').trim().toLowerCase() === 'waiting_for_vm_slot' &&
@@ -473,6 +477,7 @@ export default function JobDetails() {
       case 'pending': return 'status-pending'
       case 'waiting_for_dependencies': return 'status-pending'
       case 'waiting_for_resources': return 'status-pending'
+      case 'waiting_for_checkpoint': return 'status-pending'
       default: return ''
     }
   }
@@ -494,6 +499,8 @@ export default function JobDetails() {
         return 'waiting for dependencies'
       case 'waiting_for_resources':
         return 'waiting for resources'
+      case 'waiting_for_checkpoint':
+        return 'waiting for checkpoint'
       default:
         return status
     }
@@ -506,6 +513,9 @@ export default function JobDetails() {
 
     const resourceWaitingStage = stages.find(stage => stage.status === 'waiting_for_resources')
     if (resourceWaitingStage) return resourceWaitingStage
+
+    const checkpointWaitingStage = stages.find(stage => stage.status === 'waiting_for_checkpoint')
+    if (checkpointWaitingStage) return checkpointWaitingStage
 
     const dependencyWaitingStage = stages.find(stage => stage.status === 'waiting_for_dependencies')
     if (dependencyWaitingStage) return dependencyWaitingStage
@@ -538,6 +548,7 @@ export default function JobDetails() {
     const toolName = stage.tool_name || stage.tool_id
     if (stage.status === 'running') return `Current Tool: ${toolName}`
     if (stage.status === 'waiting_for_resources') return `Waiting for resources to run: ${toolName}`
+    if (stage.status === 'waiting_for_checkpoint') return `Waiting for checkpoint resume before: ${toolName}`
     if (stage.status === 'waiting_for_dependencies') return `Waiting for previous tools before: ${toolName}`
     if (stage.status === 'pending') return `Next Tool: ${toolName}`
     if (stage.status === 'failed') return `Failed Tool: ${toolName}`
@@ -592,6 +603,7 @@ export default function JobDetails() {
 
   // Check if required files are present
   const canExecute = (() => {
+    if (hasWaitingCheckpoint) return true
     if (job.status !== 'pending') return false
     if (inputFilesPendingUpload) return false
     if (visibleInputCount === 0) return false
@@ -606,6 +618,9 @@ export default function JobDetails() {
   })()
 
   const getExecuteButtonMessage = () => {
+    if (hasWaitingCheckpoint) {
+      return 'Resume the branches currently waiting at checkpoint blocks.'
+    }
     if (job.status !== 'pending') return null
     if (inputFilesPendingUpload) {
       return jobUploadStatus?.message || 'Selected files are still uploading for this job.'
@@ -674,7 +689,7 @@ export default function JobDetails() {
                     </span>
                   )}
                 </div>
-                {job.status === 'pending' && (
+                {(job.status === 'pending' || hasWaitingCheckpoint) && (
                   <>
                     {!jobUploadStatus && (
                       <button
@@ -699,7 +714,7 @@ export default function JobDetails() {
                         style={{ marginTop: '10px' }}
                         title={getExecuteButtonMessage() || undefined}
                       >
-                        {executing ? 'Executing...' : 'Execute Job'}
+                        {executing ? 'Executing...' : hasWaitingCheckpoint ? 'Resume Checkpointed Branches' : 'Execute Job'}
                       </button>
                     )}
                     {!jobUploadStatus && !canExecute && getExecuteButtonMessage() && (

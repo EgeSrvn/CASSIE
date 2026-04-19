@@ -26,6 +26,7 @@ from backend.api.utils.logger import get_logger
 logger = get_logger(__name__)
 
 QUEUE_STATE_WAITING = "waiting_for_vm_slot"
+QUEUE_STATE_RESERVED_FOR_UPLOAD = "reserved_for_upload"
 
 
 def _next_execution_number(job_id: int) -> int:
@@ -50,7 +51,7 @@ def _base_parameters(
     }
 
 
-def _count_running_jobs_for_vm(vm_name: str) -> int:
+def _count_active_jobs_for_vm(vm_name: str) -> int:
     with get_db_connection() as conn:
         cur = conn.cursor()
         try:
@@ -59,11 +60,23 @@ def _count_running_jobs_for_vm(vm_name: str) -> int:
                 SELECT COUNT(DISTINCT e.job_id)
                 FROM job_executions e
                 JOIN jobs j ON j.id = e.job_id
-                WHERE e.status = %s
-                  AND j.status = %s
-                  AND j.vm_name = %s
+                WHERE j.vm_name = %s
+                  AND (
+                        e.status = %s
+                        OR (
+                            e.status = %s
+                            AND COALESCE(e.parameters_used->>'queue_state', '') = %s
+                        )
+                  )
+                  AND j.status = ANY(%s)
                 """,
-                (ExecutionStatus.RUNNING.value, JobStatus.RUNNING.value, vm_name),
+                (
+                    vm_name,
+                    ExecutionStatus.RUNNING.value,
+                    ExecutionStatus.PENDING.value,
+                    QUEUE_STATE_RESERVED_FOR_UPLOAD,
+                    [JobStatus.PENDING.value, JobStatus.RUNNING.value],
+                ),
             )
             row = cur.fetchone()
             return int(row[0] or 0) if row else 0
@@ -74,11 +87,12 @@ def _count_running_jobs_for_vm(vm_name: str) -> int:
 def get_vm_slot_usage(vm_name: str) -> Dict[str, int]:
     partition = get_vm_partition(vm_name)
     max_jobs = max(1, partition.max_jobs) if partition else 1
-    running_jobs = _count_running_jobs_for_vm(vm_name)
-    available_jobs = max(0, max_jobs - running_jobs)
+    active_jobs = _count_active_jobs_for_vm(vm_name)
+    available_jobs = max(0, max_jobs - active_jobs)
     return {
         "max_jobs": max_jobs,
-        "running_jobs": running_jobs,
+        "running_jobs": active_jobs,
+        "active_jobs": active_jobs,
         "available_job_slots": available_jobs,
     }
 
@@ -163,6 +177,89 @@ def _find_existing_active_or_queued_execution(job_id: int):
     return None
 
 
+def reserve_vm_slot_for_job(
+    *,
+    job_id: int,
+    user_id: int,
+    workflow_id: int,
+    input_file_ids: List[int],
+    vm_name: Optional[str],
+) -> Dict[str, Any]:
+    job = get_job_by_id(job_id, user_id=user_id)
+    if not job:
+        raise ValueError(f"Job {job_id} not found")
+
+    selected_vm = get_vm_partition(vm_name or job.vm_name) or get_vm_partitions()[0]
+    existing_execution = _find_existing_active_or_queued_execution(job_id)
+    if existing_execution:
+        parameters_used = getattr(existing_execution, "parameters_used", None) or {}
+        queue_state = str(parameters_used.get("queue_state") or "").strip().lower()
+        if existing_execution.status == ExecutionStatus.RUNNING:
+            return {
+                "state": "running",
+                "execution_id": existing_execution.id,
+                "queue_position": None,
+            }
+        if queue_state == QUEUE_STATE_RESERVED_FOR_UPLOAD:
+            return {
+                "state": "reserved",
+                "execution_id": existing_execution.id,
+                "queue_position": None,
+            }
+        if queue_state == QUEUE_STATE_WAITING:
+            raise ValueError(
+                f"{selected_vm.display_name} is already saturated and this job is still queued. "
+                "Please wait for an active job to finish or choose another VM."
+            )
+
+    slot_usage = get_vm_slot_usage(selected_vm.name)
+    if slot_usage["available_job_slots"] <= 0:
+        raise ValueError(
+            f"{selected_vm.display_name} has no available job slots right now. "
+            "Choose another VM or wait for an active job to finish."
+        )
+
+    parameters_used = _base_parameters(
+        workflow_id=workflow_id,
+        input_files=input_file_ids,
+        vm_name=selected_vm.name,
+    )
+    parameters_used.update(
+        {
+            "queue_state": QUEUE_STATE_RESERVED_FOR_UPLOAD,
+            "queue_position": None,
+            "queued_vm_name": selected_vm.name,
+            "reserved_at": datetime.now().isoformat(),
+        }
+    )
+    execution = create_job_execution(
+        JobExecutionCreate(
+            job_id=job_id,
+            execution_number=_next_execution_number(job_id),
+            status=ExecutionStatus.PENDING,
+            nextflow_run_id=None,
+            work_dir=None,
+            output_dir=None,
+            process_id=None,
+            tool_versions={},
+            parameters_used=parameters_used,
+            started_at=None,
+        )
+    )
+    update_job(job_id, user_id, JobUpdate(status=JobStatus.PENDING))
+    logger.info(
+        "Reserved VM slot on %s for job %s via execution %s",
+        selected_vm.name,
+        job_id,
+        execution.id,
+    )
+    return {
+        "state": "reserved",
+        "execution_id": execution.id,
+        "queue_position": None,
+    }
+
+
 async def queue_or_start_job(
     *,
     job_id: int,
@@ -180,13 +277,31 @@ async def queue_or_start_job(
     existing_execution = _find_existing_active_or_queued_execution(job_id)
     if existing_execution:
         parameters_used = getattr(existing_execution, "parameters_used", None) or {}
+        queue_state = str(parameters_used.get("queue_state") or "").strip().lower()
         if existing_execution.status == ExecutionStatus.RUNNING:
             return {
                 "state": "running",
                 "execution_id": existing_execution.id,
                 "queue_position": None,
             }
-        if str(parameters_used.get("queue_state") or "").strip().lower() == QUEUE_STATE_WAITING:
+        if queue_state == QUEUE_STATE_RESERVED_FOR_UPLOAD:
+            runner = get_pipeline_runner()
+            execution = await runner.start_pipeline(
+                job_id=job_id,
+                user_id=user_id,
+                workflow_id=workflow_id,
+                input_files=input_file_ids,
+                execution_number=existing_execution.execution_number,
+                execution_id=existing_execution.id,
+                parameters_used=parameters_used,
+                vm_name=selected_vm.name,
+            )
+            return {
+                "state": "running",
+                "execution_id": execution.get("execution_id"),
+                "queue_position": None,
+            }
+        if queue_state == QUEUE_STATE_WAITING:
             position = _queue_position(selected_vm.name, existing_execution.id)
             if parameters_used.get("queue_position") != position:
                 parameters_used["queue_position"] = position
@@ -205,8 +320,8 @@ async def queue_or_start_job(
             "queue_position": parameters_used.get("queue_position"),
         }
 
-    running_count = _count_running_jobs_for_vm(selected_vm.name)
-    if running_count < selected_vm.max_jobs:
+    active_count = _count_active_jobs_for_vm(selected_vm.name)
+    if active_count < selected_vm.max_jobs:
         runner = get_pipeline_runner()
         execution = await runner.start_pipeline(
             job_id=job_id,
@@ -222,48 +337,10 @@ async def queue_or_start_job(
             "queue_position": None,
         }
 
-    position = _queue_position(selected_vm.name)
-    parameters_used = _base_parameters(
-        workflow_id=workflow_id,
-        input_files=input_file_ids,
-        vm_name=selected_vm.name,
+    raise ValueError(
+        f"{selected_vm.display_name} has no available job slots right now. "
+        "Choose another VM or wait for an active job to finish."
     )
-    parameters_used.update(
-        {
-            "queue_state": QUEUE_STATE_WAITING,
-            "queue_position": position,
-            "queued_vm_name": selected_vm.name,
-            "queued_at": datetime.now().isoformat(),
-        }
-    )
-    execution = create_job_execution(
-        JobExecutionCreate(
-            job_id=job_id,
-            execution_number=_next_execution_number(job_id),
-            status=ExecutionStatus.PENDING,
-            nextflow_run_id=None,
-            work_dir=None,
-            output_dir=None,
-            process_id=None,
-            tool_versions={},
-            parameters_used=parameters_used,
-            started_at=None,
-        )
-    )
-    update_job(job_id, user_id, JobUpdate(status=JobStatus.PENDING))
-    _refresh_queue_positions(selected_vm.name)
-    logger.info(
-        "Queued job %s on %s at position %s (execution %s)",
-        job_id,
-        selected_vm.name,
-        position,
-        execution.id,
-    )
-    return {
-        "state": "queued",
-        "execution_id": execution.id,
-        "queue_position": position,
-    }
 
 
 async def schedule_queued_jobs(vm_name: Optional[str] = None) -> int:
@@ -277,7 +354,7 @@ async def schedule_queued_jobs(vm_name: Optional[str] = None) -> int:
         if partition is None:
             continue
 
-        while _count_running_jobs_for_vm(partition.name) < partition.max_jobs:
+        while _count_active_jobs_for_vm(partition.name) < partition.max_jobs:
             queued = _get_queued_execution_rows(partition.name)
             if not queued:
                 break

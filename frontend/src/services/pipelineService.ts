@@ -91,6 +91,10 @@ export interface PipelineRequirement {
   label: string
   formats: string[]
   used_by?: string[]
+  filename_pattern?: string
+  filename_example?: string
+  validation_message?: string
+  input_behavior?: string
 }
 
 export interface PipelineRequirements {

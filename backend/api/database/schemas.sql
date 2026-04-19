@@ -340,6 +340,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     assembler VARCHAR(50),
     data_types JSONB,
     cloud_provider VARCHAR(20),
+    execution_preferences JSONB,
     vm_name VARCHAR(50),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -403,6 +404,17 @@ CREATE TABLE IF NOT EXISTS job_executions (
 -- Constraints for job_executions (idempotent)
 DO $$
 BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'chk_execution_status'
+          AND conrelid = 'job_executions'::regclass
+          AND pg_get_constraintdef(oid) NOT LIKE '%pending%'
+    ) THEN
+        ALTER TABLE job_executions
+        DROP CONSTRAINT chk_execution_status;
+    END IF;
+
     IF NOT EXISTS (
         SELECT 1 FROM pg_constraint
         WHERE conname = 'chk_execution_status'
@@ -410,7 +422,7 @@ BEGIN
     ) THEN
         ALTER TABLE job_executions
         ADD CONSTRAINT chk_execution_status
-        CHECK (status IN ('running', 'completed', 'failed', 'cancelled'));
+        CHECK (status IN ('pending', 'running', 'completed', 'failed', 'cancelled'));
     END IF;
 
     IF NOT EXISTS (
@@ -849,6 +861,14 @@ BEGIN
         WHERE table_name = 'jobs' AND column_name = 'vm_name'
     ) THEN
         ALTER TABLE jobs ADD COLUMN vm_name VARCHAR(50);
+    END IF;
+
+    -- Add execution_preferences column if it doesn't exist
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'jobs' AND column_name = 'execution_preferences'
+    ) THEN
+        ALTER TABLE jobs ADD COLUMN execution_preferences JSONB;
     END IF;
     
     -- Add foreign key constraint for pipeline_id after column is added (if pipeline_id was just added)

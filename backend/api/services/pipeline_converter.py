@@ -22,7 +22,10 @@ NON_TOOL_NODE_TYPES = {
     "result",
     "fastqinput",
     "fastainput",
+    "checkpoint",
 }
+
+STAGE_NODE_TYPES = {"tool", "checkpoint"}
 
 
 def extract_tool_nodes(nodes: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
@@ -77,6 +80,50 @@ def extract_tool_nodes(nodes: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
                 }
     
     return tool_nodes
+
+
+def extract_stage_nodes(nodes: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    """
+    Extract runnable stage nodes from ReactFlow nodes structure.
+
+    This includes tool nodes plus checkpoint nodes, while excluding
+    input/result/helper nodes.
+    """
+    if isinstance(nodes, dict):
+        if "nodes" in nodes:
+            node_list = nodes["nodes"]
+        elif "data" in nodes:
+            node_list = nodes["data"]
+        else:
+            node_list = list(nodes.values())
+    elif isinstance(nodes, list):
+        node_list = nodes
+    else:
+        logger.warning(f"Unexpected nodes structure: {type(nodes)}")
+        return {}
+
+    stage_nodes = {}
+    for node in node_list:
+        if isinstance(node, dict):
+            node_id = node.get("id") or node.get("nodeId")
+            node_type = str(node.get("type") or node.get("nodeType") or "").strip().lower()
+            node_data = node.get("data") or node
+            node_label = node_data.get("label") if isinstance(node_data, dict) else str(node_data)
+        else:
+            node_id = getattr(node, "id", None) or getattr(node, "nodeId", None)
+            node_type = str(getattr(node, "type", None) or getattr(node, "nodeType", None) or "").strip().lower()
+            node_data = getattr(node, "data", node)
+            node_label = getattr(node_data, "label", None) if hasattr(node_data, "label") else str(node_data)
+
+        if node_id and node_type in STAGE_NODE_TYPES:
+            stage_nodes[str(node_id)] = {
+                "id": str(node_id),
+                "type": node_type,
+                "label": node_label,
+                "data": node_data,
+            }
+
+    return stage_nodes
 
 
 def extract_edges(edges: Dict[str, Any]) -> List[Dict[str, str]]:
@@ -167,6 +214,93 @@ def topological_sort_tools(tool_nodes: Dict[str, Dict[str, Any]], edges: List[Di
     result.extend(remaining)
     
     return result
+
+
+def compute_tool_priority_levels(
+    tool_nodes: Dict[str, Dict[str, Any]],
+    edges: List[Dict[str, str]],
+) -> Dict[str, int]:
+    """Compute longest-path priority level for each tool node."""
+    node_ids = set(tool_nodes.keys())
+    dependencies = {node_id: set() for node_id in node_ids}
+    dependents = {node_id: set() for node_id in node_ids}
+
+    for edge in edges:
+        source = edge["source"]
+        target = edge["target"]
+        if source in node_ids and target in node_ids:
+            dependencies[target].add(source)
+            dependents[source].add(target)
+
+    in_degree = {node_id: len(dependencies[node_id]) for node_id in node_ids}
+    levels = {node_id: 0 for node_id in node_ids}
+    queue = deque(sorted([node_id for node_id, degree in in_degree.items() if degree == 0]))
+
+    while queue:
+        node_id = queue.popleft()
+        current_level = levels.get(node_id, 0)
+        for dependent in sorted(dependents.get(node_id, set())):
+            levels[dependent] = max(levels.get(dependent, 0), current_level + 1)
+            in_degree[dependent] -= 1
+            if in_degree[dependent] == 0:
+                queue.append(dependent)
+
+    return levels
+
+
+def sort_tool_nodes_by_priority(
+    tool_nodes: Dict[str, Dict[str, Any]],
+    edges: List[Dict[str, str]],
+    priority_overrides: Optional[List[Dict[str, Any]]] = None,
+) -> List[str]:
+    """
+    Return tool node ids ordered by dependency level and user-defined within-level order.
+    """
+    if not tool_nodes:
+        return []
+
+    ordered_node_ids = topological_sort_tools(tool_nodes, edges)
+    topological_position = {node_id: index for index, node_id in enumerate(ordered_node_ids)}
+    levels = compute_tool_priority_levels(tool_nodes, edges)
+
+    override_index_by_priority: Dict[int, Dict[str, int]] = {}
+    for group in priority_overrides or []:
+        if not isinstance(group, dict):
+            continue
+        try:
+            priority_value = int(group.get("priority"))
+        except (TypeError, ValueError):
+            continue
+        ordered_ids = group.get("ordered_node_ids") or []
+        if not isinstance(ordered_ids, list):
+            continue
+        override_index_by_priority[priority_value] = {
+            str(node_id): index
+            for index, node_id in enumerate(ordered_ids)
+            if str(node_id).strip()
+        }
+
+    def _saved_priority_order(node_id: str) -> int:
+        node_data = tool_nodes.get(node_id, {}).get("data") or {}
+        raw_value = node_data.get("priorityOrder")
+        try:
+            return int(raw_value)
+        except (TypeError, ValueError):
+            return 10_000
+
+    def _sort_key(node_id: str) -> tuple:
+        level = int(levels.get(node_id, 0))
+        override_index = override_index_by_priority.get(level, {}).get(node_id, 10_000)
+        return (
+            level,
+            override_index,
+            _saved_priority_order(node_id),
+            topological_position.get(node_id, 10_000),
+            str(tool_nodes.get(node_id, {}).get("label") or ""),
+            node_id,
+        )
+
+    return sorted(tool_nodes.keys(), key=_sort_key)
 
 
 def convert_pipeline_to_tool_indices(pipeline: PipelineInDB) -> List[int]:

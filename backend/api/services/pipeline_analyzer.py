@@ -13,9 +13,13 @@ from tool_registry import (
     get_tool_id_from_label,
     get_tool_requirements,
     tool_produces_requirement,
+    validate_tool_flag_values,
 )
 
 logger = logging.getLogger(__name__)
+
+CHECKPOINT_NODE_TYPES = {"checkpoint"}
+STAGE_NODE_TYPES = {"tool", "checkpoint"}
 
 
 def _get_node_list(nodes: Any) -> List[Dict[str, Any]]:
@@ -97,6 +101,32 @@ def _classify_explicit_input(node: Dict[str, Any]) -> Dict[str, Any] | None:
     return None
 
 
+def _resolve_node_tool_config(node: Dict[str, Any], tool_id: str) -> Dict[str, Any]:
+    node_data = node.get("data") if isinstance(node.get("data"), dict) else {}
+    raw_flag_values = node_data.get("flagValues") or node_data.get("toolConfig") or {}
+    if not isinstance(raw_flag_values, dict):
+        return {}
+
+    validation = validate_tool_flag_values(tool_id, raw_flag_values)
+    return validation["values"] if not validation["errors"] else {}
+
+
+def _apply_flag_specific_requirement_rules(
+    tool_id: str,
+    requirement: Dict[str, Any],
+    tool_config: Dict[str, Any],
+) -> Dict[str, Any]:
+    req_copy = dict(requirement)
+
+    if tool_id == "FASTQC" and bool(tool_config.get("casava")) and str(req_copy.get("type") or "").strip().lower() == "reads":
+        req_copy["filename_pattern"] = r".+_L\d{3}_(?:R?[12])_\d{3}\.(?:fastq|fq)(?:\.gz)?$"
+        req_copy["filename_example"] = "sample_L001_R1_001.fastq.gz"
+        req_copy["validation_message"] = "CASAVA mode expects filenames like sample_L001_R1_001.fastq.gz."
+        req_copy["input_behavior"] = "casava"
+
+    return req_copy
+
+
 def extract_input_nodes(pipeline: PipelineInDB) -> List[Dict[str, Any]]:
     """
     Extract input nodes from pipeline graph.
@@ -167,6 +197,7 @@ def analyze_pipeline_requirements(pipeline: PipelineInDB) -> Dict[str, Any]:
                     ordered_tools_in_pipeline.append(tool_id)
 
                 node_id = str(node.get("id") or "")
+                tool_config = _resolve_node_tool_config(node, tool_id)
                 upstream_tool_ids = {
                     upstream_tool_id
                     for source_id in incoming_edges.get(node_id, [])
@@ -178,7 +209,7 @@ def analyze_pipeline_requirements(pipeline: PipelineInDB) -> Dict[str, Any]:
 
                 processed_requirements = []
                 for req in get_tool_requirements(tool_id):
-                    req_copy = dict(req)
+                    req_copy = _apply_flag_specific_requirement_rules(tool_id, req, tool_config)
                     producer_name = None
                     for upstream_tool_id in upstream_tool_ids:
                         if tool_produces_requirement(upstream_tool_id, str(req_copy.get("type") or "")):
@@ -197,6 +228,7 @@ def analyze_pipeline_requirements(pipeline: PipelineInDB) -> Dict[str, Any]:
                     "tool_name": node_label or tool_id,
                     "tool_type": node_data.get("toolType", node_type or "unknown"),
                     "description": node_data.get("description", ""),
+                    "tool_config": tool_config,
                     "requirements": processed_requirements,
                 })
     
@@ -310,6 +342,7 @@ def validate_pipeline_graph(nodes: Any, edges: Any) -> Dict[str, Any]:
 
     explicit_inputs = []
     tools = []
+    checkpoints = []
     results = []
 
     for node in node_list:
@@ -318,6 +351,8 @@ def validate_pipeline_graph(nodes: Any, edges: Any) -> Dict[str, Any]:
             explicit_inputs.append(node)
         elif node_type == "tool":
             tools.append(node)
+        elif node_type in CHECKPOINT_NODE_TYPES:
+            checkpoints.append(node)
         elif node_type in {"result", "end"}:
             results.append(node)
 
@@ -346,6 +381,14 @@ def validate_pipeline_graph(nodes: Any, edges: Any) -> Dict[str, Any]:
         if not incoming_edges.get(node_id):
             errors.append(f'"{label}" is not connected to any upstream tool.')
 
+    for node in checkpoints:
+        node_id = str(node.get("id") or "")
+        label = _resolve_node_label(node) or "Checkpoint"
+        if not incoming_edges.get(node_id):
+            errors.append(f'Checkpoint "{label}" must have at least one incoming connection.')
+        if not outgoing_edges.get(node_id):
+            errors.append(f'Checkpoint "{label}" must connect to a downstream tool or result.')
+
     for node in tools:
         node_id = str(node.get("id") or "")
         label = _resolve_node_label(node) or "Tool"
@@ -353,6 +396,14 @@ def validate_pipeline_graph(nodes: Any, edges: Any) -> Dict[str, Any]:
             errors.append(f'Tool "{label}" must have at least one incoming connection from an input or another tool.')
         if not outgoing_edges.get(node_id):
             errors.append(f'Tool "{label}" must connect to another tool or a result node.')
+
+        tool_id = get_tool_id_from_label(label)
+        if tool_id:
+            node_data = node.get("data") if isinstance(node.get("data"), dict) else {}
+            raw_flag_values = node_data.get("flagValues") or node_data.get("toolConfig") or {}
+            validation = validate_tool_flag_values(tool_id, raw_flag_values)
+            for field_name, message in validation["errors"].items():
+                errors.append(f'Tool "{label}" has an invalid "{field_name}" value. {message}')
 
     if tools and explicit_inputs:
         reachable_from_inputs: set[str] = set()
@@ -366,11 +417,12 @@ def validate_pipeline_graph(nodes: Any, edges: Any) -> Dict[str, Any]:
                 if target not in reachable_from_inputs:
                     stack.append(target)
 
-        for tool in tools:
-            tool_id = str(tool.get("id") or "")
-            label = _resolve_node_label(tool) or "Tool"
-            if tool_id not in reachable_from_inputs:
-                errors.append(f'Tool "{label}" is not reachable from any input node.')
+        for stage_node in [*tools, *checkpoints]:
+            stage_id = str(stage_node.get("id") or "")
+            label = _resolve_node_label(stage_node) or "Checkpoint"
+            stage_type = "Checkpoint" if _resolve_node_type(stage_node).lower() in CHECKPOINT_NODE_TYPES else "Tool"
+            if stage_id not in reachable_from_inputs:
+                errors.append(f'{stage_type} "{label}" is not reachable from any input node.')
 
     if tools and results:
         reverse_reachable_to_results: set[str] = set()
@@ -384,11 +436,12 @@ def validate_pipeline_graph(nodes: Any, edges: Any) -> Dict[str, Any]:
                 if source not in reverse_reachable_to_results:
                     stack.append(source)
 
-        for tool in tools:
-            tool_id = str(tool.get("id") or "")
-            label = _resolve_node_label(tool) or "Tool"
-            if tool_id not in reverse_reachable_to_results:
-                errors.append(f'Tool "{label}" does not lead to a result node.')
+        for stage_node in [*tools, *checkpoints]:
+            stage_id = str(stage_node.get("id") or "")
+            label = _resolve_node_label(stage_node) or "Checkpoint"
+            stage_type = "Checkpoint" if _resolve_node_type(stage_node).lower() in CHECKPOINT_NODE_TYPES else "Tool"
+            if stage_id not in reverse_reachable_to_results:
+                errors.append(f'{stage_type} "{label}" does not lead to a result node.')
 
     visited: set[str] = set()
     visiting: set[str] = set()

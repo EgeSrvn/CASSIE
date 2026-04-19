@@ -1,5 +1,25 @@
 import apiClient from './apiClient'
 
+export interface EditableFlagOption {
+  label: string
+  value: string
+}
+
+export interface EditableFlagDefinition {
+  key: string
+  label: string
+  description?: string
+  type: 'string' | 'integer' | 'number' | 'boolean' | 'select'
+  default?: string | number | boolean
+  placeholder?: string
+  example?: string
+  min?: number
+  max?: number
+  pattern?: string
+  error_message?: string
+  options?: EditableFlagOption[]
+}
+
 export interface Tool {
   id: number
   tool_id?: string
@@ -7,6 +27,8 @@ export interface Tool {
   description: string
   type: string
   enabled: boolean
+  editable_flags?: EditableFlagDefinition[]
+  default_flag_values?: Record<string, string | number | boolean>
 }
 
 export interface ToolListResponse {
@@ -128,6 +150,10 @@ export interface ToolRequirement {
   formats: string[]
   is_intermediate?: boolean
   source_tool?: string
+  filename_pattern?: string
+  filename_example?: string
+  validation_message?: string
+  input_behavior?: string
 }
 
 export interface ToolRequirementInfo {
@@ -136,6 +162,7 @@ export interface ToolRequirementInfo {
   tool_name: string
   tool_type: string
   description?: string
+  tool_config?: Record<string, string | number | boolean>
   requirements: ToolRequirement[]
 }
 

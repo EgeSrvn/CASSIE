@@ -8,6 +8,7 @@ import Jobs from './pages/Jobs'
 import CreateJob from './pages/CreateJob'
 import JobDetails from './pages/JobDetails'
 import Pipelines from './pages/Pipelines'
+import StarterTemplates from './pages/StarterTemplates'
 import PipelineBuilder from './pages/PipelineBuilder'
 import Community from './pages/Community'
 import Forum from './pages/Forum'
@@ -96,6 +97,10 @@ function App() {
         <Route 
           path="/pipelines" 
           element={<Pipelines />} 
+        />
+        <Route
+          path="/pipelines/templates"
+          element={<StarterTemplates />}
         />
         <Route 
           path="/community" 
