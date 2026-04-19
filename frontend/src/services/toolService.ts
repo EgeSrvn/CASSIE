@@ -145,11 +145,14 @@ export const getAvailableTools = async (): Promise<Tool[]> => {
 }
 
 export interface ToolRequirement {
+  requirement_id?: string
   type: string
   label: string
   formats: string[]
   is_intermediate?: boolean
   source_tool?: string
+  available_sources?: Array<'external' | 'upstream'>
+  default_source?: 'external' | 'upstream'
   filename_pattern?: string
   filename_example?: string
   validation_message?: string

@@ -78,6 +78,42 @@ export interface JobExecution {
   created_at: string
 }
 
+export interface JobPipelineBlock {
+  id: string
+  kind: 'input' | 'tool' | 'checkpoint' | 'output'
+  column: 'input' | 'stage' | 'output'
+  row: number
+  label: string
+  status: 'waiting' | 'working' | 'finished' | 'failed'
+  raw_status?: string
+  stage_id?: string
+  stage_number?: number
+  tool_id?: string | null
+  dependency_stage_ids?: string[]
+  produced_type?: string | null
+  related_stage_id?: string | null
+  consumer_stage_ids?: string[]
+  formats?: string[]
+  filenames?: string[]
+  description?: string | null
+}
+
+export interface JobPipelineConnection {
+  id: string
+  source: string
+  target: string
+  kind: 'input' | 'dependency' | 'output' | 'artifact'
+  label?: string | null
+}
+
+export interface JobPipelineVisualization {
+  job_id: number
+  workflow_id: number
+  latest_execution_id?: number | null
+  blocks: JobPipelineBlock[]
+  connections?: JobPipelineConnection[]
+}
+
 export interface JobCreate {
   name: string
   workflow_id?: number // Optional, will be created dynamically from tools
@@ -160,6 +196,24 @@ export const getJobExecutions = async (jobId: number): Promise<JobExecution[]> =
     if (error.response?.data) {
       const errorData = error.response.data
       throw new Error(extractApiErrorMessage(errorData, 'Failed to get job executions'))
+    }
+    throw error
+  }
+}
+
+export const getJobPipelineVisualization = async (jobId: number): Promise<JobPipelineVisualization> => {
+  try {
+    const response = await apiClient.get<{ success: boolean; data: JobPipelineVisualization; message?: string }>(
+      `/api/jobs/${jobId}/pipeline-visualization`
+    )
+    if (response.data && response.data.success) {
+      return response.data.data
+    }
+    throw new Error(response.data?.message || 'Failed to get job pipeline visualization')
+  } catch (error: any) {
+    if (error.response?.data) {
+      const errorData = error.response.data
+      throw new Error(extractApiErrorMessage(errorData, 'Failed to get job pipeline visualization'))
     }
     throw error
   }

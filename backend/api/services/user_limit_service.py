@@ -86,6 +86,28 @@ def get_downloadable_finished_job_ids_for_user(user_id: int, username: Optional[
     return get_recent_finished_job_ids_for_user(user_id, username, "downloadable_finished_jobs")
 
 
+def get_job_status_for_user(user_id: int, job_id: Optional[int]) -> Optional[str]:
+    if job_id is None:
+        return None
+
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                """
+                SELECT status
+                FROM jobs
+                WHERE id = %s
+                  AND user_id = %s
+                """,
+                (job_id, user_id),
+            )
+            row = cur.fetchone()
+            return str(row[0]) if row and row[0] is not None else None
+        finally:
+            cur.close()
+
+
 def can_user_start_more_jobs(user_id: int, username: Optional[str]) -> tuple[bool, int, int]:
     limits = get_user_limits(username)
     max_running_jobs = max(int(limits.get("max_running_jobs", 0)), 0)
@@ -97,9 +119,20 @@ def can_user_start_more_jobs(user_id: int, username: Optional[str]) -> tuple[boo
     return current_running_jobs < max_running_jobs, current_running_jobs, max_running_jobs
 
 
-def can_user_access_job_outputs(user_id: int, username: Optional[str], job_id: Optional[int]) -> tuple[bool, int]:
+def can_user_access_job_outputs(
+    user_id: int,
+    username: Optional[str],
+    job_id: Optional[int],
+    job_status: Optional[str] = None,
+) -> tuple[bool, int]:
     if job_id is None:
         return False, 0
+
+    resolved_status = job_status or get_job_status_for_user(user_id, job_id)
+    if resolved_status not in TERMINAL_JOB_STATUSES:
+        limits = get_user_limits(username)
+        max_finished_jobs = max(int(limits.get("downloadable_finished_jobs", 0)), 0)
+        return True, max_finished_jobs
 
     limits = get_user_limits(username)
     max_finished_jobs = max(int(limits.get("downloadable_finished_jobs", 0)), 0)
@@ -130,10 +163,12 @@ def validate_output_file_access(file_record, user_id: int, username: Optional[st
     if getattr(file_record, "file_type", None) != FileType.OUTPUT:
         return True, None
 
+    job_status = get_job_status_for_user(user_id, getattr(file_record, "job_id", None))
     allowed, max_finished_jobs = can_user_access_job_outputs(
         user_id=user_id,
         username=username,
         job_id=getattr(file_record, "job_id", None),
+        job_status=job_status,
     )
     if allowed:
         return True, None

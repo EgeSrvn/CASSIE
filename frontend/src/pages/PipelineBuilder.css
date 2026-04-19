@@ -18,32 +18,32 @@
 
 .pipeline-canvas {
   position: relative;
-  border: 1px solid #e5e7eb;
+  border: 1px solid #d9c7a5;
   border-radius: 8px;
-  background: white;
+  background: #F5EEDC;
 }
 
 .pipeline-node-box {
   position: relative;
   width: 320px;
   min-height: 80px;
-  background: white;
+  background: #F5EEDC;
   border-radius: 8px;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-  border: 1px solid #e5e7eb;
+  border: 1px solid #d9c7a5;
   overflow: visible;
 }
 
 .pipeline-node-box:hover {
   box-shadow: 0 4px 6px rgba(0, 0, 0, 0.15);
-  border-color: #2563eb;
+  border-color: #27548A;
 }
 
 .pipeline-node-header {
   position: relative;
   padding: 0.75rem 3.35rem 0.75rem 1rem;
-  background: #2563eb;
-  color: white;
+  background: #27548A;
+  color: #F5EEDC;
 }
 
 .pipeline-node-label {
@@ -59,28 +59,28 @@
   display: block;
   font-size: 0.75rem;
   font-weight: 500;
-  color: #6b7280;
+  color: #595652;
   margin-top: 0.25rem;
   padding: 0.125rem 0.5rem;
-  background: #f3f4f6;
+  background: #f1e5cf;
   border-radius: 4px;
   text-align: center;
 }
 
 .pipeline-node-body {
   padding: 0.75rem 1rem;
-  background: white;
+  background: #F5EEDC;
 }
 
 .pipeline-node-description {
   font-size: 0.75rem;
-  color: #374151;
+  color: #3e4e59;
   line-height: 1.5;
   margin: 0.25rem 0;
 }
 
 .pipeline-handle-target {
-  background: #6b7280 !important;
+  background: #183B4E !important;
   width: 14px !important;
   height: 14px !important;
   border-radius: 4px !important;
@@ -88,11 +88,11 @@
 }
 
 .pipeline-handle-source {
-  background: #2563eb !important;
+  background: #DDA853 !important;
   width: 14px !important;
   height: 14px !important;
   border-radius: 4px !important;
-  border: 2px solid white !important;
+  border: 2px solid #F5EEDC !important;
 }
 
 .pipeline-handle-target:hover,
@@ -114,7 +114,7 @@
   border: none;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.18);
-  color: white;
+  color: #F5EEDC;
   font-size: 1rem;
   line-height: 1;
   cursor: pointer;

@@ -12,12 +12,34 @@ from tool_registry import get_tool_by_index, tool_produces_requirement
 logger = get_logger(__name__)
 
 
+def _get_requirement_source_override(
+    input_source_overrides: Optional[List[Dict[str, Any]]],
+    tool_id: str,
+    requirement_type: str,
+) -> Optional[str]:
+    normalized_tool_id = str(tool_id or "").strip().upper()
+    normalized_requirement = str(requirement_type or "").strip().lower()
+    if not normalized_tool_id or not normalized_requirement:
+        return None
+
+    for item in input_source_overrides or []:
+        if not isinstance(item, dict):
+            continue
+        item_tool_id = str(item.get("tool_id") or "").strip().upper()
+        item_requirement = str(item.get("requirement_type") or "").strip().lower()
+        source = str(item.get("source") or "").strip().lower()
+        if item_tool_id == normalized_tool_id and item_requirement == normalized_requirement and source in {"external", "upstream"}:
+            return source
+    return None
+
+
 def order_tools_by_dependencies(
     tool_indices: List[int],
     has_reference_file: bool = False,
     has_paired_end_reads: bool = False,
     has_assembly_file: bool = False,
     preferred_tool_order: Optional[List[int]] = None,
+    input_source_overrides: Optional[List[Dict[str, Any]]] = None,
 ) -> List[int]:
     """
     Order tools by inferred dependencies while preserving user order inside equal-priority sets.
@@ -45,6 +67,8 @@ def order_tools_by_dependencies(
         for requirement in tool.get("input_requirements", []) or []:
             requirement_type = str(requirement.get("type") or "").strip().lower()
             if not requirement_type:
+                continue
+            if _get_requirement_source_override(input_source_overrides, tool["id"], requirement_type) == "external":
                 continue
             for candidate_idx, candidate_tool in tool_map.items():
                 if candidate_idx == idx:
@@ -95,6 +119,7 @@ def create_workflow_from_tools(
     has_paired_end_reads: bool = False,
     has_assembly_file: bool = False,
     preferred_tool_order: Optional[List[int]] = None,
+    input_source_overrides: Optional[List[Dict[str, Any]]] = None,
 ) -> int:
     """
     Create a workflow dynamically from selected tool indices.
@@ -109,6 +134,7 @@ def create_workflow_from_tools(
         has_paired_end_reads,
         has_assembly_file,
         preferred_tool_order=preferred_tool_order,
+        input_source_overrides=input_source_overrides,
     )
     if not ordered_indices:
         raise ValueError("No valid tools remaining after dependency filtering")

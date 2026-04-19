@@ -176,7 +176,7 @@ async def get_tool_requirements(
             if requirements:
                 # Check if inputs are intermediate (from previous tools)
                 processed_requirements = []
-                for req in requirements:
+                for requirement_index, req in enumerate(requirements):
                     req_copy = req.copy()
                     producer_name = None
                     for candidate_tool in selected_tools:
@@ -187,6 +187,9 @@ async def get_tool_requirements(
                             producer_name = candidate_tool.get("name") or get_tool_by_id(candidate_tool_id).get("name", candidate_tool_id)
                             break
                     req_copy["is_intermediate"] = producer_name is not None
+                    req_copy["available_sources"] = ["external", "upstream"] if producer_name else ["external"]
+                    req_copy["default_source"] = "upstream" if producer_name else "external"
+                    req_copy["requirement_id"] = f"{idx}:{tool_id}:{str(req_copy.get('type') or 'input').strip().lower()}:{requirement_index}"
                     if producer_name:
                         req_copy["source_tool"] = producer_name
                     

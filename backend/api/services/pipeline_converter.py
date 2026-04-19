@@ -303,7 +303,10 @@ def sort_tool_nodes_by_priority(
     return sorted(tool_nodes.keys(), key=_sort_key)
 
 
-def convert_pipeline_to_tool_indices(pipeline: PipelineInDB) -> List[int]:
+def convert_pipeline_to_tool_indices(
+    pipeline: PipelineInDB,
+    priority_overrides: Optional[List[Dict[str, Any]]] = None,
+) -> List[int]:
     """
     Convert pipeline nodes/edges to tool_indices for Nextflow execution.
     
@@ -326,8 +329,12 @@ def convert_pipeline_to_tool_indices(pipeline: PipelineInDB) -> List[int]:
         # Extract edges
         edges = extract_edges(pipeline.edges)
         
-        # Topological sort to determine execution order
-        ordered_node_ids = topological_sort_tools(tool_nodes, edges)
+        # Determine execution order using the same priority-aware sort used at runtime.
+        ordered_node_ids = sort_tool_nodes_by_priority(
+            tool_nodes,
+            edges,
+            priority_overrides=priority_overrides,
+        )
         
         # Map node labels to tool IDs, then to tool indices
         tool_indices = []

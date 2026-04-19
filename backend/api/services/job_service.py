@@ -5,14 +5,203 @@ This module provides database operations for job management.
 """
 
 import json
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from contextlib import contextmanager
 from backend.api.database.db_init import get_db_connection
 from backend.api.models.job_model import JobInDB, JobCreate, JobUpdate, JobResponse, JobStatus, CloudProvider
 from backend.api.utils.logger import get_logger
-from tool_registry import get_tool_by_index
+from tool_registry import get_tool_by_index, tool_produces_requirement
 
 logger = get_logger(__name__)
+
+
+def _get_requirement_source_override(
+    execution_preferences: Optional[Dict[str, Any]],
+    tool_id: str,
+    requirement_type: str,
+) -> Optional[str]:
+    normalized_tool_id = str(tool_id or "").strip().upper()
+    normalized_requirement = str(requirement_type or "").strip().lower()
+    if not normalized_tool_id or not normalized_requirement or not isinstance(execution_preferences, dict):
+        return None
+
+    for item in execution_preferences.get("input_source_overrides") or []:
+        if not isinstance(item, dict):
+            continue
+        item_tool_id = str(item.get("tool_id") or "").strip().upper()
+        item_requirement = str(item.get("requirement_type") or "").strip().lower()
+        source = str(item.get("source") or "").strip().lower()
+        if item_tool_id == normalized_tool_id and item_requirement == normalized_requirement and source in {"external", "upstream"}:
+            return source
+    return None
+
+
+def _build_pipeline_stage_snapshot(
+    pipeline_id: int,
+    user_id: int,
+    execution_preferences: Optional[Dict[str, Any]],
+) -> Optional[List[Dict[str, Any]]]:
+    from backend.api.services.pipeline_service import get_pipeline_by_id
+    from backend.api.services.pipeline_converter import extract_edges, extract_stage_nodes, sort_tool_nodes_by_priority
+    from tool_registry import get_tool_by_id, get_tool_id_from_label
+
+    pipeline = get_pipeline_by_id(pipeline_id, user_id)
+    if not pipeline:
+        return None
+
+    stage_nodes = extract_stage_nodes(pipeline.nodes)
+    if not stage_nodes:
+        return None
+
+    edges = extract_edges(pipeline.edges)
+    dependency_map: Dict[str, List[str]] = {node_id: [] for node_id in stage_nodes}
+    for edge in edges:
+        source = str(edge.get("source") or "").strip()
+        target = str(edge.get("target") or "").strip()
+        if source in stage_nodes and target in stage_nodes and source not in dependency_map[target]:
+            dependency_map[target].append(source)
+
+    priority_overrides = []
+    if isinstance(execution_preferences, dict):
+        priority_overrides = execution_preferences.get("pipeline_priority_groups") or []
+
+    ordered_node_ids = sort_tool_nodes_by_priority(
+        stage_nodes,
+        edges,
+        priority_overrides=priority_overrides,
+    )
+
+    snapshot: List[Dict[str, Any]] = []
+    stage_number = 1
+    for node_id in ordered_node_ids:
+        node = stage_nodes.get(node_id)
+        if not node:
+            continue
+
+        node_type = str(node.get("type") or "").strip().lower()
+        if node_type == "checkpoint":
+            snapshot.append(
+                {
+                    "stage_id": str(node_id),
+                    "stage_number": stage_number,
+                    "stage_kind": "checkpoint",
+                    "tool_id": "CHECKPOINT",
+                    "tool_name": str(node.get("label") or "Checkpoint"),
+                    "dependency_stage_ids": list(dependency_map.get(node_id, [])),
+                    "input_requirements": [],
+                    "produces": [],
+                }
+            )
+            stage_number += 1
+            continue
+
+        tool_id = get_tool_id_from_label(str(node.get("label") or ""))
+        tool = get_tool_by_id(tool_id) if tool_id else None
+        if not tool:
+            continue
+
+        snapshot.append(
+            {
+                "stage_id": str(node_id),
+                "stage_number": stage_number,
+                "stage_kind": "tool",
+                "tool_id": str(tool.get("id") or ""),
+                "tool_name": str(tool.get("name") or tool.get("id") or ""),
+                "dependency_stage_ids": list(dependency_map.get(node_id, [])),
+                "input_requirements": list(tool.get("input_requirements") or []),
+                "produces": list(tool.get("produces") or []),
+            }
+        )
+        stage_number += 1
+
+    return snapshot or None
+
+
+def _build_workflow_stage_snapshot(
+    workflow_id: int,
+    user_id: int,
+    execution_preferences: Optional[Dict[str, Any]],
+) -> Optional[List[Dict[str, Any]]]:
+    from backend.api.services.workflow_service import get_workflow_by_id
+    from tool_registry import get_tool_by_id
+
+    workflow = get_workflow_by_id(workflow_id, user_id=user_id)
+    if not workflow:
+        return None
+
+    manual_override_positions: Dict[str, int] = {}
+    if isinstance(execution_preferences, dict):
+        for group in execution_preferences.get("manual_priority_groups") or []:
+            if not isinstance(group, dict):
+                continue
+            ordered_tool_ids = group.get("ordered_tool_ids") or []
+            if not isinstance(ordered_tool_ids, list):
+                continue
+            for index, tool_id in enumerate(ordered_tool_ids):
+                normalized_tool_id = str(tool_id).strip().upper()
+                if normalized_tool_id and normalized_tool_id not in manual_override_positions:
+                    manual_override_positions[normalized_tool_id] = index
+
+    specs: List[Dict[str, Any]] = []
+    for stage_number, step in enumerate(workflow.get("workflow_steps", []) or [], start=1):
+        tool_id = str(step.get("tool") or "").strip().upper()
+        tool = get_tool_by_id(tool_id) if tool_id else None
+        if not tool:
+            continue
+        stage_id = str(step.get("stage_id") or step.get("id") or f"step-{stage_number}")
+        dependency_ids = [str(dep).strip() for dep in (step.get("dependency_ids") or []) if str(dep).strip()]
+        if not dependency_ids:
+            for previous_spec in specs:
+                previous_tool_id = str(previous_spec.get("tool_id") or "").strip().upper()
+                if not previous_tool_id:
+                    continue
+                if any(
+                    _get_requirement_source_override(
+                        execution_preferences,
+                        str(tool.get("id") or ""),
+                        str(requirement.get("type") or ""),
+                    ) != "external"
+                    and
+                    tool_produces_requirement(previous_tool_id, str(requirement.get("type") or "").strip().lower())
+                    for requirement in (tool.get("input_requirements") or [])
+                ):
+                    previous_stage_id = str(previous_spec.get("stage_id") or "").strip()
+                    if previous_stage_id and previous_stage_id not in dependency_ids:
+                        dependency_ids.append(previous_stage_id)
+        specs.append(
+            {
+                "stage_id": stage_id,
+                "stage_number": stage_number,
+                "stage_kind": "tool",
+                "tool_id": str(tool.get("id") or ""),
+                "tool_name": str(tool.get("name") or tool.get("id") or ""),
+                "dependency_stage_ids": dependency_ids,
+                "input_requirements": list(tool.get("input_requirements") or []),
+                "produces": list(tool.get("produces") or []),
+                "priority_order": manual_override_positions.get(tool_id, stage_number - 1),
+            }
+        )
+
+    specs.sort(key=lambda spec: (int(spec.get("priority_order") or 0), int(spec.get("stage_number") or 0)))
+    for stage_number, spec in enumerate(specs, start=1):
+        spec["stage_number"] = stage_number
+        spec.pop("priority_order", None)
+
+    return specs or None
+
+
+def _merge_visualization_snapshot(
+    execution_preferences: Optional[Dict[str, Any]],
+    stage_snapshot: Optional[List[Dict[str, Any]]],
+) -> Optional[Dict[str, Any]]:
+    if not stage_snapshot:
+        return execution_preferences
+
+    merged = dict(execution_preferences or {})
+    merged["visualization_snapshot"] = {
+        "stages": stage_snapshot,
+    }
+    return merged
 
 
 def create_job(user_id: int, job_data: JobCreate) -> JobInDB:
@@ -85,7 +274,13 @@ def create_job(user_id: int, job_data: JobCreate) -> JobInDB:
             raise ValueError(f"Pipeline {job_data.pipeline_id} not found or does not belong to user")
         
         try:
-            tool_indices = convert_pipeline_to_tool_indices(pipeline)
+            priority_overrides = []
+            if isinstance(job_data.execution_preferences, dict):
+                priority_overrides = job_data.execution_preferences.get("pipeline_priority_groups") or []
+            tool_indices = convert_pipeline_to_tool_indices(
+                pipeline,
+                priority_overrides=priority_overrides,
+            )
             logger.info(f"Converted pipeline {job_data.pipeline_id} to tool_indices: {tool_indices}")
         except Exception as e:
             raise ValueError(f"Failed to convert pipeline to tool indices: {str(e)}")
@@ -162,10 +357,30 @@ def create_job(user_id: int, job_data: JobCreate) -> JobInDB:
             has_paired_end_reads=has_paired_end,
             has_assembly_file=has_assembly,
             preferred_tool_order=preferred_tool_indices_from_preferences(tool_indices),
+            input_source_overrides=(job_data.execution_preferences or {}).get("input_source_overrides") if isinstance(job_data.execution_preferences, dict) else None,
         )
         logger.info(f"Created workflow {workflow_id} dynamically from tool indices: {tool_indices} (has_reference: {has_reference}, has_assembly: {has_assembly}, has_paired_end: {has_paired_end})")
     elif not workflow_id:
         raise ValueError("Either workflow_id or tool_indices must be provided")
+
+    if job_data.pipeline_id:
+        job_data.execution_preferences = _merge_visualization_snapshot(
+            job_data.execution_preferences,
+            _build_pipeline_stage_snapshot(
+                job_data.pipeline_id,
+                user_id,
+                job_data.execution_preferences,
+            ),
+        )
+    else:
+        job_data.execution_preferences = _merge_visualization_snapshot(
+            job_data.execution_preferences,
+            _build_workflow_stage_snapshot(
+                workflow_id,
+                user_id,
+                job_data.execution_preferences,
+            ),
+        )
     
     with get_db_connection() as conn:
         cur = conn.cursor()

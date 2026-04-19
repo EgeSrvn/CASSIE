@@ -610,6 +610,7 @@ async def request_job_outputs_zip(
         user_id=current_user.id,
         username=current_user.username,
         job_id=job_id,
+        job_status=job.status.value if hasattr(job.status, "value") else str(job.status),
     )
     if not can_access_outputs:
         error_data = error_response(
@@ -660,6 +661,7 @@ async def get_job_outputs_zip_download(
         user_id=current_user.id,
         username=current_user.username,
         job_id=job_id,
+        job_status=job.status.value if hasattr(job.status, "value") else str(job.status),
     )
     if not can_access_outputs:
         error_data = error_response(

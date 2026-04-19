@@ -682,6 +682,47 @@ async def get_job(
     )
 
 
+@router.get("/{job_id}/pipeline-visualization", status_code=status.HTTP_200_OK)
+async def get_job_pipeline_visualization(
+    job_id: int,
+    current_user: UserResponse = Depends(get_current_user)
+):
+    """Return the executable pipeline graph for a job with live block statuses."""
+    try:
+        job = get_job_by_id(job_id, user_id=current_user.id)
+        if not job:
+            error_data = not_found_response("Job", job_id)
+            return JSONResponse(content=error_data, status_code=status.HTTP_404_NOT_FOUND)
+
+        payload = get_kubernetes_pipeline_runner().get_job_pipeline_visualization(
+            job_id=job_id,
+            user_id=current_user.id,
+        )
+        return JSONResponse(
+            content=success_response(
+                data=payload,
+                message="Job pipeline visualization retrieved successfully",
+                status_code=status.HTTP_200_OK,
+            ),
+            status_code=status.HTTP_200_OK,
+        )
+    except ValueError as e:
+        error_data = error_response(
+            error_code=ErrorCode.VALIDATION_ERROR,
+            message=str(e),
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+    except Exception as e:
+        logger.error(f"Error building pipeline visualization for job {job_id}: {e}", exc_info=True)
+        error_data = error_response(
+            error_code=ErrorCode.INTERNAL_ERROR,
+            message="Failed to build job pipeline visualization",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
 @router.post("/{job_id}/execute", status_code=status.HTTP_200_OK)
 async def execute_job(
     job_id: int,

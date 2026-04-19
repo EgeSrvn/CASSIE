@@ -87,6 +87,7 @@ export const deletePipeline = async (id: number): Promise<void> => {
 }
 
 export interface PipelineRequirement {
+  id?: string
   type: string
   label: string
   formats: string[]

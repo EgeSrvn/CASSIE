@@ -36,7 +36,7 @@ from backend.api.services.job_execution_service import create_job_execution, get
 from backend.api.services.job_archive_service import prewarm_job_outputs_zip
 from backend.api.services.job_service import update_job, get_job_by_id
 from backend.api.services.minio_client import get_minio_client
-from backend.api.services.storage_service import create_file_record, get_file_by_id
+from backend.api.services.storage_service import create_file_record, get_file_by_id, get_files_by_user
 from backend.api.services.vm_partition_service import get_vm_partition, get_vm_partitions
 from backend.api.utils.config_loader import get_config
 from backend.api.utils.logger import get_logger
@@ -47,6 +47,7 @@ from tool_registry import (
     tool_produces_requirement as registry_tool_produces_requirement,
     validate_tool_flag_values,
 )
+from backend.api.services.job_execution_service import get_executions_by_job
 
 logger = get_logger(__name__)
 
@@ -623,6 +624,19 @@ class KubernetesPipelineRunner:
 
             stage_id = str(step.get("stage_id") or step.get("id") or f"step-{stage_number}")
             dependency_ids = [str(dep).strip() for dep in (step.get("dependency_ids") or []) if str(dep).strip()]
+            if not dependency_ids:
+                for previous_spec in specs:
+                    previous_tool = previous_spec.get("tool") or {}
+                    previous_stage_id = str(previous_spec.get("stage_id") or "").strip()
+                    if not previous_stage_id:
+                        continue
+                    if any(
+                        self._get_requirement_source_override(execution_preferences, str(tool.get("id") or ""), str(requirement.get("type") or "")) != "external"
+                        and self._tool_produces_requirement(previous_tool, str(requirement.get("type") or "").strip().lower())
+                        for requirement in (tool.get("input_requirements") or [])
+                    ):
+                        if previous_stage_id not in dependency_ids:
+                            dependency_ids.append(previous_stage_id)
             specs.append(
                 {
                     "stage_id": stage_id,
@@ -668,6 +682,8 @@ class KubernetesPipelineRunner:
                 requirement_type = str(requirement.get("type") or "").strip().lower()
                 if not requirement_type:
                     continue
+                if self._get_requirement_source_override(execution_preferences, str(tool.get("id") or ""), requirement_type) == "external":
+                    continue
                 producer_stage_ids = [
                     spec["stage_id"]
                     for spec in specs
@@ -698,6 +714,27 @@ class KubernetesPipelineRunner:
 
     def _tool_produces_requirement(self, tool: Dict[str, Any], requirement_type: str) -> bool:
         return registry_tool_produces_requirement(tool, requirement_type)
+
+    def _get_requirement_source_override(
+        self,
+        execution_preferences: Optional[Dict[str, Any]],
+        tool_id: str,
+        requirement_type: str,
+    ) -> Optional[str]:
+        normalized_tool_id = str(tool_id or "").strip().upper()
+        normalized_requirement = str(requirement_type or "").strip().lower()
+        if not normalized_tool_id or not normalized_requirement or not isinstance(execution_preferences, dict):
+            return None
+
+        for item in execution_preferences.get("input_source_overrides") or []:
+            if not isinstance(item, dict):
+                continue
+            item_tool_id = str(item.get("tool_id") or "").strip().upper()
+            item_requirement = str(item.get("requirement_type") or "").strip().lower()
+            source = str(item.get("source") or "").strip().lower()
+            if item_tool_id == normalized_tool_id and item_requirement == normalized_requirement and source in {"external", "upstream"}:
+                return source
+        return None
 
     def _build_stage_specs_from_pipeline(
         self,
@@ -812,12 +849,647 @@ class KubernetesPipelineRunner:
             )
         return validation["values"]
 
+    def _classify_pipeline_input_node(self, node: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        node_type = str(node.get("type") or node.get("nodeType") or "").strip().lower()
+        if node_type not in {"fastqinput", "fastainput", "input", "inputnode", "start"}:
+            return None
+
+        node_data = node.get("data") if isinstance(node.get("data"), dict) else {}
+        label = str(node_data.get("label") or node.get("label") or "").strip()
+        description = node_data.get("description") if isinstance(node_data, dict) else None
+        description_text = " ".join(description or []).lower() if isinstance(description, list) else str(description or "").lower()
+        label_lower = label.lower()
+
+        if node_type == "fastqinput" or "fastq" in label_lower or "fastq" in description_text:
+            return {"type": "fastq_input", "label": label or "FASTQ Input", "formats": ["fastq"]}
+        if node_type == "fastainput" or "fasta" in label_lower or "fasta" in description_text or "reference" in label_lower:
+            return {"type": "fasta_input", "label": label or "FASTA Input", "formats": ["fasta"]}
+        if "gff" in label_lower or "gtf" in label_lower or "annotation" in label_lower:
+            return {"type": "annotation_input", "label": label or "Annotation Input", "formats": ["gff", "gff3", "gtf"]}
+        if "hal" in label_lower:
+            return {"type": "hal_input", "label": label or "HAL Input", "formats": ["hal"]}
+        if "meryl" in label_lower:
+            return {"type": "meryl_input", "label": label or "Meryl Input", "formats": ["meryl"]}
+        if "text" in label_lower or "txt" in label_lower or "name" in label_lower or "config" in label_lower:
+            return {"type": "text_input", "label": label or "Text Input", "formats": ["txt"]}
+        return {"type": "input", "label": label or "Pipeline Input", "formats": []}
+
+    def _build_explicit_pipeline_input_blocks(
+        self,
+        pipeline_id: int,
+        user_id: int,
+        stage_specs: List[Dict[str, Any]],
+        initial_inputs: List[Dict[str, Any]],
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        from backend.api.services.pipeline_converter import extract_edges
+        from backend.api.services.pipeline_service import get_pipeline_by_id
+
+        pipeline = get_pipeline_by_id(pipeline_id, user_id)
+        if not pipeline:
+            return [], []
+
+        raw_nodes = pipeline.nodes
+        if isinstance(raw_nodes, dict):
+            node_list = raw_nodes.get("nodes") if isinstance(raw_nodes.get("nodes"), list) else list(raw_nodes.values())
+        elif isinstance(raw_nodes, list):
+            node_list = raw_nodes
+        else:
+            node_list = []
+
+        nodes_by_id = {
+            str(node.get("id")): node
+            for node in node_list
+            if isinstance(node, dict) and node.get("id") is not None
+        }
+        edges = extract_edges(pipeline.edges)
+        stage_numbers = {str(spec.get("stage_id") or ""): int(spec.get("stage_number") or 0) for spec in stage_specs}
+        stage_spec_by_id = {str(spec.get("stage_id") or ""): spec for spec in stage_specs}
+        blocks: List[Dict[str, Any]] = []
+        connections: List[Dict[str, Any]] = []
+
+        for node_id, node in nodes_by_id.items():
+            classification = self._classify_pipeline_input_node(node)
+            if not classification:
+                continue
+
+            downstream_stage_ids = []
+            for edge in edges:
+                source = str(edge.get("source") or "").strip()
+                target = str(edge.get("target") or "").strip()
+                if source == node_id and target in stage_numbers and target not in downstream_stage_ids:
+                    downstream_stage_ids.append(target)
+
+            matching_inputs = [
+                artifact for artifact in initial_inputs
+                if self._artifact_matches_requirement(artifact, {"formats": classification.get("formats") or []})
+            ] if classification.get("formats") else list(initial_inputs)
+
+            block_id = f"input:{node_id}"
+            blocks.append(
+                {
+                    "id": block_id,
+                    "kind": "input",
+                    "column": "input",
+                    "row": min((stage_numbers.get(stage_id) or 1) for stage_id in downstream_stage_ids) if downstream_stage_ids else 1,
+                    "label": str(classification.get("label") or "Pipeline Input"),
+                    "status": "finished" if matching_inputs else "waiting",
+                    "raw_status": "available" if matching_inputs else "missing",
+                    "formats": list(classification.get("formats") or []),
+                    "filenames": [str(item.get("filename") or "") for item in matching_inputs if str(item.get("filename") or "").strip()],
+                    "description": (
+                        ", ".join(str(item.get("filename") or "") for item in matching_inputs if str(item.get("filename") or "").strip())
+                        if matching_inputs else
+                        "Waiting for a matching job input"
+                    ),
+                }
+            )
+
+            for stage_id in downstream_stage_ids:
+                spec = stage_spec_by_id.get(stage_id) or {}
+                tool = spec.get("tool") or {}
+                label_parts = []
+                for requirement in tool.get("input_requirements", []) or []:
+                    requirement_label = str(requirement.get("label") or self._humanize_token(str(requirement.get("type") or "input"))).strip()
+                    if requirement_label and requirement_label not in label_parts:
+                        label_parts.append(requirement_label)
+                connections.append(
+                    {
+                        "id": f"edge:{block_id}:stage:{stage_id}",
+                        "source": block_id,
+                        "target": f"stage:{stage_id}",
+                        "kind": "input",
+                        "label": ", ".join(label_parts[:2]) if label_parts else None,
+                    }
+                )
+
+        return blocks, connections
+
+    def _build_requirement_input_blocks(
+        self,
+        stage_specs: List[Dict[str, Any]],
+        initial_inputs: List[Dict[str, Any]],
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        input_blocks: Dict[str, Dict[str, Any]] = {}
+        input_consumers: Dict[str, List[int]] = {}
+        input_stage_ids: Dict[str, List[str]] = {}
+        stage_spec_by_id = {str(spec.get("stage_id") or ""): spec for spec in stage_specs}
+        fastq_stage_ids: List[str] = []
+        fastq_consumer_rows: List[int] = []
+
+        def is_fastq_requirement(requirement: Dict[str, Any]) -> bool:
+            requirement_type = str(requirement.get("type") or "").strip().lower()
+            formats = {
+                str(format_name).lower().strip().lstrip(".")
+                for format_name in (requirement.get("formats") or [])
+                if str(format_name).strip()
+            }
+            return requirement_type in {"reads", "forward_reads", "reverse_reads"} or "fastq" in formats
+
+        for spec in stage_specs:
+            if str(spec.get("stage_kind") or "tool") != "tool":
+                continue
+
+            stage_id = str(spec.get("stage_id") or "")
+            tool = spec.get("tool") or {}
+            dependency_ids = list(spec.get("dependency_ids") or [])
+            for requirement in tool.get("input_requirements", []) or []:
+                requirement_type = str(requirement.get("type") or "").strip().lower()
+                if not requirement_type:
+                    continue
+
+                satisfied_by_dependency = any(
+                    self._tool_produces_requirement((stage_spec_by_id.get(dependency_id) or {}).get("tool", {}), requirement_type)
+                    for dependency_id in dependency_ids
+                )
+                if satisfied_by_dependency:
+                    continue
+
+                if is_fastq_requirement(requirement):
+                    if stage_id and stage_id not in fastq_stage_ids:
+                        fastq_stage_ids.append(stage_id)
+                    fastq_consumer_rows.append(int(spec.get("stage_number") or 0))
+                    continue
+
+                input_block_id = f"input:{requirement_type}"
+                matching_inputs = [
+                    artifact for artifact in initial_inputs
+                    if self._artifact_matches_requirement(artifact, requirement)
+                ]
+                input_blocks[input_block_id] = {
+                    "id": input_block_id,
+                    "kind": "input",
+                    "column": "input",
+                    "row": 0,
+                    "label": str(requirement.get("label") or self._humanize_token(requirement_type)),
+                    "status": "finished" if matching_inputs else "waiting",
+                    "raw_status": "available" if matching_inputs else "missing",
+                    "formats": list(requirement.get("formats") or []),
+                    "filenames": [str(item.get("filename") or "") for item in matching_inputs if str(item.get("filename") or "").strip()],
+                    "description": (
+                        ", ".join(str(item.get("filename") or "") for item in matching_inputs if str(item.get("filename") or "").strip())
+                        if matching_inputs else
+                        "Waiting for a matching job input"
+                    ),
+                }
+                input_consumers.setdefault(input_block_id, []).append(int(spec.get("stage_number") or 0))
+                input_stage_ids.setdefault(input_block_id, [])
+                if stage_id and stage_id not in input_stage_ids[input_block_id]:
+                    input_stage_ids[input_block_id].append(stage_id)
+
+        blocks: List[Dict[str, Any]] = []
+        connections: List[Dict[str, Any]] = []
+        for input_block_id, block in input_blocks.items():
+            consumer_rows = input_consumers.get(input_block_id) or [1]
+            block["row"] = min(consumer_rows)
+            blocks.append(block)
+            for stage_id in input_stage_ids.get(input_block_id, []):
+                connections.append(
+                    {
+                        "id": f"edge:{input_block_id}:stage:{stage_id}",
+                        "source": input_block_id,
+                        "target": f"stage:{stage_id}",
+                        "kind": "input",
+                        "label": block["label"],
+                    }
+                )
+
+        fastq_inputs = [
+            artifact for artifact in initial_inputs
+            if "fastq" in self._infer_artifact_formats(artifact)
+        ]
+        if fastq_stage_ids:
+            if fastq_inputs:
+                target_row = min(fastq_consumer_rows or [1])
+                for index, artifact in enumerate(fastq_inputs, start=1):
+                    block_id = f"input:fastq:{index}"
+                    blocks.append(
+                        {
+                            "id": block_id,
+                            "kind": "input",
+                            "column": "input",
+                            "row": target_row,
+                            "label": "FASTQ Input",
+                            "status": "finished",
+                            "raw_status": "available",
+                            "formats": ["fastq"],
+                            "filenames": [str(artifact.get("filename") or "")] if str(artifact.get("filename") or "").strip() else [],
+                            "description": str(artifact.get("filename") or "") or None,
+                        }
+                    )
+                    for stage_id in fastq_stage_ids:
+                        connections.append(
+                            {
+                                "id": f"edge:{block_id}:stage:{stage_id}",
+                                "source": block_id,
+                                "target": f"stage:{stage_id}",
+                                "kind": "input",
+                                "label": None,
+                            }
+                        )
+            else:
+                block_id = "input:fastq:missing"
+                blocks.append(
+                    {
+                        "id": block_id,
+                        "kind": "input",
+                        "column": "input",
+                        "row": min(fastq_consumer_rows or [1]),
+                        "label": "FASTQ Input",
+                        "status": "waiting",
+                        "raw_status": "missing",
+                        "formats": ["fastq"],
+                        "filenames": [],
+                        "description": "Waiting for matching FASTQ job inputs",
+                    }
+                )
+                for stage_id in fastq_stage_ids:
+                    connections.append(
+                        {
+                            "id": f"edge:{block_id}:stage:{stage_id}",
+                            "source": block_id,
+                            "target": f"stage:{stage_id}",
+                            "kind": "input",
+                            "label": None,
+                        }
+                    )
+
+        return blocks, connections
+
+    def _build_stage_connections(self, stage_specs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        spec_by_id = {str(spec.get("stage_id") or ""): spec for spec in stage_specs}
+        connections: List[Dict[str, Any]] = []
+
+        for spec in stage_specs:
+            stage_id = str(spec.get("stage_id") or "")
+            if not stage_id:
+                continue
+
+            requirement_labels: Dict[str, str] = {}
+            for requirement in (spec.get("tool") or {}).get("input_requirements", []) or []:
+                requirement_type = str(requirement.get("type") or "").strip().lower()
+                if requirement_type:
+                    requirement_labels[requirement_type] = str(
+                        requirement.get("label") or self._humanize_token(requirement_type)
+                    )
+
+            for dependency_id in spec.get("dependency_ids", []) or []:
+                dependency_spec = spec_by_id.get(str(dependency_id))
+                if not dependency_spec:
+                    continue
+
+                produced_labels = []
+                for requirement_type, requirement_label in requirement_labels.items():
+                    if self._tool_produces_requirement(dependency_spec.get("tool", {}), requirement_type):
+                        if requirement_label not in produced_labels:
+                            produced_labels.append(requirement_label)
+
+                connections.append(
+                    {
+                        "id": f"edge:stage:{dependency_id}:stage:{stage_id}",
+                        "source": f"stage:{dependency_id}",
+                        "target": f"stage:{stage_id}",
+                        "kind": "dependency",
+                        "label": ", ".join(produced_labels[:2]) if produced_labels else None,
+                    }
+                )
+
+        return connections
+
+    def _build_output_blocks(
+        self,
+        stage_specs: List[Dict[str, Any]],
+        stage_status_map: Dict[str, Dict[str, Any]],
+        output_files: List[Any],
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        dependents_by_stage: Dict[str, List[Dict[str, Any]]] = {}
+        for spec in stage_specs:
+            for dependency_id in spec.get("dependency_ids", []) or []:
+                dependents_by_stage.setdefault(str(dependency_id), []).append(spec)
+
+        blocks: List[Dict[str, Any]] = []
+        connections: List[Dict[str, Any]] = []
+        spec_by_id = {str(spec.get("stage_id") or ""): spec for spec in stage_specs}
+
+        for spec in stage_specs:
+            if str(spec.get("stage_kind") or "tool") != "tool":
+                continue
+
+            stage_id = str(spec.get("stage_id") or "")
+            raw_stage_status = str((stage_status_map.get(stage_id) or {}).get("status") or "pending")
+            tool = spec.get("tool") or {}
+            downstream_specs = dependents_by_stage.get(stage_id) or []
+
+            for produced_type in list(tool.get("produces") or []):
+                produced_tool = {"produces": [produced_type]}
+                consumer_stage_ids = [
+                    str(downstream_spec.get("stage_id") or "")
+                    for downstream_spec in downstream_specs
+                    if any(
+                        self._tool_produces_requirement(produced_tool, str(requirement.get("type") or "").strip().lower())
+                        for requirement in ((downstream_spec.get("tool") or {}).get("input_requirements") or [])
+                    )
+                ]
+
+                output_block_id = f"output:{stage_id}:{produced_type}"
+                stage_entry = stage_status_map.get(stage_id)
+                matching_outputs = [
+                    file_record for file_record in output_files
+                    if self._output_matches_stage(file_record, tool, produced_type)
+                ]
+                blocks.append(
+                    {
+                        "id": output_block_id,
+                        "kind": "output",
+                        "column": "output",
+                        "row": int(spec.get("stage_number") or 0),
+                        "label": self._humanize_token(str(produced_type or "output")),
+                        "status": self._derive_output_status(raw_stage_status, matching_outputs),
+                        "raw_status": raw_stage_status,
+                        "related_stage_id": stage_id,
+                        "produced_type": str(produced_type),
+                        "consumer_stage_ids": consumer_stage_ids,
+                        "filenames": [file_record.filename for file_record in matching_outputs],
+                        "description": (
+                            ", ".join(file_record.filename for file_record in matching_outputs[:3])
+                            + (" ..." if len(matching_outputs) > 3 else "")
+                        ) if matching_outputs else (
+                            f"{int(stage_entry.get('output_count') or 0)} output file{'s' if int(stage_entry.get('output_count') or 0) != 1 else ''} recorded"
+                            if isinstance(stage_entry, dict) and stage_entry.get("output_count") is not None else
+                            f"Produced by {tool.get('name') or tool.get('id')}"
+                        )
+                    }
+                )
+                connections.append(
+                    {
+                        "id": f"edge:stage:{stage_id}:{output_block_id}",
+                        "source": f"stage:{stage_id}",
+                        "target": output_block_id,
+                        "kind": "output",
+                        "label": self._humanize_token(str(produced_type or "output")),
+                    }
+                )
+                for consumer_stage_id in consumer_stage_ids:
+                    if consumer_stage_id not in spec_by_id:
+                        continue
+                    consumer_spec = spec_by_id.get(consumer_stage_id) or {}
+                    matching_requirement_labels = []
+                    for requirement in ((consumer_spec.get("tool") or {}).get("input_requirements") or []):
+                        requirement_type = str(requirement.get("type") or "").strip().lower()
+                        if requirement_type and self._tool_produces_requirement(produced_tool, requirement_type):
+                            requirement_label = str(requirement.get("label") or self._humanize_token(requirement_type))
+                            if requirement_label not in matching_requirement_labels:
+                                matching_requirement_labels.append(requirement_label)
+                    connections.append(
+                        {
+                            "id": f"edge:{output_block_id}:stage:{consumer_stage_id}",
+                            "source": output_block_id,
+                            "target": f"stage:{consumer_stage_id}",
+                            "kind": "artifact",
+                            "label": ", ".join(matching_requirement_labels[:2]) if matching_requirement_labels else self._humanize_token(str(produced_type or "output")),
+                        }
+                    )
+
+        return blocks, connections
+
     def _plan_usage(self, tool_plan: Dict[str, Any]) -> Dict[str, int]:
         return {
             "cpu_millis": int(tool_plan.get("cpu_limit_millis") or 0),
             "memory_mib": int(tool_plan.get("memory_limit_mib") or 0),
             "storage_mib": int(tool_plan.get("storage_limit_mib") or 0),
         }
+
+    def get_job_pipeline_visualization(self, job_id: int, user_id: int) -> Dict[str, Any]:
+        """Build a job-scoped pipeline view from the resolved executable graph."""
+        job = get_job_by_id(job_id, user_id=user_id)
+        if not job:
+            raise ValueError(f"Job {job_id} not found")
+
+        input_files = get_files_by_user(user_id, job_id=job_id, file_type=FileType.INPUT, limit=1000, offset=0)
+        output_files = get_files_by_user(user_id, job_id=job_id, file_type=FileType.OUTPUT, limit=1000, offset=0)
+        initial_inputs = self._build_initial_inputs(user_id, [file_record.id for file_record in input_files]) if input_files else []
+
+        snapshot_stages = None
+        if isinstance(getattr(job, "execution_preferences", None), dict):
+            snapshot = job.execution_preferences.get("visualization_snapshot") or {}
+            if isinstance(snapshot, dict) and isinstance(snapshot.get("stages"), list):
+                snapshot_stages = snapshot.get("stages")
+
+        stage_specs = self._build_visualization_specs_from_snapshot(snapshot_stages)
+        if not stage_specs:
+            workflow = self._get_workflow(job.workflow_id, user_id)
+            stage_specs = self._build_stage_specs(job, workflow, user_id, initial_inputs)
+
+        executions = get_executions_by_job(job_id)
+        latest_execution = executions[0] if executions else None
+        latest_stage_entries = (
+            latest_execution.parameters_used.get("stages")
+            if latest_execution and isinstance(latest_execution.parameters_used, dict)
+            else []
+        )
+        if not isinstance(latest_stage_entries, list):
+            latest_stage_entries = []
+
+        stage_status_map = {
+            str(stage.get("stage_id") or "").strip(): stage
+            for stage in latest_stage_entries
+            if isinstance(stage, dict) and str(stage.get("stage_id") or "").strip()
+        }
+        stage_blocks: List[Dict[str, Any]] = []
+
+        for spec in stage_specs:
+            stage_id = str(spec["stage_id"])
+            tool = spec["tool"]
+            raw_stage_status = str((stage_status_map.get(stage_id) or {}).get("status") or "pending")
+            stage_blocks.append(
+                {
+                    "id": f"stage:{stage_id}",
+                    "kind": str(spec.get("stage_kind") or "tool"),
+                    "column": "stage",
+                    "row": int(spec.get("stage_number") or 0),
+                    "stage_id": stage_id,
+                    "stage_number": int(spec.get("stage_number") or 0),
+                    "label": str(tool.get("name") or tool.get("id") or stage_id),
+                    "tool_id": str(tool.get("id") or "") or None,
+                    "status": self._normalize_visual_status(raw_stage_status),
+                    "raw_status": raw_stage_status,
+                    "dependency_stage_ids": list(spec.get("dependency_ids") or []),
+                    "description": self._build_stage_description(spec, stage_status_map.get(stage_id)),
+                }
+            )
+
+        if getattr(job, "pipeline_id", None):
+            input_blocks, input_connections = self._build_explicit_pipeline_input_blocks(
+                job.pipeline_id,
+                user_id,
+                stage_specs,
+                initial_inputs,
+            )
+        else:
+            input_blocks, input_connections = self._build_requirement_input_blocks(stage_specs, initial_inputs)
+
+        stage_connections = self._build_stage_connections(stage_specs)
+        output_blocks, output_connections = self._build_output_blocks(stage_specs, stage_status_map, output_files)
+
+        blocks: List[Dict[str, Any]] = []
+        blocks.extend(input_blocks)
+        blocks.extend(stage_blocks)
+        blocks.extend(output_blocks)
+        blocks.sort(key=lambda block: (int(block.get("row") or 0), {"input": 0, "stage": 1, "output": 2}.get(str(block.get("column") or ""), 3), str(block.get("label") or "")))
+
+        return {
+            "job_id": job_id,
+            "workflow_id": job.workflow_id,
+            "latest_execution_id": latest_execution.id if latest_execution else None,
+            "blocks": blocks,
+            "connections": input_connections + stage_connections + output_connections,
+        }
+
+    def _build_visualization_specs_from_snapshot(self, snapshot_stages: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+        specs: List[Dict[str, Any]] = []
+        for item in snapshot_stages or []:
+            if not isinstance(item, dict):
+                continue
+            stage_id = str(item.get("stage_id") or "").strip()
+            if not stage_id:
+                continue
+            stage_kind = str(item.get("stage_kind") or "tool")
+            tool_id = str(item.get("tool_id") or "")
+            tool_name = str(item.get("tool_name") or tool_id or stage_id)
+            specs.append(
+                {
+                    "stage_id": stage_id,
+                    "stage_number": int(item.get("stage_number") or len(specs) + 1),
+                    "stage_kind": stage_kind,
+                    "dependency_ids": [str(dep).strip() for dep in (item.get("dependency_stage_ids") or []) if str(dep).strip()],
+                    "tool": {
+                        "id": tool_id,
+                        "name": tool_name,
+                        "input_requirements": list(item.get("input_requirements") or []),
+                        "produces": list(item.get("produces") or []),
+                    },
+                }
+            )
+
+        for index, spec in enumerate(specs):
+            if spec.get("dependency_ids"):
+                continue
+
+            tool = spec.get("tool") or {}
+            inferred_dependency_ids: List[str] = []
+            for previous_spec in specs[:index]:
+                previous_stage_id = str(previous_spec.get("stage_id") or "").strip()
+                if not previous_stage_id:
+                    continue
+                previous_tool = previous_spec.get("tool") or {}
+                if any(
+                    self._tool_produces_requirement(previous_tool, str(requirement.get("type") or "").strip().lower())
+                    for requirement in (tool.get("input_requirements") or [])
+                ):
+                    inferred_dependency_ids.append(previous_stage_id)
+            spec["dependency_ids"] = inferred_dependency_ids
+
+        return specs
+
+    def _build_stage_description(self, spec: Dict[str, Any], stage_entry: Optional[Dict[str, Any]]) -> Optional[str]:
+        if isinstance(stage_entry, dict):
+            if stage_entry.get("error"):
+                return str(stage_entry.get("error"))
+            if stage_entry.get("output_count") is not None:
+                count = int(stage_entry.get("output_count") or 0)
+                return f"{count} output file{'s' if count != 1 else ''} recorded"
+
+        dependency_ids = list(spec.get("dependency_ids") or [])
+        if dependency_ids:
+            return f"Depends on {len(dependency_ids)} upstream stage{'s' if len(dependency_ids) != 1 else ''}"
+
+        if str(spec.get("stage_kind") or "tool") == "checkpoint":
+            return "Pauses execution until resumed"
+
+        return None
+
+    def _normalize_visual_status(self, raw_status: str) -> str:
+        normalized = str(raw_status or "").strip().lower()
+        if normalized == "completed":
+            return "finished"
+        if normalized == "running":
+            return "working"
+        if normalized == "failed":
+            return "failed"
+        return "waiting"
+
+    def _derive_output_status(self, producer_status: str, matching_outputs: List[Any]) -> str:
+        normalized = str(producer_status or "").strip().lower()
+        if normalized == "failed":
+            return "failed"
+        if matching_outputs or normalized == "completed":
+            return "finished"
+        if normalized == "running":
+            return "working"
+        return "waiting"
+
+    def _humanize_token(self, value: str) -> str:
+        text = str(value or "").strip().replace("_", " ")
+        return " ".join(word.upper() if len(word) <= 3 else word.capitalize() for word in text.split())
+
+    def _infer_artifact_formats(self, artifact: Dict[str, Any]) -> set[str]:
+        formats: set[str] = set()
+        file_format = artifact.get("file_format")
+        if file_format:
+            formats.add(str(file_format).lower().strip().lstrip("."))
+
+        filename = str(artifact.get("filename") or "").lower()
+        if filename.endswith((".fastq.gz", ".fq.gz", ".fastq", ".fq")):
+            formats.add("fastq")
+        if filename.endswith((".fasta.gz", ".fa.gz", ".fna.gz", ".fasta", ".fa", ".fna")):
+            formats.add("fasta")
+        if filename.endswith(".gff3"):
+            formats.update({"gff", "gff3"})
+        if filename.endswith(".gff"):
+            formats.add("gff")
+        if filename.endswith(".gtf"):
+            formats.add("gtf")
+        if filename.endswith(".hal"):
+            formats.add("hal")
+        if filename.endswith(".gfa"):
+            formats.add("gfa")
+        if filename.endswith((".cfg", ".conf", ".ini")):
+            formats.update({"cfg", "conf", "ini"})
+        if filename.endswith(".json"):
+            formats.add("json")
+        if filename.endswith(".txt"):
+            formats.add("txt")
+        if filename.endswith((".meryl", ".meryl.tar", ".meryl.tar.gz", ".meryl.tgz")):
+            formats.add("meryl")
+        return formats
+
+    def _artifact_matches_requirement(self, artifact: Dict[str, Any], requirement: Dict[str, Any]) -> bool:
+        accepted_formats = {
+            str(format_name).lower().strip().lstrip(".")
+            for format_name in (requirement.get("formats") or [])
+            if str(format_name).strip()
+        }
+        if not accepted_formats:
+            return True
+        return bool(self._infer_artifact_formats(artifact).intersection(accepted_formats))
+
+    def _output_matches_stage(
+        self,
+        file_record: Any,
+        tool: Dict[str, Any],
+        produced_type: str,
+    ) -> bool:
+        filename = str(getattr(file_record, "filename", "") or "").lower()
+        tool_name = str(tool.get("name") or tool.get("id") or "").lower()
+        tool_id = str(tool.get("id") or "").lower()
+        produced_token = str(produced_type or "").lower()
+
+        if tool_id and tool_id != "checkpoint" and tool_id.lower() in filename:
+            return True
+        if tool_name and tool_name.lower() in filename:
+            return True
+        if produced_token and produced_token.replace("_", "") in filename.replace("_", ""):
+            return True
+        return False
 
     def _fits_job_budget(
         self,

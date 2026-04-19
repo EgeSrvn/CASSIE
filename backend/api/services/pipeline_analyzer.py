@@ -127,6 +127,25 @@ def _apply_flag_specific_requirement_rules(
     return req_copy
 
 
+def _build_requirement_source_metadata(
+    requirement: Dict[str, Any],
+    producer_name: str | None,
+) -> Dict[str, Any]:
+    req_copy = dict(requirement)
+    available_sources = ["external"]
+    default_source = "external"
+
+    if producer_name:
+        available_sources.append("upstream")
+        default_source = "upstream"
+        req_copy["source_tool"] = producer_name
+
+    req_copy["is_intermediate"] = producer_name is not None
+    req_copy["available_sources"] = available_sources
+    req_copy["default_source"] = default_source
+    return req_copy
+
+
 def extract_input_nodes(pipeline: PipelineInDB) -> List[Dict[str, Any]]:
     """
     Extract input nodes from pipeline graph.
@@ -208,7 +227,7 @@ def analyze_pipeline_requirements(pipeline: PipelineInDB) -> Dict[str, Any]:
                 }
 
                 processed_requirements = []
-                for req in get_tool_requirements(tool_id):
+                for requirement_index, req in enumerate(get_tool_requirements(tool_id)):
                     req_copy = _apply_flag_specific_requirement_rules(tool_id, req, tool_config)
                     producer_name = None
                     for upstream_tool_id in upstream_tool_ids:
@@ -216,9 +235,8 @@ def analyze_pipeline_requirements(pipeline: PipelineInDB) -> Dict[str, Any]:
                             upstream_tool = get_tool_by_id(upstream_tool_id)
                             producer_name = upstream_tool.get("name", upstream_tool_id) if upstream_tool else upstream_tool_id
                             break
-                    req_copy["is_intermediate"] = producer_name is not None
-                    if producer_name:
-                        req_copy["source_tool"] = producer_name
+                    req_copy = _build_requirement_source_metadata(req_copy, producer_name)
+                    req_copy["requirement_id"] = f"{node_id}:{tool_id}:{str(req_copy.get('type') or 'input').strip().lower()}:{requirement_index}"
                     processed_requirements.append(req_copy)
 
                 node_data = node.get("data") if isinstance(node.get("data"), dict) else {}
@@ -253,6 +271,7 @@ def analyze_pipeline_requirements(pipeline: PipelineInDB) -> Dict[str, Any]:
                 downstream_tool_labels.append(tool["name"])
 
         explicit_input_requirements.append({
+            "id": node_id or f"pipeline-input-{index}",
             "type": classification["type"],
             "label": _resolve_node_label(node) or f"{classification['formats'][0].upper()} Input {index}",
             "formats": classification["formats"],
