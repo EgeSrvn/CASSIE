@@ -134,7 +134,7 @@
   min-width: 120px;
   border-radius: 12px;
   border: 1px solid #dbe5f3;
-  background: white;
+  background: #F5EEDC;
   box-shadow: 0 12px 28px rgba(15, 23, 42, 0.18);
   padding: 0.35rem;
 }
@@ -225,7 +225,7 @@
 .pipeline-priority-card {
   border: 1px solid #dbe5f3;
   border-radius: 16px;
-  background: #fff;
+  background: #F5EEDC;
   box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
   overflow: hidden;
 }
@@ -286,7 +286,7 @@
   padding: 0.65rem 0.75rem;
   border: 1px solid #e2e8f0;
   border-radius: 12px;
-  background: #fff;
+  background: #F5EEDC;
   color: #1f2937;
   font-size: 0.9rem;
 }
@@ -338,7 +338,7 @@
   height: 28px;
   border: 1px solid #cbd5e1;
   border-radius: 999px;
-  background: white;
+  background: #F5EEDC;
   color: #2563eb;
   cursor: pointer;
   font-size: 0.85rem;
@@ -364,7 +364,7 @@
 }
 
 .node-config-panel {
-  background: white;
+  background: #F5EEDC;
   padding: 1.5rem;
   border-radius: 8px;
   box-shadow: 0 10px 25px rgba(0, 0, 0, 0.2);
