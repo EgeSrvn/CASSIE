@@ -18,7 +18,9 @@
 
 ## move vm_partitions.json to /config
 
-## There should be extendable close-open sections (arrow at right) that will seperate building blocks in pipeline builder by input blocks, utility blocks(result, checkpoint), and one for each job type (assembly, qulity control, etc.). Also, in pipeline builder, I should be able to rename the block names, so that input blocks can be more identifiable for later uploading inputs. Also, results should be named as (result_block_name_tool).(output_file_format).
+## Final pipeline should always be visible and dynamic in a box just under the tools checkboxes without a need of refreshing the page in configure job and use from pipeline page. 
+
+## There should be extendable close-open sections (arrow at right) that will seperate building blocks in pipeline builder by input blocks, utility blocks(resulti checkpoint), and one for each job type (assembly, qulity control, etc.). Also, in pipeline builder, I should be able to rename the block names, so that input blocks can be more identifiable for later uploading inputs. Also, results should be named as (result_block_name_tool).(output_file_format).
 
 ## !!!!!!!!!!!!! ADD THE LAST DETAILED DESIGN DOCUMENT TO CASSIE WEB PAGE !!!!!!!!!!!!!
 
