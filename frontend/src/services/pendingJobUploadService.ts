@@ -5,6 +5,7 @@ export type PendingJobUploadFile = {
   tempId: number
   file: globalThis.File
   filename: string
+  original_filename?: string
   size_bytes: number
   file_format: string | null
   uploaded_at: null
@@ -40,6 +41,7 @@ type StoredUploadRecord = {
   jobId: number
   tempId: number
   filename: string
+  original_filename?: string
   size_bytes: number
   lastModified?: number
   file_format: string | null
@@ -53,7 +55,9 @@ const DB_NAME = 'cassie-pending-job-uploads'
 const DB_VERSION = 1
 const STORE_NAME = 'upload_files'
 const STATUS_STORAGE_KEY = 'cassie-pending-job-upload-status'
-const UPLOAD_RECORD_SCHEMA_VERSION = 2
+const UPLOAD_RECORD_SCHEMA_VERSION = 3
+const TRANSIENT_UPLOAD_ATTEMPTS = 3
+const TRANSIENT_UPLOAD_RETRY_DELAY_MS = 10000
 
 const listeners = new Set<(jobId: number, status: JobUploadStatus | null) => void>()
 let uploadProcessorStarted = false
@@ -217,11 +221,11 @@ export const clearPendingJobUploads = async (jobId: number) => {
 }
 
 const getFileFingerprint = (file: PendingJobUploadFile): string => (
-  `${file.filename}:${file.size_bytes}:${file.file.lastModified}`
+  `${file.file.name}:${file.size_bytes}:${file.file.lastModified}`
 )
 
 const getRecordFingerprint = (record: StoredUploadRecord): string => (
-  `${record.filename}:${record.size_bytes}:${record.lastModified || 0}`
+  `${record.original_filename || record.filename}:${record.size_bytes}:${record.lastModified || 0}`
 )
 
 const removeDuplicateUploadRecords = async (records: StoredUploadRecord[]): Promise<StoredUploadRecord[]> => {
@@ -259,6 +263,16 @@ const isJobAlreadyStartingOrStartedError = (error: any): boolean => {
     message.includes('already started')
   )
 }
+
+const isTransientUploadError = (error: any): boolean => {
+  const status = getUploadErrorStatus(error)
+  if (!status) {
+    return true
+  }
+  return [408, 409, 425, 429, 500, 502, 503, 504].includes(status)
+}
+
+const wait = (milliseconds: number) => new Promise(resolve => window.setTimeout(resolve, milliseconds))
 
 const getUploadErrorStatus = (error: any): number | undefined => {
   return error?.status || error?.response?.status
@@ -326,7 +340,7 @@ const resetInterruptedUploadsToQueued = async () => {
       return
     }
 
-    if (status.stage === 'uploading' || status.stage === 'starting') {
+    if (status.stage === 'uploading' || status.stage === 'starting' || status.stage === 'failed') {
       const remainingFiles = currentRecords.filter(record => record.jobId === status.jobId)
       const totalFiles = Math.max(status.totalFiles, remainingFiles.length + status.uploadedFiles)
       setJobUploadStatus(
@@ -408,40 +422,113 @@ const processUploadQueue = async () => {
           )
         )
 
-        try {
-          const restoredFile = new globalThis.File(
-            [record.fileBlob],
-            record.filename,
-            { type: record.fileBlob.type || 'application/octet-stream' }
-          )
+        let uploadSucceeded = false
+        let lastUploadError: any = null
 
-          await uploadFile(
-            restoredFile,
-            jobId,
-            'input',
-            record.file_format || undefined,
-            (progress) => {
+        for (let attempt = 1; attempt <= TRANSIENT_UPLOAD_ATTEMPTS; attempt += 1) {
+          try {
+            const restoredFile = new globalThis.File(
+              [record.fileBlob],
+              record.filename,
+              { type: record.fileBlob.type || 'application/octet-stream' }
+            )
+
+            await uploadFile(
+              restoredFile,
+              jobId,
+              'input',
+              record.file_format || undefined,
+              (progress) => {
+                setJobUploadStatus(
+                  jobId,
+                  buildUploadStatus(
+                    jobId,
+                    'uploading',
+                    `Uploading selected files (${filePosition}/${totalFiles}): ${record.filename}`,
+                    totalFiles,
+                    uploadedFiles,
+                    {
+                      currentFileName: record.filename,
+                      progress,
+                    }
+                  )
+                )
+              },
+              record.uploadSessionToken
+            )
+
+            uploadSucceeded = true
+            break
+          } catch (error: any) {
+            lastUploadError = error
+            if (isDeletedJobUploadError(error)) {
+              break
+            }
+
+            try {
+              const uploadSessionToken = jobRecords.find(item => item.uploadSessionToken)?.uploadSessionToken
+              if (await jobHasLeftPendingState(jobId, uploadSessionToken)) {
+                await deleteUploadRecord(record.id)
+                setJobUploadStatus(jobId, null)
+                shouldContinueQueue = true
+                uploadSucceeded = true
+                break
+              }
+            } catch {
+              // If the follow-up check also fails, fall through to retry handling.
+            }
+
+            if (attempt < TRANSIENT_UPLOAD_ATTEMPTS && isTransientUploadError(error)) {
               setJobUploadStatus(
                 jobId,
                 buildUploadStatus(
                   jobId,
-                  'uploading',
-                  `Uploading selected files (${filePosition}/${totalFiles}): ${record.filename}`,
+                  'queued',
+                  `Upload is taking longer than expected. Retrying ${record.filename} (${attempt + 1}/3)...`,
                   totalFiles,
                   uploadedFiles,
                   {
                     currentFileName: record.filename,
-                    progress,
+                    progress: undefined,
                   }
                 )
               )
-            },
-            record.uploadSessionToken
-          )
+              await wait(attempt * 2500)
+              continue
+            }
 
-          await deleteUploadRecord(record.id)
+            break
+          }
+        }
+
+        if (!uploadSucceeded && isTransientUploadError(lastUploadError)) {
+          setJobUploadStatus(
+            jobId,
+            buildUploadStatus(
+              jobId,
+              'queued',
+              `Upload is taking longer than expected. Retrying ${record.filename} automatically...`,
+              totalFiles,
+              uploadedFiles,
+              {
+                currentFileName: record.filename,
+                progress: undefined,
+              }
+            )
+          )
+          await wait(TRANSIENT_UPLOAD_RETRY_DELAY_MS)
+          shouldContinueQueue = true
+          break
+        }
+
+        if (uploadSucceeded) {
+          const remainingRecords = await getUploadRecordsForJob(jobId)
+          if (remainingRecords.some(item => item.id === record.id)) {
+            await deleteUploadRecord(record.id)
+          }
           uploadedFiles += 1
-        } catch (error: any) {
+        } else {
+          const error = lastUploadError
           if (isDeletedJobUploadError(error)) {
             await deleteUploadRecordsForJob(jobId)
             setJobUploadStatus(jobId, null)
@@ -454,12 +541,12 @@ const processUploadQueue = async () => {
             buildUploadStatus(
               jobId,
               'failed',
-              `Upload failed: ${record.filename}`,
+              `Upload paused: ${record.filename}`,
               totalFiles,
               uploadedFiles,
               {
                 currentFileName: record.filename,
-                error: error?.message || 'Failed to upload selected file',
+                error: getUploadErrorMessage(error) || 'Upload is taking longer than expected. Refreshing the page will resume it.',
               }
             )
           )
@@ -575,6 +662,7 @@ export const enqueuePendingJobUploads = async (
       jobId,
       tempId: file.tempId,
       filename: file.filename,
+      original_filename: file.original_filename || file.file.name,
       size_bytes: file.size_bytes,
       lastModified: file.file.lastModified,
       file_format: file.file_format,

@@ -48,6 +48,7 @@ export interface JobExecutionStage {
   error?: string
   resource_profile?: string
   threads?: number
+  cpu_limit_millis?: number
   memory_limit_mib?: number
   storage_limit_mib?: number
 }
@@ -112,6 +113,23 @@ export interface JobPipelineVisualization {
   latest_execution_id?: number | null
   blocks: JobPipelineBlock[]
   connections?: JobPipelineConnection[]
+}
+
+export interface PipelinePlanPreviewInput {
+  id?: number
+  filename: string
+  file_format?: string | null
+  size_bytes?: number
+  s3_key?: string
+  source?: string
+}
+
+export interface PipelinePlanPreviewRequest {
+  tool_indices?: number[]
+  pipeline_id?: number
+  input_file_ids?: number[]
+  planned_inputs?: PipelinePlanPreviewInput[]
+  execution_preferences?: Record<string, unknown>
 }
 
 export interface JobCreate {
@@ -214,6 +232,25 @@ export const getJobPipelineVisualization = async (jobId: number): Promise<JobPip
     if (error.response?.data) {
       const errorData = error.response.data
       throw new Error(extractApiErrorMessage(errorData, 'Failed to get job pipeline visualization'))
+    }
+    throw error
+  }
+}
+
+export const previewPipelinePlan = async (request: PipelinePlanPreviewRequest): Promise<JobPipelineVisualization> => {
+  try {
+    const response = await apiClient.post<{ success: boolean; data: JobPipelineVisualization; message?: string }>(
+      '/api/jobs/pipeline-plan-preview',
+      request
+    )
+    if (response.data && response.data.success) {
+      return response.data.data
+    }
+    throw new Error(response.data?.message || 'Failed to preview pipeline plan')
+  } catch (error: any) {
+    if (error.response?.data) {
+      const errorData = error.response.data
+      throw new Error(extractApiErrorMessage(errorData, 'Failed to preview pipeline plan'))
     }
     throw error
   }

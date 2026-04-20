@@ -6,8 +6,10 @@ import {
   JobPipelineBlock,
   JobPipelineConnection,
   JobPipelineVisualization,
+  PipelinePlanPreviewRequest,
   estimateRuntime,
   getAvailableVMs,
+  previewPipelinePlan,
   RuntimeEstimate,
   RuntimeInputAssignment,
   VM,
@@ -69,6 +71,16 @@ interface ManualToolInputBlock {
   requirements: ToolRequirement[]
   externalRequirements: ToolRequirement[]
   upstreamRequirements: ToolRequirement[]
+}
+
+const getManualInputBlockDefaultName = (block: ManualToolInputBlock): string => {
+  if (block.externalRequirements.length === 1) {
+    return block.externalRequirements[0].label
+  }
+  if (block.externalRequirements.length > 1) {
+    return `${block.toolReq.tool_name} tool block`
+  }
+  return `${block.toolReq.tool_name} upstream inputs`
 }
 
 const PIPELINE_INPUT_NODE_TYPES = new Set(['fastqinput', 'fastainput', 'input', 'inputnode', 'start'])
@@ -208,6 +220,7 @@ const resolvePipelineNodeDescription = (node: any): string | undefined => {
 export default function CreateJob() {
   const location = useLocation()
   const storedDraftRef = useRef<CreateJobDraft | null>(readCreateJobDraft())
+  const shouldPersistDraftRef = useRef(true)
   const [jobName, setJobName] = useState(() => storedDraftRef.current?.jobName || '')
   const isAuthenticated = !!getToken()
   const [selectionMode, setSelectionMode] = useState<'tools' | 'pipeline'>(() => storedDraftRef.current?.selectionMode || 'tools')
@@ -251,6 +264,9 @@ export default function CreateJob() {
   const [slideDirection, setSlideDirection] = useState<SlideDirection>('forward')
   const [inputBlockNames, setInputBlockNames] = useState<Record<string, string>>(() => storedDraftRef.current?.inputBlockNames || {})
   const [persistedReviewPipelinePreview, setPersistedReviewPipelinePreview] = useState<JobPipelineVisualization | null>(() => storedDraftRef.current?.reviewPipelinePreview || null)
+  const [backendReviewPipelinePreview, setBackendReviewPipelinePreview] = useState<JobPipelineVisualization | null>(null)
+  const [loadingReviewPipelinePreview, setLoadingReviewPipelinePreview] = useState(false)
+  const [reviewPipelinePreviewError, setReviewPipelinePreviewError] = useState('')
   const navigate = useNavigate()
   const sharedRequirementCardStyle = {
     display: 'flex',
@@ -275,6 +291,24 @@ export default function CreateJob() {
     () => selectedPipeline ? normalizePipelineEdgeList(selectedPipeline.edges) : [],
     [selectedPipeline]
   )
+
+  useEffect(() => {
+    shouldPersistDraftRef.current = true
+
+    const clearDraftOnPageExit = () => {
+      shouldPersistDraftRef.current = false
+      clearCreateJobDraft()
+    }
+
+    window.addEventListener('beforeunload', clearDraftOnPageExit)
+    window.addEventListener('pagehide', clearDraftOnPageExit)
+
+    return () => {
+      clearDraftOnPageExit()
+      window.removeEventListener('beforeunload', clearDraftOnPageExit)
+      window.removeEventListener('pagehide', clearDraftOnPageExit)
+    }
+  }, [])
 
   // Check if pipeline_id was passed via navigation state
   useEffect(() => {
@@ -479,30 +513,43 @@ export default function CreateJob() {
     fetchDataTree()
   }, [isAuthenticated])
 
-  // Fetch available VMs on component mount
+  // Fetch available VMs on component mount and refresh silently.
   useEffect(() => {
-    const fetchVMs = async () => {
+    let cancelled = false
+
+    const fetchVMs = async (showLoading = false) => {
       try {
-        setLoadingVMs(true)
+        if (showLoading) {
+          setLoadingVMs(true)
+        }
         const vms = await getAvailableVMs()
+        if (cancelled) {
+          return
+        }
         setAvailableVMs(vms)
         // Auto-select first VM if available
-        if (vms.length > 0 && !selectedVM) {
-          setSelectedVM(vms[0].name)
-        }
+        setSelectedVM((current) => current || vms[0]?.name || '')
       } catch (err: any) {
         console.error('Failed to load VMs:', err)
         // If not authenticated, don't redirect - let user configure without VMs
-        if (err.response?.status === 401 && !isAuthenticated) {
+        if (!cancelled && err.response?.status === 401 && !isAuthenticated) {
           setAvailableVMs([])
         }
       } finally {
-        setLoadingVMs(false)
+        if (!cancelled && showLoading) {
+          setLoadingVMs(false)
+        }
       }
     }
-    fetchVMs()
-    const intervalId = window.setInterval(fetchVMs, 5000)
-    return () => window.clearInterval(intervalId)
+
+    void fetchVMs(true)
+    const intervalId = window.setInterval(() => {
+      void fetchVMs(false)
+    }, 30000)
+    return () => {
+      cancelled = true
+      window.clearInterval(intervalId)
+    }
   }, [isAuthenticated])
 
   const handleToolToggle = (toolId: number) => {
@@ -786,6 +833,16 @@ export default function CreateJob() {
     return requirementSourceSelections[key] || req.default_source || (req.is_intermediate ? 'upstream' : 'external')
   }
 
+  const getManualInputSourceOverrides = () => activeToolRequirementCards.flatMap((toolReq) =>
+    toolReq.requirements
+      .filter((req) => (req.available_sources || []).length > 1)
+      .map((req) => ({
+        tool_id: toolReq.tool_id,
+        requirement_type: req.type,
+        source: getRequirementSource(toolReq, req),
+      }))
+  )
+
   const getManualInputBlockId = (toolReq: ToolRequirementInfo): string => (
     `manual:${toolReq.tool_id}`
   )
@@ -822,7 +879,7 @@ export default function CreateJob() {
       setInputBlockNames((current) => {
         const next: Record<string, string> = {}
         manualToolInputBlocks.forEach((block) => {
-          next[block.id] = current[block.id] || block.toolReq.tool_name
+          next[block.id] = current[block.id] || getManualInputBlockDefaultName(block)
         })
         return next
       })
@@ -1115,13 +1172,14 @@ export default function CreateJob() {
     try {
       setError('')
       setPendingLocalFiles(prev => {
-        const existingKeys = new Set(prev.map(file => `${file.filename}:${file.size_bytes}:${file.file.lastModified}`))
+        const existingKeys = new Set(prev.map(file => `${file.file.name}:${file.size_bytes}:${file.file.lastModified}`))
         const additions = selectedFiles
           .filter(file => !existingKeys.has(`${file.name}:${file.size}:${file.lastModified}`))
           .map((file, index) => ({
             tempId: -(Date.now() + index + Math.floor(Math.random() * 1000)),
             file,
             filename: file.name,
+            original_filename: file.name,
             size_bytes: file.size,
             file_format: inferFileFormat(file.name),
             uploaded_at: null,
@@ -1135,6 +1193,60 @@ export default function CreateJob() {
     } catch (err: any) {
       setError(err.response?.data?.message || err.message || 'Failed to select file')
     }
+  }
+
+  const sanitizeSelectedFilename = (value: string): string => (
+    value.replace(/[\\/:*?"<>|]/g, '_').trim()
+  )
+
+  const handleSelectedFileRename = (tempId: number, nextFilename: string) => {
+    const sanitizedName = sanitizeSelectedFilename(nextFilename)
+    setPendingLocalFiles(prev => prev.map(file => (
+      file.tempId === tempId
+        ? {
+            ...file,
+            filename: sanitizedName,
+            file_format: inferFileFormat(sanitizedName),
+          }
+        : file
+    )))
+  }
+
+  const renderSelectableFileChip = (file: FileItem & { folderPath?: string }, keyPrefix: string, selected = false) => {
+    const pendingFile = pendingLocalFiles.find(item => item.tempId === file.id)
+    const title = file.folderPath ? `${file.folderPath}/${file.filename}` : file.filename
+
+    return (
+      <div
+        key={`${keyPrefix}-${file.id}`}
+        className={`builder-file-chip ${selected ? 'selected' : ''}`}
+        title={title}
+      >
+        {pendingFile ? (
+          <>
+            <label style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', width: '100%' }}>
+              <span style={{ fontSize: '0.7rem', color: '#64748b', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                File name
+              </span>
+              <input
+                type="text"
+                value={pendingFile.filename}
+                onChange={(event) => handleSelectedFileRename(pendingFile.tempId, event.target.value)}
+                disabled={creating}
+                style={{ minWidth: '220px', fontWeight: 700 }}
+                aria-label={`Rename selected file ${pendingFile.original_filename || pendingFile.file.name}`}
+              />
+            </label>
+            <span>From PC: {pendingFile.original_filename || pendingFile.file.name}</span>
+          </>
+        ) : (
+          <>
+            <strong>{file.filename}</strong>
+            {file.folderPath && <span>{file.folderPath}</span>}
+          </>
+        )}
+      </div>
+    )
   }
 
   const handleRecommendationFileToggle = (fileId: number) => {
@@ -1182,7 +1294,7 @@ export default function CreateJob() {
     {
       level: 3,
       title: 'Attach inputs',
-      description: 'Map the selected files to each named input block.',
+      description: 'Map the selected files to each named tool block.',
     },
     {
       level: 4,
@@ -1351,6 +1463,109 @@ export default function CreateJob() {
       return changed ? next : current
     })
   }, [combinedSelectableFiles, pipelineInputRequirements, selectionMode])
+
+  const manualReviewPipelinePlanRequest = useMemo<PipelinePlanPreviewRequest | null>(() => {
+    if (currentLevel !== 5 || selectionMode !== 'tools' || selectedTools.length === 0) {
+      return null
+    }
+
+    const selectableFiles = getCombinedSelectableFiles()
+    const filesById = new Map(selectableFiles.map((file) => [file.id, file]))
+    const selectedInputIds = new Set<number>()
+
+    activeToolRequirementCards.forEach((toolReq) => {
+      const toolKey = toolReq.tool_index.toString()
+      toolReq.requirements.forEach((req) => {
+        if (getRequirementSource(toolReq, req) === 'upstream') {
+          return
+        }
+        const mappedFileIds = toolFileMappings[toolKey]?.[req.type] || []
+        mappedFileIds.forEach((fileId) => selectedInputIds.add(fileId))
+      })
+    })
+
+    const plannedInputs = Array.from(selectedInputIds)
+      .map((fileId) => filesById.get(fileId))
+      .filter((file): file is FileItem & { folderPath?: string } => Boolean(file))
+      .map((file) => ({
+        id: file.id,
+        filename: file.filename,
+        file_format: file.file_format || null,
+        size_bytes: file.size_bytes || 0,
+        s3_key: file.s3_key,
+        source: file.id < 0 ? 'pending-local' : 'library',
+      }))
+
+    const executionPreferences: Record<string, unknown> = priorityGroups.length > 0
+      ? buildManualExecutionPreferences(priorityGroups)
+      : {}
+    const inputSourceOverrides = getManualInputSourceOverrides()
+    if (inputSourceOverrides.length > 0) {
+      executionPreferences.input_source_overrides = inputSourceOverrides
+    }
+
+    return {
+      tool_indices: selectedTools,
+      planned_inputs: plannedInputs,
+      execution_preferences: Object.keys(executionPreferences).length > 0
+        ? executionPreferences
+        : undefined,
+    }
+  }, [
+    activeToolRequirementCards,
+    currentLevel,
+    dataFileTree,
+    pendingLocalFiles,
+    priorityGroups,
+    requirementSourceSelections,
+    selectedTools,
+    selectionMode,
+    toolFileMappings,
+  ])
+
+  const manualReviewPipelinePlanSignature = useMemo(
+    () => manualReviewPipelinePlanRequest ? JSON.stringify(manualReviewPipelinePlanRequest) : '',
+    [manualReviewPipelinePlanRequest]
+  )
+
+  useEffect(() => {
+    if (!manualReviewPipelinePlanRequest) {
+      setBackendReviewPipelinePreview(null)
+      setLoadingReviewPipelinePreview(false)
+      setReviewPipelinePreviewError('')
+      return
+    }
+
+    let cancelled = false
+
+    const loadPipelinePlanPreview = async () => {
+      try {
+        setLoadingReviewPipelinePreview(true)
+        setReviewPipelinePreviewError('')
+        setBackendReviewPipelinePreview(null)
+        const preview = await previewPipelinePlan(manualReviewPipelinePlanRequest)
+        if (!cancelled) {
+          setBackendReviewPipelinePreview(preview)
+        }
+      } catch (err: any) {
+        if (!cancelled) {
+          console.error('Failed to preview pipeline plan:', err)
+          setBackendReviewPipelinePreview(null)
+          setReviewPipelinePreviewError(err.message || 'Failed to build pipeline preview')
+        }
+      } finally {
+        if (!cancelled) {
+          setLoadingReviewPipelinePreview(false)
+        }
+      }
+    }
+
+    void loadPipelinePlanPreview()
+
+    return () => {
+      cancelled = true
+    }
+  }, [manualReviewPipelinePlanRequest, manualReviewPipelinePlanSignature])
 
   const livePipelineBox = (
     <div className="builder-live-pipeline-card">
@@ -1651,7 +1866,7 @@ export default function CreateJob() {
       const formats = Array.from(new Set(block.externalRequirements.flatMap((req) => req.formats)))
       const descriptionParts: string[] = []
       if (block.externalRequirements.length > 0) {
-        descriptionParts.push(`Input block for: ${block.externalRequirements.map((req) => req.label).join(', ')}`)
+        descriptionParts.push(`Tool block for: ${block.externalRequirements.map((req) => req.label).join(', ')}`)
       }
       if (block.upstreamRequirements.length > 0) {
         descriptionParts.push(`Also receives upstream inputs for: ${block.upstreamRequirements.map((req) => req.label).join(', ')}`)
@@ -1661,7 +1876,7 @@ export default function CreateJob() {
         kind: 'input' as const,
         column: 'input' as const,
         row: stageNumberByToolId.get(block.toolReq.tool_id) || 1,
-        label: inputBlockDisplayName(block.id, block.toolReq.tool_name),
+        label: inputBlockDisplayName(block.id, getManualInputBlockDefaultName(block)),
         status: 'waiting' as const,
         formats: formats.length > 0 ? formats : undefined,
         filenames: getFilenames(mappedFileIds),
@@ -1727,16 +1942,21 @@ export default function CreateJob() {
     selectionMode,
     toolFileMappings,
   ])
-  const effectiveReviewPipelinePreview = reviewPipelinePreview || persistedReviewPipelinePreview
+  const effectiveReviewPipelinePreview = selectionMode === 'tools'
+    ? (backendReviewPipelinePreview || (!loadingReviewPipelinePreview && !reviewPipelinePreviewError ? persistedReviewPipelinePreview : null))
+    : (reviewPipelinePreview || persistedReviewPipelinePreview)
 
   useEffect(() => {
-    if (reviewPipelinePreview) {
-      setPersistedReviewPipelinePreview(reviewPipelinePreview)
+    if (effectiveReviewPipelinePreview) {
+      setPersistedReviewPipelinePreview(effectiveReviewPipelinePreview)
     }
-  }, [reviewPipelinePreview])
+  }, [effectiveReviewPipelinePreview])
 
   useEffect(() => {
     if (typeof window === 'undefined') {
+      return
+    }
+    if (!shouldPersistDraftRef.current) {
       return
     }
 
@@ -1758,12 +1978,13 @@ export default function CreateJob() {
       currentLevel,
       inputBlockNames,
       selectedVM,
-      reviewPipelinePreview: reviewPipelinePreview || persistedReviewPipelinePreview,
+      reviewPipelinePreview: effectiveReviewPipelinePreview || persistedReviewPipelinePreview,
     }
 
     window.sessionStorage.setItem(CREATE_JOB_DRAFT_STORAGE_KEY, JSON.stringify(draft))
   }, [
     currentLevel,
+    effectiveReviewPipelinePreview,
     inputBlockNames,
     jobName,
     openPriorityGroups,
@@ -1773,7 +1994,6 @@ export default function CreateJob() {
     priorityGroups,
     recommendationFileIds,
     requirementSourceSelections,
-    reviewPipelinePreview,
     selectedIntentIds,
     selectedPipelineDetails,
     selectedPipelineId,
@@ -1820,7 +2040,9 @@ export default function CreateJob() {
             const mappedFileIds = toolFileMappings[toolKey]?.[req.type] || []
             if (mappedFileIds.length === 0) {
               const blockId = getManualInputBlockId(toolReq)
-              missingRequirements.push(`${inputBlockDisplayName(blockId, toolReq.tool_name)}: ${req.label}`)
+              const block = manualToolInputBlocks.find((item) => item.id === blockId)
+              const fallbackName = block ? getManualInputBlockDefaultName(block) : `${toolReq.tool_name} tool block`
+              missingRequirements.push(`${inputBlockDisplayName(blockId, fallbackName)}: ${req.label}`)
             }
           }
         })
@@ -1886,6 +2108,19 @@ export default function CreateJob() {
       const existingLibraryFileIds = uploadedFileIds.filter(id => id > 0)
       const pendingFileIds = Array.from(new Set(uploadedFileIds.filter(id => id < 0)))
       const expectedTotalInputFiles = existingLibraryFileIds.length + pendingFileIds.length
+      const pendingFilesToUpload = pendingLocalFiles.filter(file => pendingFileIds.includes(file.tempId))
+      const blankPendingFile = pendingFilesToUpload.find(file => !file.filename.trim())
+      if (blankPendingFile) {
+        setError(`Please give every selected PC file a name before starting the job. Original file: ${blankPendingFile.original_filename || blankPendingFile.file.name}`)
+        return
+      }
+      const duplicatePendingName = pendingFilesToUpload.find((file, index, allFiles) => (
+        allFiles.findIndex(candidate => candidate.filename.trim().toLowerCase() === file.filename.trim().toLowerCase()) !== index
+      ))
+      if (duplicatePendingName) {
+        setError(`Selected PC files must have unique names before upload. Duplicate name: ${duplicatePendingName.filename}`)
+        return
+      }
 
       // Only include already-uploaded library files at create time
       if (existingLibraryFileIds.length > 0) {
@@ -1897,15 +2132,7 @@ export default function CreateJob() {
       }
 
       const inputSourceOverrides = selectionMode === 'tools'
-        ? activeToolRequirementCards.flatMap((toolReq) =>
-            toolReq.requirements
-              .filter((req) => (req.available_sources || []).length > 1)
-              .map((req) => ({
-                tool_id: toolReq.tool_id,
-                requirement_type: req.type,
-                source: getRequirementSource(toolReq, req),
-              }))
-          )
+        ? getManualInputSourceOverrides()
         : []
 
       if (selectionMode === 'pipeline') {
@@ -1950,7 +2177,6 @@ export default function CreateJob() {
       const job = await createJob(cleanJobData)
 
       if (job && job.id && pendingFileIds.length > 0) {
-        const pendingFilesToUpload = pendingLocalFiles.filter(file => pendingFileIds.includes(file.tempId))
         setSubmitStatus('Queueing selected files...')
         await enqueuePendingJobUploads(job.id, pendingFilesToUpload, job.upload_session_token)
         clearCreateJobDraft()
@@ -2276,7 +2502,7 @@ export default function CreateJob() {
               ) : pipelineRequirements ? (
                 <div className="builder-section-card">
                   <p style={{ marginBottom: '0.75rem', color: '#666', fontSize: '0.875rem' }}>
-                    This saved pipeline will run with its existing graph. You only need to provide files for the explicit input blocks in the pipeline.
+                    This saved pipeline will run with its existing graph. You only need to provide files for the explicit tool blocks in the pipeline.
                   </p>
                   {selectedPipeline && (
                     <div style={{ marginBottom: '1rem' }}>
@@ -2345,7 +2571,7 @@ export default function CreateJob() {
               Each VM gets an equal share of cluster resources. The selected VM decides how many concurrent pipeline jobs can use that slice.
             </small>
             {selectedVMDetails && (
-              <div style={{ marginTop: '0.75rem', padding: '0.875rem 1rem', borderRadius: '8px', backgroundColor: '#f8fafc', border: '1px solid #e2e8f0' }}>
+              <div className="builder-section-card" style={{ marginTop: '0.75rem' }}>
                 <div style={{ fontWeight: 600, color: '#0f172a', marginBottom: '0.35rem' }}>
                   Per-job resource limits for {selectedVMDetails.display_name}
                 </div>
@@ -2394,7 +2620,7 @@ export default function CreateJob() {
                 <label>Pipeline Files</label>
                 <div className="builder-section-card">
                   <p style={{ marginBottom: '1rem', color: '#666', fontSize: '0.875rem' }}>
-                    Choose the files you want available for this pipeline. In the next step you will assign them to the explicit input blocks.
+                    Choose the files you want available for this pipeline. In the next step you will assign them to the explicit tool blocks.
                   </p>
 
                   <div style={{ marginBottom: '1rem' }}>
@@ -2415,20 +2641,11 @@ export default function CreateJob() {
                     <p style={{ color: '#666', fontStyle: 'italic' }}>Loading data library...</p>
                   ) : combinedSelectableFiles.length === 0 ? (
                     <p style={{ color: '#666', fontStyle: 'italic', margin: 0 }}>
-                      No files available yet. Upload files now, then map them to pipeline input blocks in the next step.
+                      No files available yet. Upload files now, then map them to pipeline tool blocks in the next step.
                     </p>
                   ) : (
                     <div className="builder-file-chip-grid">
-                      {combinedSelectableFiles.map((file) => (
-                        <div
-                          key={`pipeline-file-${file.id}`}
-                          className="builder-file-chip"
-                          title={file.folderPath ? `${file.folderPath}/${file.filename}` : file.filename}
-                        >
-                          <strong>{file.filename}</strong>
-                          {file.folderPath && <span>{file.folderPath}</span>}
-                        </div>
-                      ))}
+                      {combinedSelectableFiles.map((file) => renderSelectableFileChip(file, 'pipeline-file'))}
                     </div>
                   )}
                 </div>
@@ -2440,7 +2657,7 @@ export default function CreateJob() {
                 <label>Input Files</label>
                 <div className="builder-section-card">
                   <p style={{ marginBottom: '1rem', color: '#666', fontSize: '0.875rem' }}>
-                    Add or review the files you want available. In the next step, you will assign them into named tool input blocks.
+                    Add or review the files you want available. In the next step, you will assign them into named tool blocks.
                   </p>
 
                   <div style={{ marginBottom: '1rem' }}>
@@ -2461,20 +2678,11 @@ export default function CreateJob() {
                     <p style={{ color: '#666', fontStyle: 'italic' }}>Loading data library...</p>
                   ) : combinedSelectableFiles.length === 0 ? (
                     <p style={{ color: '#666', fontStyle: 'italic', margin: 0 }}>
-                      No input files available yet. Upload files here, then map them to tool input blocks in the next step.
+                      No input files available yet. Upload files here, then map them to tool blocks in the next step.
                     </p>
                   ) : (
                     <div className="builder-file-chip-grid">
-                      {combinedSelectableFiles.map((file) => (
-                        <div
-                          key={`tool-file-${file.id}`}
-                          className="builder-file-chip"
-                          title={file.folderPath ? `${file.folderPath}/${file.filename}` : file.filename}
-                        >
-                          <strong>{file.filename}</strong>
-                          {file.folderPath && <span>{file.folderPath}</span>}
-                        </div>
-                      ))}
+                      {combinedSelectableFiles.map((file) => renderSelectableFileChip(file, 'tool-file'))}
                     </div>
                   )}
                 </div>
@@ -2493,30 +2701,25 @@ export default function CreateJob() {
                 ) : (
                   <div>
                     <p style={{ marginBottom: '1rem', color: '#666', fontSize: '0.875rem' }}>
-                      Each explicit input block in the saved pipeline needs a file assignment here.
+                      Each explicit tool block in the saved pipeline needs a file assignment here.
                     </p>
 
                     {loadingDataTree ? (
                       <p style={{ color: '#666', fontStyle: 'italic' }}>Loading data library...</p>
                     ) : pipelineInputRequirements.length === 0 ? (
                       <p style={{ color: '#666', fontStyle: 'italic' }}>
-                        This pipeline does not expose any external input blocks.
+                        This pipeline does not expose any external tool blocks.
                       </p>
                     ) : (
                       <>
                       {combinedSelectableFiles.length > 0 && (
                         <div className="builder-section-card builder-input-file-context">
                           <p className="builder-card-kicker">Selected Files</p>
-                          <div className="builder-file-chip-grid">
-                            {combinedSelectableFiles.map((file) => (
-                              <div
-                                key={`pipeline-context-${file.id}`}
-                                className={`builder-file-chip ${selectedLibraryFiles.some((item) => item.id === file.id) ? 'selected' : ''}`}
-                                title={file.folderPath ? `${file.folderPath}/${file.filename}` : file.filename}
-                              >
-                                <strong>{file.filename}</strong>
-                                {file.folderPath && <span>{file.folderPath}</span>}
-                              </div>
+                      <div className="builder-file-chip-grid">
+                            {combinedSelectableFiles.map((file) => renderSelectableFileChip(
+                              file,
+                              'pipeline-context',
+                              selectedLibraryFiles.some((item) => item.id === file.id)
                             ))}
                           </div>
                         </div>
@@ -2536,7 +2739,7 @@ export default function CreateJob() {
                                 onChange={(event) => handleInputBlockNameChange(inputKey, event.target.value)}
                                 disabled={creating}
                                 style={{ maxWidth: '280px', fontWeight: 600 }}
-                                aria-label={`Rename input block ${inputReq.label}`}
+                                aria-label={`Rename tool block ${inputReq.label}`}
                               />
                               <span style={{ color: '#666', fontSize: '0.875rem' }}>
                                 ({inputReq.formats.join(', ').toUpperCase()})
@@ -2593,10 +2796,10 @@ export default function CreateJob() {
 
             {selectionMode === 'tools' && (
               <div className="form-group">
-                <label>Input Blocks</label>
+                <label>Tool Blocks</label>
                 <div className="builder-section-card">
                   <p style={{ marginBottom: '1rem', color: '#666', fontSize: '0.875rem' }}>
-                    Add or review the files you want available, then assign them to named input blocks for the selected tools. This follows the same block-based flow used by saved pipelines.
+                    Add or review the files you want available, then assign them to named tool blocks for the selected tools. This follows the same block-based flow used by saved pipelines.
                   </p>
 
                   {loadingDataTree || loadingToolRequirements ? (
@@ -2607,15 +2810,10 @@ export default function CreateJob() {
                     <div className="builder-section-card builder-input-file-context">
                       <p className="builder-card-kicker">Selected Files</p>
                       <div className="builder-file-chip-grid">
-                        {combinedSelectableFiles.map((file) => (
-                          <div
-                            key={`tool-context-${file.id}`}
-                            className={`builder-file-chip ${selectedLibraryFiles.some((item) => item.id === file.id) ? 'selected' : ''}`}
-                            title={file.folderPath ? `${file.folderPath}/${file.filename}` : file.filename}
-                          >
-                            <strong>{file.filename}</strong>
-                            {file.folderPath && <span>{file.folderPath}</span>}
-                          </div>
+                        {combinedSelectableFiles.map((file) => renderSelectableFileChip(
+                          file,
+                          'tool-context',
+                          selectedLibraryFiles.some((item) => item.id === file.id)
                         ))}
                       </div>
                     </div>
@@ -2623,13 +2821,13 @@ export default function CreateJob() {
 
                   {combinedSelectableFiles.length === 0 ? (
                     <p style={{ color: '#666', fontStyle: 'italic' }}>
-                      No input files available yet. Go back and add files first, then connect them to the tool input blocks here.
+                      No input files available yet. Go back and add files first, then connect them to the tool blocks here.
                     </p>
                   ) : null}
 
                   {manualToolInputBlocks.length === 0 ? (
                     <p style={{ color: '#666', fontStyle: 'italic', margin: 0 }}>
-                      The selected tools do not need external input blocks. Any remaining inputs are provided by upstream tools.
+                      The selected tools do not need external tool blocks. Any remaining inputs are provided by upstream tools.
                     </p>
                   ) : (
                     <div className="builder-requirements-grid">
@@ -2641,27 +2839,32 @@ export default function CreateJob() {
                         return (
                           <div key={block.id} className="builder-requirement-card builder-block-card">
                             <div style={{ marginBottom: '0.85rem' }}>
-                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap', marginBottom: '0.6rem' }}>
-                                <input
-                                  type="text"
-                                  value={inputBlockDisplayName(block.id, block.toolReq.tool_name)}
-                                  onChange={(event) => handleInputBlockNameChange(block.id, event.target.value)}
-                                  disabled={creating}
-                                  style={{ maxWidth: '320px', fontWeight: 600 }}
-                                  aria-label={`Rename input block for ${block.toolReq.tool_name}`}
-                                />
-                                {attachedFileCount > 0 ? (
-                                  <span style={{ color: '#16a34a', fontSize: '0.875rem', fontWeight: 500 }}>
-                                    {attachedFileCount} file(s) attached
-                                  </span>
-                                ) : (
-                                  <span style={{ color: '#f59e0b', fontSize: '0.875rem', fontWeight: 500 }}>
-                                    {block.externalRequirements.length > 0 ? 'Attach required files' : 'Upstream-only block'}
-                                  </span>
-                                )}
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', marginBottom: '0.6rem' }}>
+                                <label style={{ color: '#64748b', fontSize: '0.75rem', fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase' }}>
+                                  Tool block name
+                                </label>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                                  <input
+                                    type="text"
+                                    value={inputBlockDisplayName(block.id, getManualInputBlockDefaultName(block))}
+                                    onChange={(event) => handleInputBlockNameChange(block.id, event.target.value)}
+                                    disabled={creating}
+                                    style={{ maxWidth: '320px', fontWeight: 600 }}
+                                    aria-label={`Rename ${getManualInputBlockDefaultName(block)} tool block`}
+                                  />
+                                  {attachedFileCount > 0 ? (
+                                    <span style={{ color: '#16a34a', fontSize: '0.875rem', fontWeight: 500 }}>
+                                      {attachedFileCount} file(s) attached
+                                    </span>
+                                  ) : (
+                                    <span style={{ color: '#f59e0b', fontSize: '0.875rem', fontWeight: 500 }}>
+                                      {block.externalRequirements.length > 0 ? 'Attach required files' : 'Upstream-only block'}
+                                    </span>
+                                  )}
+                                </div>
                               </div>
                               <p style={{ margin: 0, fontSize: '0.875rem', color: '#6b7280' }}>
-                                Used by {block.toolReq.tool_name}
+                                Tool: {block.toolReq.tool_name}
                               </p>
                             </div>
 
@@ -2694,7 +2897,7 @@ export default function CreateJob() {
                                             style={{ padding: '0.25rem 0.55rem', fontSize: '0.75rem' }}
                                             onClick={() => handleRequirementSourceChange(block.toolReq, req, 'external')}
                                           >
-                                            Use input block
+                                            Use tool block
                                           </button>
                                         </div>
                                       ) : null}
@@ -2729,7 +2932,7 @@ export default function CreateJob() {
 
                                     {requirementSource === 'upstream' ? (
                                       <p style={{ color: '#6b7280', fontStyle: 'italic', fontSize: '0.875rem', padding: '0.5rem', backgroundColor: '#eff6ff', borderRadius: '4px', margin: 0 }}>
-                                        This requirement is currently provided by {req.source_tool}. The tool still keeps this input block visible so you can review all inputs in one place.
+                                        This requirement is currently provided by {req.source_tool}. The tool still keeps this tool block visible so you can review all inputs in one place.
                                       </p>
                                     ) : compatibleFiles.length === 0 ? (
                                       <p style={{ color: '#666', fontStyle: 'italic', fontSize: '0.875rem', margin: 0 }}>
@@ -2792,6 +2995,16 @@ export default function CreateJob() {
 
                 <div className="detail-section" style={{ margin: 0 }}>
                   <h2>Pipeline Visualization</h2>
+                  {selectionMode === 'tools' && loadingReviewPipelinePreview && (
+                    <p style={{ margin: '0 0 0.75rem', color: '#64748b', fontSize: '0.9rem' }}>
+                      Building backend execution preview...
+                    </p>
+                  )}
+                  {selectionMode === 'tools' && reviewPipelinePreviewError && (
+                    <p style={{ margin: '0 0 0.75rem', color: '#b91c1c', fontSize: '0.9rem' }}>
+                      {reviewPipelinePreviewError}
+                    </p>
+                  )}
                   <PipelineVisualization
                     pipeline={effectiveReviewPipelinePreview}
                     emptyMessage="Select tools or a saved pipeline to preview the full execution flow here."
@@ -2849,7 +3062,7 @@ export default function CreateJob() {
 
                 {selectionMode === 'pipeline' && pipelineInputRequirements.length > 0 && (
                   <div className="builder-review-card" style={{ marginTop: '1rem' }}>
-                    <h3>Input Blocks</h3>
+                    <h3>Tool Blocks</h3>
                     <div className="builder-input-summary-list">
                       {pipelineInputRequirements.map((inputReq) => {
                         const inputKey = inputReq.id || inputReq.label
@@ -2867,7 +3080,7 @@ export default function CreateJob() {
 
                 {selectionMode === 'tools' && manualToolInputBlocks.length > 0 && (
                   <div className="builder-review-card" style={{ marginTop: '1rem' }}>
-                    <h3>Input Blocks</h3>
+                    <h3>Tool Blocks</h3>
                     <div className="builder-input-summary-list">
                       {manualToolInputBlocks.map((block) => {
                         const toolKey = block.toolReq.tool_index.toString()
@@ -2876,7 +3089,7 @@ export default function CreateJob() {
                         )).length
                         return (
                           <div key={`review-${block.id}`} className="builder-input-summary-row">
-                            <strong>{inputBlockDisplayName(block.id, block.toolReq.tool_name)}</strong>
+                            <strong>{inputBlockDisplayName(block.id, getManualInputBlockDefaultName(block))}</strong>
                             <span>
                               {mappedFileCount} file(s) | {block.requirements.length} requirement(s) for {block.toolReq.tool_name}
                             </span>

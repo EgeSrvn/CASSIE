@@ -15,6 +15,8 @@ Expected training columns:
 - pod_memory_gb
 - pod_ephemeral_storage_gb
 - requested_threads
+- estimated_flops
+- cpu_core_seconds
 - cloud_provider
 - instance_family
 """
@@ -53,6 +55,8 @@ class RuntimePredictionRequest:
     requested_threads: int
     cloud_provider: str
     instance_family: str
+    estimated_flops: float = 0.0
+    cpu_core_seconds: float = 0.0
 
     def to_frame(self) -> pd.DataFrame:
         return pd.DataFrame(
@@ -67,6 +71,8 @@ class RuntimePredictionRequest:
                     "pod_memory_gb": self.pod_memory_gb,
                     "pod_ephemeral_storage_gb": self.pod_ephemeral_storage_gb,
                     "requested_threads": self.requested_threads,
+                    "estimated_flops": self.estimated_flops,
+                    "cpu_core_seconds": self.cpu_core_seconds,
                     "cloud_provider": self.cloud_provider,
                     "instance_family": self.instance_family,
                 }
@@ -83,6 +89,8 @@ def _build_pipeline() -> Pipeline:
         "pod_memory_gb",
         "pod_ephemeral_storage_gb",
         "requested_threads",
+        "estimated_flops",
+        "cpu_core_seconds",
     ]
     categorical_features = [
         "selected_tools",
@@ -141,6 +149,8 @@ def train_runtime_model(training_frame: pd.DataFrame) -> tuple[Pipeline, dict[st
         "pod_memory_gb",
         "pod_ephemeral_storage_gb",
         "requested_threads",
+        "estimated_flops",
+        "cpu_core_seconds",
         "cloud_provider",
         "instance_family",
     }
@@ -200,6 +210,8 @@ if __name__ == "__main__":
                 "pod_memory_gb": 16,
                 "pod_ephemeral_storage_gb": 40,
                 "requested_threads": 4,
+                "estimated_flops": 2.88e13,
+                "cpu_core_seconds": 7200,
                 "cloud_provider": "local",
                 "instance_family": "docker-desktop",
             },
@@ -214,6 +226,8 @@ if __name__ == "__main__":
                 "pod_memory_gb": 32,
                 "pod_ephemeral_storage_gb": 120,
                 "requested_threads": 8,
+                "estimated_flops": 1.344e14,
+                "cpu_core_seconds": 33600,
                 "cloud_provider": "aws",
                 "instance_family": "c6i",
             },
@@ -228,6 +242,8 @@ if __name__ == "__main__":
                 "pod_memory_gb": 8,
                 "pod_ephemeral_storage_gb": 20,
                 "requested_threads": 2,
+                "estimated_flops": 7.2e12,
+                "cpu_core_seconds": 1800,
                 "cloud_provider": "local",
                 "instance_family": "docker-desktop",
             },
@@ -242,6 +258,8 @@ if __name__ == "__main__":
                 "pod_memory_gb": 12,
                 "pod_ephemeral_storage_gb": 40,
                 "requested_threads": 4,
+                "estimated_flops": 4.0e13,
+                "cpu_core_seconds": 10000,
                 "cloud_provider": "gcp",
                 "instance_family": "e2-standard",
             },
@@ -256,6 +274,8 @@ if __name__ == "__main__":
                 "pod_memory_gb": 32,
                 "pod_ephemeral_storage_gb": 150,
                 "requested_threads": 8,
+                "estimated_flops": 1.792e14,
+                "cpu_core_seconds": 44800,
                 "cloud_provider": "azure",
                 "instance_family": "dsv5",
             },

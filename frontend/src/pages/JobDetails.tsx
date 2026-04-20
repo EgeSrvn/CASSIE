@@ -26,6 +26,7 @@ import {
   getJobUploadStatus,
   JobUploadStatus,
   PendingQueuedJobFile,
+  clearPendingJobUploads,
   getPendingJobUploadFiles,
   startPendingJobUploadProcessor,
   subscribeToJobUploadStatus
@@ -39,6 +40,17 @@ const formatVmCpu = (cpuMillis: number): string => `${(cpuMillis / 1000).toFixed
 const formatVmMemory = (memoryMib: number): string => `${(memoryMib / 1024).toFixed(2)} GiB`
 const formatVmStorage = (storageMib: number): string => storageMib > 0 ? `${(storageMib / 1024).toFixed(2)} GiB` : 'Auto'
 const formatVmSlots = (vm: VM): string => `${vm.available_job_slots}/${vm.max_jobs} jobs available`
+
+type JobDetailTab = 'information' | 'pipeline' | 'tracking' | 'resources' | 'inputs' | 'outputs'
+
+const JOB_DETAIL_TABS: Array<{ id: JobDetailTab; label: string }> = [
+  { id: 'information', label: 'Job Information' },
+  { id: 'pipeline', label: 'Pipeline Visualization' },
+  { id: 'tracking', label: 'Execution Tracking' },
+  { id: 'resources', label: 'Active Resource Usage' },
+  { id: 'inputs', label: 'Input Files' },
+  { id: 'outputs', label: 'Output Files' },
+]
 
 export default function JobDetails() {
   const { jobId } = useParams<{ jobId: string }>()
@@ -67,6 +79,7 @@ export default function JobDetails() {
   const [zipStatusError, setZipStatusError] = useState('')
   const [startingZipGeneration, setStartingZipGeneration] = useState(false)
   const [jobPipeline, setJobPipeline] = useState<JobPipelineVisualization | null>(null)
+  const [activeTab, setActiveTab] = useState<JobDetailTab>('information')
 
   useEffect(() => {
     if (jobId) {
@@ -212,6 +225,14 @@ export default function JobDetails() {
   }, [jobId])
 
   useEffect(() => {
+    if (!jobId || !jobUploadStatus || !job || job.status === 'pending') {
+      return
+    }
+
+    void clearPendingJobUploads(parseInt(jobId))
+  }, [jobId, job?.status, jobUploadStatus])
+
+  useEffect(() => {
     const loadVMs = async () => {
       try {
         const vms = await getAvailableVMs()
@@ -240,6 +261,24 @@ export default function JobDetails() {
     String(latestExecution.parameters_used?.queue_state || '').trim().toLowerCase() === 'waiting_for_vm_slot' &&
     typeof latestExecution.parameters_used?.queue_position === 'number'
   ) ? latestExecution.parameters_used.queue_position : null
+
+  const activeStages = (latestExecution?.parameters_used?.stages || []).filter(stage => stage.status === 'running')
+  const activeCpuMillis = activeStages.reduce((sum, stage) => {
+    const stageCpu = typeof stage.cpu_limit_millis === 'number' && stage.cpu_limit_millis > 0
+      ? stage.cpu_limit_millis
+      : (stage.threads || 0) * 1000
+    return sum + stageCpu
+  }, 0)
+  const activeMemoryMib = activeStages.reduce((sum, stage) => sum + (stage.memory_limit_mib || 0), 0)
+  const activeStorageMib = activeStages.reduce((sum, stage) => sum + (stage.storage_limit_mib || 0), 0)
+  const resourceLimits = {
+    cpuMillis: selectedVMDetails?.available_cpu_millis || Math.max(activeCpuMillis, 0),
+    memoryMib: selectedVMDetails?.available_memory_mib || Math.max(activeMemoryMib, 0),
+    storageMib: selectedVMDetails?.available_storage_mib || Math.max(activeStorageMib, 0),
+  }
+  const resourcePercent = (used: number, limit: number): number => (
+    limit > 0 ? Math.min(100, Math.round((used / limit) * 100)) : 0
+  )
 
   const fileMatchesRequirement = (
     filename: string,
@@ -680,7 +719,22 @@ export default function JobDetails() {
         </header>
 
         {error && <div className="error-message">{error}</div>}
+        <div className="builder-stepper" style={{ marginBottom: '1.25rem' }}>
+          {JOB_DETAIL_TABS.map(tab => (
+            <button
+              key={tab.id}
+              type="button"
+              className={`builder-step ${activeTab === tab.id ? 'active' : ''}`}
+              onClick={() => setActiveTab(tab.id)}
+            >
+              <span className="builder-step-copy">
+                <strong>{tab.label}</strong>
+              </span>
+            </button>
+          ))}
+        </div>
         <div className="job-details-container">
+          {activeTab === 'information' && (
           <div className="detail-section">
             <h2>Job Information</h2>
             <div className="detail-grid">
@@ -790,7 +844,9 @@ export default function JobDetails() {
               </div>
             )}
           </div>
+          )}
 
+          {activeTab === 'pipeline' && (
           <div className="detail-section">
             <h2>Pipeline Visualization</h2>
             <PipelineVisualization
@@ -799,7 +855,9 @@ export default function JobDetails() {
               description="This locked flow is built from the resolved job workflow and the latest recorded execution state."
             />
           </div>
+          )}
 
+          {activeTab === 'tracking' && (
           <div className="detail-section">
             <h2>Execution Tracking</h2>
             {executions.length === 0 ? (
@@ -909,7 +967,77 @@ export default function JobDetails() {
               </div>
             )}
           </div>
+          )}
 
+          {activeTab === 'resources' && (
+          <div className="detail-section">
+            <h2>Active Resource Usage</h2>
+            <div className="builder-section-card" style={{ marginBottom: '1rem' }}>
+              <p style={{ margin: '0 0 1rem', color: '#64748b' }}>
+                This shows the resources currently allocated by running tool stages in this job, compared with this job's selected VM limit.
+              </p>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1rem' }}>
+                {[
+                  {
+                    label: 'CPU',
+                    used: activeCpuMillis,
+                    limit: resourceLimits.cpuMillis,
+                    display: `${formatVmCpu(activeCpuMillis)} / ${formatVmCpu(resourceLimits.cpuMillis)}`,
+                  },
+                  {
+                    label: 'Memory',
+                    used: activeMemoryMib,
+                    limit: resourceLimits.memoryMib,
+                    display: `${formatVmMemory(activeMemoryMib)} / ${formatVmMemory(resourceLimits.memoryMib)}`,
+                  },
+                  {
+                    label: 'Storage',
+                    used: activeStorageMib,
+                    limit: resourceLimits.storageMib,
+                    display: `${formatVmStorage(activeStorageMib)} / ${formatVmStorage(resourceLimits.storageMib)}`,
+                  },
+                ].map(resource => {
+                  const percent = resourcePercent(resource.used, resource.limit)
+                  return (
+                    <div key={resource.label} style={{ padding: '1rem', borderRadius: '10px', border: '1px solid #e2d1ad', background: '#fffaf0' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem', marginBottom: '0.6rem' }}>
+                        <strong>{resource.label}</strong>
+                        <span>{resource.display}</span>
+                      </div>
+                      <div style={{ height: '10px', borderRadius: '999px', backgroundColor: '#eadfca', overflow: 'hidden' }}>
+                        <div style={{ width: `${percent}%`, height: '100%', backgroundColor: percent > 85 ? '#dc2626' : '#2563eb' }} />
+                      </div>
+                      <div style={{ marginTop: '0.4rem', color: '#64748b', fontSize: '0.875rem' }}>{percent}% allocated</div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+
+            {activeStages.length === 0 ? (
+              <div className="empty-state">
+                <p>No tool stage is actively running right now.</p>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                {activeStages.map(stage => (
+                  <div key={`${stage.stage_id || stage.stage_number}-${stage.tool_id}`} style={{ padding: '0.875rem 1rem', borderRadius: '8px', border: '1px solid #e2e8f0', backgroundColor: '#f8fafc' }}>
+                    <strong>{stage.tool_name || stage.tool_id}</strong>
+                    <div style={{ marginTop: '0.35rem', color: '#475569' }}>
+                      CPU: {formatVmCpu(stage.cpu_limit_millis || (stage.threads || 0) * 1000)}
+                      {' | '}
+                      Memory: {formatVmMemory(stage.memory_limit_mib || 0)}
+                      {' | '}
+                      Storage: {formatVmStorage(stage.storage_limit_mib || 0)}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          )}
+
+          {activeTab === 'inputs' && (
           <div className="detail-section">
             <h2>Input Files</h2>
             
@@ -1018,7 +1146,9 @@ export default function JobDetails() {
                 </div>
               )}
           </div>
+          )}
 
+          {activeTab === 'outputs' && (
           <div className="detail-section">
             <div className="section-header-with-action">
               <div className="section-header-left">
@@ -1371,6 +1501,7 @@ export default function JobDetails() {
               </>
             )}
           </div>
+          )}
         </div>
       </div>
     </div>

@@ -78,6 +78,55 @@ def create_file_record(file_data: FileCreate) -> FileInDB:
             cur.close()
 
 
+def get_existing_file_record_by_fingerprint(
+    *,
+    job_id: int,
+    filename: str,
+    file_type: FileType,
+    size_bytes: int,
+    checksum: str,
+) -> Optional[FileInDB]:
+    """Return an existing job file matching the exact upload fingerprint."""
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+
+        try:
+            cur.execute(
+                """
+                SELECT id, job_id, folder_id, filename, s3_key, file_type, file_format,
+                       size_bytes, checksum, uploaded_at, created_at
+                FROM files
+                WHERE job_id = %s
+                  AND filename = %s
+                  AND file_type = %s
+                  AND size_bytes = %s
+                  AND checksum = %s
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (job_id, filename, file_type.value, size_bytes, checksum),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+
+            return FileInDB(
+                id=row[0],
+                job_id=row[1],
+                folder_id=row[2],
+                filename=row[3],
+                s3_key=row[4],
+                file_type=FileType(row[5]),
+                file_format=row[6],
+                size_bytes=row[7],
+                checksum=row[8],
+                uploaded_at=row[9],
+                created_at=row[10],
+            )
+        finally:
+            cur.close()
+
+
 def get_file_by_id(file_id: int, user_id: Optional[int] = None) -> Optional[FileInDB]:
     """
     Get a file by ID, optionally filtered by user_id (through job ownership).
@@ -379,4 +428,3 @@ def count_files_by_user(user_id: int, job_id: Optional[int] = None, file_type: O
             return cur.fetchone()[0]
         finally:
             cur.close()
-

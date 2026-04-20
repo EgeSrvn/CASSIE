@@ -19,6 +19,7 @@ import subprocess
 import tarfile
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -36,11 +37,13 @@ from backend.api.services.job_execution_service import create_job_execution, get
 from backend.api.services.job_archive_service import prewarm_job_outputs_zip
 from backend.api.services.job_service import update_job, get_job_by_id
 from backend.api.services.minio_client import get_minio_client
+from backend.api.services.runtime_training_logger import append_successful_tool_training_rows
 from backend.api.services.storage_service import create_file_record, get_file_by_id, get_files_by_user
 from backend.api.services.vm_partition_service import get_vm_partition, get_vm_partitions
 from backend.api.utils.config_loader import get_config
 from backend.api.utils.logger import get_logger
 from tool_registry import (
+    get_tool_by_index,
     get_tool_by_id,
     get_tool_id_from_label,
     get_tool_registry,
@@ -62,6 +65,14 @@ class KubernetesPipelineRunner:
         self._checkpoint_events: Dict[int, asyncio.Event] = {}
         self._checkpoint_releases: Dict[int, set[str]] = {}
         self._execution_loops: Dict[int, asyncio.AbstractEventLoop] = {}
+        self._stage_executor = ThreadPoolExecutor(
+            max_workers=max(1, int(os.getenv("CASSIE_STAGE_EXECUTOR_WORKERS", "8"))),
+            thread_name_prefix="cassie-stage",
+        )
+        self._metadata_executor = ThreadPoolExecutor(
+            max_workers=max(1, int(os.getenv("CASSIE_METADATA_EXECUTOR_WORKERS", "4"))),
+            thread_name_prefix="cassie-meta",
+        )
 
     async def start_pipeline(
         self,
@@ -165,15 +176,28 @@ class KubernetesPipelineRunner:
         from backend.api.services.vm_queue_service import schedule_queued_jobs
 
         try:
-            self._ensure_cluster_available()
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(self._metadata_executor, self._ensure_cluster_available)
 
-            job = get_job_by_id(job_id, user_id=user_id)
-            workflow = self._get_workflow(workflow_id, user_id)
-            current_inputs = self._build_initial_inputs(user_id, input_files)
+            job = await loop.run_in_executor(
+                self._metadata_executor,
+                lambda: get_job_by_id(job_id, user_id=user_id),
+            )
+            workflow = await loop.run_in_executor(
+                self._metadata_executor,
+                lambda: self._get_workflow(workflow_id, user_id),
+            )
+            current_inputs = await loop.run_in_executor(
+                self._metadata_executor,
+                lambda: self._build_initial_inputs(user_id, input_files),
+            )
             if not current_inputs:
                 raise ValueError("No input files available for Kubernetes execution")
 
-            stage_specs = self._build_stage_specs(job, workflow, user_id, current_inputs)
+            stage_specs = await loop.run_in_executor(
+                self._metadata_executor,
+                lambda: self._build_stage_specs(job, workflow, user_id, current_inputs),
+            )
             if not stage_specs:
                 raise ValueError(f"No valid tools found in workflow {workflow_id}")
 
@@ -196,15 +220,20 @@ class KubernetesPipelineRunner:
                 }
                 spec["stage_info"] = stage_info
                 parameters_used["stages"].append(stage_info)
-            self._persist_execution_state(execution_id, parameters_used)
+            await loop.run_in_executor(
+                self._metadata_executor,
+                lambda: self._persist_execution_state(execution_id, parameters_used),
+            )
 
             tool_versions: Dict[str, str] = {}
             outputs_by_stage: Dict[str, List[Dict[str, Any]]] = {}
             completed_stage_ids: set[str] = set()
             running_stages: Dict[str, Dict[str, Any]] = {}
-            job_budget = self._detect_effective_cluster_capacity(vm_name=vm_name)
+            job_budget = await loop.run_in_executor(
+                self._metadata_executor,
+                lambda: self._detect_effective_cluster_capacity(vm_name=vm_name),
+            )
             reserved = {"cpu_millis": 0, "memory_mib": 0, "storage_mib": 0}
-            loop = asyncio.get_event_loop()
             checkpoint_event = asyncio.Event()
             released_checkpoints: set[str] = set()
             self._checkpoint_events[execution_id] = checkpoint_event
@@ -259,6 +288,7 @@ class KubernetesPipelineRunner:
                         stage_info["kubernetes_job_name"] = stage_job_name
                         stage_info["resource_profile"] = tool_plan["profile"]
                         stage_info["threads"] = tool_plan["threads"]
+                        stage_info["cpu_limit_millis"] = tool_plan["cpu_limit_millis"]
                         stage_info["memory_limit_mib"] = tool_plan["memory_limit_mib"]
                         stage_info["storage_limit_mib"] = tool_plan["storage_limit_mib"]
                         state_changed = True
@@ -268,7 +298,7 @@ class KubernetesPipelineRunner:
                             "spec": spec,
                             "usage": self._plan_usage(tool_plan),
                             "task": loop.run_in_executor(
-                                None,
+                                self._stage_executor,
                                 lambda spec=spec, stage_job_name=stage_job_name, stage_info=stage_info: self._run_stage(
                                     job_id=job_id,
                                     execution_id=execution_id,
@@ -294,7 +324,10 @@ class KubernetesPipelineRunner:
                             state_changed = True
 
                 if launched_any or state_changed:
-                    self._persist_execution_state(execution_id, parameters_used, tool_versions=tool_versions)
+                    await loop.run_in_executor(
+                        self._metadata_executor,
+                        lambda: self._persist_execution_state(execution_id, parameters_used, tool_versions=tool_versions),
+                    )
 
                 if not running_stages:
                     if ready_without_capacity:
@@ -335,11 +368,33 @@ class KubernetesPipelineRunner:
                         stage_info["status"] = "completed"
                         stage_info["completed_at"] = datetime.now().isoformat()
                         stage_info["output_count"] = len(stage_outputs)
+                        try:
+                            await loop.run_in_executor(
+                                self._metadata_executor,
+                                lambda spec=spec, stage_id=stage_id, stage_outputs=stage_outputs: append_successful_tool_training_rows(
+                                    job_id=job_id,
+                                    execution_id=execution_id,
+                                    user_id=user_id,
+                                    workflow_id=workflow_id,
+                                    pipeline_id=getattr(job, "pipeline_id", None),
+                                    vm_name=vm_name,
+                                    stage_specs=[spec],
+                                    outputs_by_stage={stage_id: stage_outputs},
+                                ),
+                            )
+                        except Exception as training_error:
+                            self._logger.warning(
+                                f"Failed to append tool training data for job {job_id}, execution {execution_id}, stage {stage_id}: {training_error}",
+                                exc_info=True,
+                            )
 
                 for stage_id in finished_stage_ids:
                     running_stages.pop(stage_id, None)
 
-                self._persist_execution_state(execution_id, parameters_used, tool_versions=tool_versions)
+                await loop.run_in_executor(
+                    self._metadata_executor,
+                    lambda: self._persist_execution_state(execution_id, parameters_used, tool_versions=tool_versions),
+                )
 
                 if failed_error is not None:
                     for entry in running_stages.values():
@@ -602,7 +657,7 @@ class KubernetesPipelineRunner:
         execution_preferences: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         specs: List[Dict[str, Any]] = []
-        manual_override_positions: Dict[int, int] = {}
+        manual_override_positions: Dict[str, int] = {}
 
         if isinstance(execution_preferences, dict):
             for group in execution_preferences.get("manual_priority_groups") or []:
@@ -624,19 +679,6 @@ class KubernetesPipelineRunner:
 
             stage_id = str(step.get("stage_id") or step.get("id") or f"step-{stage_number}")
             dependency_ids = [str(dep).strip() for dep in (step.get("dependency_ids") or []) if str(dep).strip()]
-            if not dependency_ids:
-                for previous_spec in specs:
-                    previous_tool = previous_spec.get("tool") or {}
-                    previous_stage_id = str(previous_spec.get("stage_id") or "").strip()
-                    if not previous_stage_id:
-                        continue
-                    if any(
-                        self._get_requirement_source_override(execution_preferences, str(tool.get("id") or ""), str(requirement.get("type") or "")) != "external"
-                        and self._tool_produces_requirement(previous_tool, str(requirement.get("type") or "").strip().lower())
-                        for requirement in (tool.get("input_requirements") or [])
-                    ):
-                        if previous_stage_id not in dependency_ids:
-                            dependency_ids.append(previous_stage_id)
             specs.append(
                 {
                     "stage_id": stage_id,
@@ -647,11 +689,8 @@ class KubernetesPipelineRunner:
                 }
             )
 
-        specs.sort(key=lambda spec: (int(spec.get("priority_order") or 0), int(spec.get("stage_number") or 0)))
-        for stage_number, spec in enumerate(specs, start=1):
-            spec["stage_number"] = stage_number
-
-        return specs
+        self._populate_inferred_stage_dependencies(specs, execution_preferences)
+        return self._topologically_order_stage_specs(specs)
 
     def _infer_stage_specs_from_tools(
         self,
@@ -676,7 +715,33 @@ class KubernetesPipelineRunner:
 
         for stage_number, tool in enumerate(tools, start=1):
             stage_id = f"step-{stage_number}"
-            dependency_ids: List[str] = []
+            specs.append(
+                {
+                    "stage_id": stage_id,
+                    "stage_number": stage_number,
+                    "tool": tool,
+                    "dependency_ids": [],
+                    "priority_order": manual_override_positions.get(str(tool.get("id") or "").strip().upper(), stage_number - 1),
+                }
+            )
+
+        self._populate_inferred_stage_dependencies(specs, execution_preferences)
+        return self._topologically_order_stage_specs(specs)
+
+    def _populate_inferred_stage_dependencies(
+        self,
+        specs: List[Dict[str, Any]],
+        execution_preferences: Optional[Dict[str, Any]],
+    ) -> None:
+        """Attach upstream producer stages to requirements marked as upstream."""
+        for spec in specs:
+            tool = spec.get("tool") or {}
+            current_stage_id = str(spec.get("stage_id") or "")
+            dependency_ids: List[str] = [
+                str(dependency_id).strip()
+                for dependency_id in (spec.get("dependency_ids") or [])
+                if str(dependency_id).strip()
+            ]
 
             for requirement in tool.get("input_requirements", []) or []:
                 requirement_type = str(requirement.get("type") or "").strip().lower()
@@ -684,13 +749,12 @@ class KubernetesPipelineRunner:
                     continue
                 if self._get_requirement_source_override(execution_preferences, str(tool.get("id") or ""), requirement_type) == "external":
                     continue
-                producer_stage_ids = [
-                    spec["stage_id"]
-                    for spec in specs
-                    if self._tool_produces_requirement(spec["tool"], requirement_type)
-                ]
-                if producer_stage_ids:
-                    dependency_ids.extend(producer_stage_ids)
+                for producer_spec in specs:
+                    producer_stage_id = str(producer_spec.get("stage_id") or "")
+                    if not producer_stage_id or producer_stage_id == current_stage_id:
+                        continue
+                    if self._tool_produces_requirement(producer_spec.get("tool", {}), requirement_type):
+                        dependency_ids.append(producer_stage_id)
 
             deduped_dependencies: List[str] = []
             seen_dependency_ids: set[str] = set()
@@ -699,18 +763,54 @@ class KubernetesPipelineRunner:
                     continue
                 deduped_dependencies.append(dependency_id)
                 seen_dependency_ids.add(dependency_id)
+            spec["dependency_ids"] = deduped_dependencies
 
-            specs.append(
-                {
-                    "stage_id": stage_id,
-                    "stage_number": stage_number,
-                    "tool": tool,
-                    "dependency_ids": deduped_dependencies,
-                    "priority_order": manual_override_positions.get(str(tool.get("id") or "").strip().upper(), stage_number - 1),
-                }
+    def _topologically_order_stage_specs(self, specs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        spec_by_id = {str(spec.get("stage_id") or ""): spec for spec in specs}
+        dependents: Dict[str, List[str]] = {stage_id: [] for stage_id in spec_by_id}
+        in_degree: Dict[str, int] = {stage_id: 0 for stage_id in spec_by_id}
+
+        for spec in specs:
+            stage_id = str(spec.get("stage_id") or "")
+            valid_dependencies = [
+                dependency_id
+                for dependency_id in (spec.get("dependency_ids") or [])
+                if dependency_id in spec_by_id and dependency_id != stage_id
+            ]
+            spec["dependency_ids"] = valid_dependencies
+            in_degree[stage_id] = len(valid_dependencies)
+            for dependency_id in valid_dependencies:
+                dependents.setdefault(dependency_id, []).append(stage_id)
+
+        def sort_key(stage_id: str) -> Tuple[int, int, str]:
+            spec = spec_by_id.get(stage_id) or {}
+            return (
+                int(spec.get("priority_order") or 0),
+                int(spec.get("stage_number") or 0),
+                stage_id,
             )
 
-        return specs
+        ready = sorted([stage_id for stage_id, degree in in_degree.items() if degree == 0], key=sort_key)
+        ordered_ids: List[str] = []
+        while ready:
+            stage_id = ready.pop(0)
+            ordered_ids.append(stage_id)
+            for dependent_id in sorted(dependents.get(stage_id) or [], key=sort_key):
+                in_degree[dependent_id] = max(0, in_degree.get(dependent_id, 0) - 1)
+                if in_degree[dependent_id] == 0 and dependent_id not in ready and dependent_id not in ordered_ids:
+                    ready.append(dependent_id)
+                    ready.sort(key=sort_key)
+
+        for spec in sorted(specs, key=lambda item: sort_key(str(item.get("stage_id") or ""))):
+            stage_id = str(spec.get("stage_id") or "")
+            if stage_id not in ordered_ids:
+                ordered_ids.append(stage_id)
+
+        ordered_specs = [spec_by_id[stage_id] for stage_id in ordered_ids if stage_id in spec_by_id]
+        for stage_number, spec in enumerate(ordered_specs, start=1):
+            spec["stage_number"] = stage_number
+            spec.pop("priority_order", None)
+        return ordered_specs
 
     def _tool_produces_requirement(self, tool: Dict[str, Any], requirement_type: str) -> bool:
         return registry_tool_produces_requirement(tool, requirement_type)
@@ -1251,6 +1351,118 @@ class KubernetesPipelineRunner:
 
         return blocks, connections
 
+    def build_pipeline_plan_preview(
+        self,
+        *,
+        user_id: int,
+        tool_indices: Optional[List[int]] = None,
+        pipeline_id: Optional[int] = None,
+        input_file_ids: Optional[List[int]] = None,
+        planned_inputs: Optional[List[Dict[str, Any]]] = None,
+        execution_preferences: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Build the same visualization shape as a job without creating or running a job."""
+        normalized_inputs: List[Dict[str, Any]] = []
+        if planned_inputs:
+            for item in planned_inputs:
+                if not isinstance(item, dict):
+                    continue
+                filename = str(item.get("filename") or "").strip()
+                if not filename:
+                    continue
+                normalized_inputs.append(
+                    {
+                        "filename": filename,
+                        "s3_key": str(item.get("s3_key") or ""),
+                        "size_bytes": int(item.get("size_bytes") or 0),
+                        "file_format": item.get("file_format"),
+                        "source": str(item.get("source") or "planned-input"),
+                        "producer_tool_id": None,
+                    }
+                )
+        elif input_file_ids:
+            normalized_inputs = self._build_initial_inputs(user_id, input_file_ids)
+
+        if pipeline_id:
+            stage_specs = self._build_stage_specs_from_pipeline(
+                pipeline_id,
+                user_id,
+                execution_preferences=execution_preferences,
+            )
+            if not stage_specs:
+                raise ValueError(f"Pipeline {pipeline_id} could not be converted into an execution plan")
+            input_blocks, input_connections = self._build_explicit_pipeline_input_blocks(
+                pipeline_id,
+                user_id,
+                stage_specs,
+                normalized_inputs,
+            )
+        else:
+            if not tool_indices:
+                raise ValueError("At least one tool index is required to preview a manual pipeline plan")
+
+            tools: List[Dict[str, Any]] = []
+            for index in tool_indices:
+                tool = get_tool_by_index(index)
+                if not tool:
+                    raise ValueError(f"Invalid tool index: {index}")
+                tools.append(tool)
+
+            stage_specs = self._infer_stage_specs_from_tools(
+                tools,
+                normalized_inputs,
+                execution_preferences=execution_preferences,
+            )
+            input_blocks, input_connections = self._build_requirement_input_blocks(
+                stage_specs,
+                normalized_inputs,
+            )
+
+        stage_status_map: Dict[str, Dict[str, Any]] = {}
+        stage_blocks: List[Dict[str, Any]] = []
+        for spec in stage_specs:
+            stage_id = str(spec["stage_id"])
+            tool = spec["tool"]
+            stage_blocks.append(
+                {
+                    "id": f"stage:{stage_id}",
+                    "kind": str(spec.get("stage_kind") or "tool"),
+                    "column": "stage",
+                    "row": int(spec.get("stage_number") or 0),
+                    "stage_id": stage_id,
+                    "stage_number": int(spec.get("stage_number") or 0),
+                    "label": str(tool.get("name") or tool.get("id") or stage_id),
+                    "tool_id": str(tool.get("id") or "") or None,
+                    "status": "waiting",
+                    "raw_status": "planned",
+                    "dependency_stage_ids": list(spec.get("dependency_ids") or []),
+                    "description": self._build_stage_description(spec, None),
+                }
+            )
+
+        stage_connections = self._build_stage_connections(stage_specs)
+        output_blocks, output_connections = self._build_output_blocks(stage_specs, stage_status_map, [])
+
+        blocks: List[Dict[str, Any]] = []
+        blocks.extend(input_blocks)
+        blocks.extend(stage_blocks)
+        blocks.extend(output_blocks)
+        blocks.sort(
+            key=lambda block: (
+                int(block.get("row") or 0),
+                {"input": 0, "stage": 1, "output": 2}.get(str(block.get("column") or ""), 3),
+                str(block.get("label") or ""),
+            )
+        )
+
+        return {
+            "job_id": 0,
+            "workflow_id": 0,
+            "latest_execution_id": None,
+            "blocks": blocks,
+            "connections": input_connections + stage_connections + output_connections,
+        }
+
     def _plan_usage(self, tool_plan: Dict[str, Any]) -> Dict[str, int]:
         return {
             "cpu_millis": int(tool_plan.get("cpu_limit_millis") or 0),
@@ -1585,6 +1797,9 @@ class KubernetesPipelineRunner:
                 stage_info["tool_logs_full"] = logs
 
             output_dir = self._copy_job_outputs(namespace, pod_name, tool["id"], stage_job_name)
+            resource_usage = self._read_stage_resource_usage(output_dir)
+            if resource_usage:
+                stage_info.update(resource_usage)
             stage_outputs = self._upload_stage_outputs(
                 local_output_dir=output_dir,
                 job_id=job_id,
@@ -1627,7 +1842,8 @@ class KubernetesPipelineRunner:
         bucket_name = minio_client.ensure_user_bucket(user_id=user_id)
         download_script = self._build_init_download_script(bucket_name, current_inputs)
         tool_plan = tool_plan or self._plan_tool_resources(tool["id"], current_inputs, vm_name=vm_name)
-        tool_script = self._build_tool_script(tool, current_inputs, tool_plan, tool_config=tool_config)
+        raw_tool_script = self._build_tool_script(tool, current_inputs, tool_plan, tool_config=tool_config)
+        tool_script = self._wrap_tool_script_with_resource_capture(raw_tool_script)
         artifact_grace_seconds = self._env_int("CASSIE_ARTIFACT_SIDECAR_GRACE_SECONDS") or 600
 
         labels = {
@@ -1738,6 +1954,41 @@ class KubernetesPipelineRunner:
                 f'aws --endpoint-url "$S3_ENDPOINT" s3 cp "s3://{bucket_name}/{s3_key}" "/workspace/input/{filename}"'
             )
         return "\n".join(lines)
+
+    def _wrap_tool_script_with_resource_capture(self, tool_script: str) -> str:
+        """Run the tool body and record cgroup CPU usage for model-training features."""
+        return f"""set -uo pipefail
+mkdir -p /workspace/output
+cat > /tmp/cassie_tool_body.sh <<'__CASSIE_TOOL_BODY__'
+{tool_script}
+__CASSIE_TOOL_BODY__
+
+cassie_cpu_usage_usec() {{
+  if [ -r /sys/fs/cgroup/cpu.stat ]; then
+    awk '$1 == "usage_usec" {{ print $2; found=1 }} END {{ if (!found) print 0 }}' /sys/fs/cgroup/cpu.stat
+  else
+    echo 0
+  fi
+}}
+
+CASSIE_CPU_START="$(cassie_cpu_usage_usec || echo 0)"
+CASSIE_WALL_START="$(date +%s)"
+set +e
+bash /tmp/cassie_tool_body.sh
+CASSIE_STATUS=$?
+CASSIE_WALL_END="$(date +%s)"
+CASSIE_CPU_END="$(cassie_cpu_usage_usec || echo 0)"
+CASSIE_CPU_DELTA=$(( CASSIE_CPU_END - CASSIE_CPU_START ))
+if [ "$CASSIE_CPU_DELTA" -lt 0 ]; then
+  CASSIE_CPU_DELTA=0
+fi
+CASSIE_WALL_DELTA=$(( CASSIE_WALL_END - CASSIE_WALL_START ))
+printf '{{"cpu_usage_seconds": %s.%06d, "wall_time_seconds": %s, "source": "container_cgroup_cpu_stat"}}\\n' \
+  "$(( CASSIE_CPU_DELTA / 1000000 ))" \
+  "$(( CASSIE_CPU_DELTA % 1000000 ))" \
+  "$CASSIE_WALL_DELTA" > /workspace/output/.cassie_resource_usage.json
+exit "$CASSIE_STATUS"
+"""
 
     def _wrap_tool_script(self, body_lines: List[str]) -> str:
         return "\n".join(
@@ -3168,6 +3419,26 @@ class KubernetesPipelineRunner:
 
         return ""
 
+    def _read_stage_resource_usage(self, local_output_dir: str) -> Dict[str, Any]:
+        usage_path = Path(local_output_dir) / ".cassie_resource_usage.json"
+        if not usage_path.exists():
+            return {}
+
+        try:
+            payload = json.loads(usage_path.read_text(encoding="utf-8"))
+            cpu_usage_seconds = float(payload.get("cpu_usage_seconds") or 0)
+            wall_time_seconds = float(payload.get("wall_time_seconds") or 0)
+            if cpu_usage_seconds <= 0:
+                return {}
+            return {
+                "measured_cpu_core_seconds": round(cpu_usage_seconds, 6),
+                "measured_wall_time_seconds": round(max(0.0, wall_time_seconds), 6),
+                "resource_usage_source": str(payload.get("source") or "container_cgroup_cpu_stat"),
+            }
+        except Exception as exc:
+            self._logger.warning("Could not read stage resource usage from %s: %s", usage_path, exc)
+            return {}
+
     def _upload_stage_outputs(
         self,
         local_output_dir: str,
@@ -3187,6 +3458,8 @@ class KubernetesPipelineRunner:
         try:
             for root, _, files in os.walk(local_output_dir):
                 for filename in files:
+                    if filename == ".cassie_resource_usage.json":
+                        continue
                     local_path = os.path.join(root, filename)
                     rel_path = os.path.relpath(local_path, local_output_dir).replace("\\", "/")
                     safe_filename = self._stage_output_display_name(tool, rel_path, current_inputs)
@@ -3217,6 +3490,8 @@ class KubernetesPipelineRunner:
                         {
                             "filename": safe_filename,
                             "s3_key": s3_key,
+                            "size_bytes": upload_result["size"],
+                            "file_format": self._infer_output_file_format(filename),
                             "source": "stage-output",
                             "producer_tool_id": tool["id"],
                         }

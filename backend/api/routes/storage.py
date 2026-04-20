@@ -14,7 +14,7 @@ import time
 import tempfile
 import hashlib
 from fastapi.concurrency import run_in_threadpool
-from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, status, Query, BackgroundTasks
+from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, status, Query
 from fastapi.responses import JSONResponse, StreamingResponse, RedirectResponse
 from typing import Optional, List
 # Use real JWT auth (Task 5.4 - now fixed)
@@ -28,6 +28,7 @@ from backend.api.models.pipeline_model import (
 )
 from backend.api.services.storage_service import (
     create_file_record,
+    get_existing_file_record_by_fingerprint,
     get_file_by_id,
     get_files_by_user,
     update_file,
@@ -40,11 +41,6 @@ from backend.api.services.job_archive_service import (
     request_job_outputs_zip_generation,
 )
 from backend.api.services.job_service import get_job_by_id
-from backend.api.models.job_model import JobStatus
-from backend.api.services.job_launch_service import (
-    get_auto_start_payload,
-    start_job_execution_task,
-)
 from backend.api.services.user_limit_service import (
     can_user_access_job_outputs,
     validate_output_file_access,
@@ -76,7 +72,6 @@ async def upload_file(
     job_id: Optional[int] = Query(None, description="Job ID to associate file with (optional for pre-upload)"),
     file_type: FileType = Query(..., description="Type of file (input, output, intermediate, log)"),
     file_format: Optional[str] = Query(None, description="File format (fastq, fasta, etc.)"),
-    background_tasks: BackgroundTasks = BackgroundTasks(),
     auth_context: AuthContext = Depends(get_auth_context)
 ):
     """
@@ -150,14 +145,46 @@ async def upload_file(
                     break
                 file_size += len(chunk)
                 hash_md5.update(chunk)
-                temp_file.write(chunk)
+                await run_in_threadpool(temp_file.write, chunk)
 
-            temp_file.flush()
+            await run_in_threadpool(temp_file.flush)
 
         checksum = hash_md5.hexdigest()
 
         if job_id:
             s3_key = f"jobs/{job_id}/{file_type.value}/{file.filename}"
+            existing_file = await run_in_threadpool(
+                get_existing_file_record_by_fingerprint,
+                job_id=job_id,
+                filename=file.filename,
+                file_type=file_type,
+                size_bytes=file_size,
+                checksum=checksum,
+            )
+            if existing_file:
+                logger.info(
+                    "Duplicate upload request for job %s file %s matched existing file record %s; returning existing record.",
+                    job_id,
+                    file.filename,
+                    existing_file.id,
+                )
+                response_data = success_response(
+                    data=FileResponse(
+                        id=existing_file.id,
+                        job_id=existing_file.job_id,
+                        filename=existing_file.filename,
+                        s3_key=existing_file.s3_key,
+                        file_type=existing_file.file_type,
+                        file_format=existing_file.file_format,
+                        size_bytes=existing_file.size_bytes,
+                        checksum=existing_file.checksum,
+                        uploaded_at=existing_file.uploaded_at,
+                        created_at=existing_file.created_at,
+                    ).model_dump(mode='json'),
+                    message="File already uploaded",
+                    status_code=status.HTTP_201_CREATED,
+                )
+                return JSONResponse(content=response_data, status_code=status.HTTP_201_CREATED)
         else:
             s3_key = f"staging/{current_user.id}/{int(time.time())}_{file.filename}"
 
@@ -188,60 +215,10 @@ async def upload_file(
         file_record = await run_in_threadpool(create_file_record, file_data)
 
         if job_id and file_type == FileType.INPUT:
-            try:
-                expected_total_input_files = auth_context.expected_total_input_files
-                if expected_total_input_files:
-                    current_job_input_files = await run_in_threadpool(
-                        get_files_by_user,
-                        current_user.id,
-                        job_id,
-                        FileType.INPUT,
-                        expected_total_input_files + 5,
-                        0,
-                    )
-                    current_input_count = len(current_job_input_files)
-                    if current_input_count < expected_total_input_files:
-                        logger.info(
-                            f"Input file uploaded to pending job {job_id}, but waiting for more files before auto-start. "
-                            f"Currently have {current_input_count}/{expected_total_input_files} input file(s)."
-                        )
-                        ready_job = None
-                        input_file_ids = None
-                        readiness_error = (
-                            f"Waiting for all queued uploads ({current_input_count}/{expected_total_input_files} received)"
-                        )
-                    else:
-                        ready_job, input_file_ids, readiness_error = await run_in_threadpool(
-                            get_auto_start_payload,
-                            job_id,
-                            current_user.id,
-                        )
-                else:
-                    ready_job, input_file_ids, readiness_error = await run_in_threadpool(
-                        get_auto_start_payload,
-                        job_id,
-                        current_user.id,
-                    )
-
-                if ready_job and input_file_ids:
-                    background_tasks.add_task(
-                        start_job_execution_task,
-                        ready_job.id,
-                        current_user.id,
-                        ready_job.workflow_id,
-                        input_file_ids,
-                    )
-                    logger.info(
-                        f"Input file uploaded to pending job {job_id}. "
-                        f"Found {len(input_file_ids)} input file(s). Job will start automatically."
-                    )
-                elif readiness_error:
-                    logger.info(f"Job {job_id} not auto-started after upload: {readiness_error}")
-            except Exception as pipeline_error:
-                logger.warning(
-                    f"Failed to start pipeline for job {job_id} after file upload: {pipeline_error}",
-                    exc_info=True
-                )
+            logger.info(
+                "Input file uploaded to pending job %s. Job execution is controlled by the upload queue.",
+                job_id,
+            )
 
         response_data = success_response(
             data=FileResponse(

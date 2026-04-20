@@ -11,7 +11,7 @@ This module provides:
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks, Request
 from fastapi.responses import JSONResponse
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any
 from copy import deepcopy
 from datetime import datetime
 from pydantic import BaseModel, Field
@@ -68,6 +68,23 @@ from backend.api.services.auth_service import create_job_upload_token
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
+
+
+class PipelinePlanInput(BaseModel):
+    id: Optional[int] = None
+    filename: str
+    file_format: Optional[str] = None
+    size_bytes: int = 0
+    s3_key: Optional[str] = None
+    source: Optional[str] = None
+
+
+class PipelinePlanPreviewRequest(BaseModel):
+    tool_indices: Optional[List[int]] = None
+    pipeline_id: Optional[int] = None
+    input_file_ids: Optional[List[int]] = None
+    planned_inputs: Optional[List[PipelinePlanInput]] = None
+    execution_preferences: Optional[Dict[str, Any]] = None
 
 
 def _job_response_for_user(job, username: Optional[str]) -> dict:
@@ -718,6 +735,49 @@ async def get_job_pipeline_visualization(
         error_data = error_response(
             error_code=ErrorCode.INTERNAL_ERROR,
             message="Failed to build job pipeline visualization",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@router.post("/pipeline-plan-preview", status_code=status.HTTP_200_OK)
+async def preview_pipeline_plan(
+    request: PipelinePlanPreviewRequest,
+    current_user: UserResponse = Depends(get_current_user)
+):
+    """Return a backend-generated pipeline visualization without creating or executing a job."""
+    try:
+        payload = get_kubernetes_pipeline_runner().build_pipeline_plan_preview(
+            user_id=current_user.id,
+            tool_indices=request.tool_indices,
+            pipeline_id=request.pipeline_id,
+            input_file_ids=request.input_file_ids,
+            planned_inputs=[
+                item.model_dump(exclude_none=True)
+                for item in (request.planned_inputs or [])
+            ],
+            execution_preferences=request.execution_preferences,
+        )
+        return JSONResponse(
+            content=success_response(
+                data=payload,
+                message="Pipeline plan preview created successfully",
+                status_code=status.HTTP_200_OK,
+            ),
+            status_code=status.HTTP_200_OK,
+        )
+    except ValueError as e:
+        error_data = error_response(
+            error_code=ErrorCode.VALIDATION_ERROR,
+            message=str(e),
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+    except Exception as e:
+        logger.error(f"Error building pipeline plan preview: {e}", exc_info=True)
+        error_data = error_response(
+            error_code=ErrorCode.INTERNAL_ERROR,
+            message="Failed to build pipeline plan preview",
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
         return JSONResponse(content=error_data, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
