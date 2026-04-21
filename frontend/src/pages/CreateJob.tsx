@@ -1,10 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import {
   createJob,
   JobCreate,
-  JobPipelineBlock,
-  JobPipelineConnection,
   JobPipelineVisualization,
   PipelinePlanPreviewRequest,
   estimateRuntime,
@@ -83,9 +81,6 @@ const getManualInputBlockDefaultName = (block: ManualToolInputBlock): string => 
   return `${block.toolReq.tool_name} upstream inputs`
 }
 
-const PIPELINE_INPUT_NODE_TYPES = new Set(['fastqinput', 'fastainput', 'input', 'inputnode', 'start'])
-const PIPELINE_RESULT_NODE_TYPES = new Set(['result', 'end'])
-const PIPELINE_CHECKPOINT_NODE_TYPES = new Set(['checkpoint'])
 const PIPELINE_STAGE_NODE_TYPES = new Set(['tool', 'checkpoint'])
 const CREATE_JOB_DRAFT_STORAGE_KEY = 'cassie:create-job-draft:v2'
 
@@ -110,8 +105,22 @@ interface CreateJobDraft {
   reviewPipelinePreview: JobPipelineVisualization | null
 }
 
+const shouldRestoreCreateJobDraft = (): boolean => {
+  if (typeof window === 'undefined') {
+    return false
+  }
+
+  const navigationEntry = window.performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined
+  return navigationEntry?.type === 'reload'
+}
+
 const readCreateJobDraft = (): CreateJobDraft | null => {
   if (typeof window === 'undefined') {
+    return null
+  }
+
+  if (!shouldRestoreCreateJobDraft()) {
+    clearCreateJobDraft()
     return null
   }
 
@@ -194,10 +203,6 @@ const normalizePipelineEdgeList = (edges: any): any[] => {
   return []
 }
 
-const resolvePipelineNodeId = (node: any, fallbackIndex: number): string => (
-  String(node?.id ?? node?.nodeId ?? `node-${fallbackIndex + 1}`)
-)
-
 const resolvePipelineNodeType = (node: any): string => (
   String(node?.type ?? node?.nodeType ?? '').trim().toLowerCase()
 )
@@ -206,21 +211,11 @@ const resolvePipelineNodeLabel = (node: any, fallbackLabel: string): string => (
   String(node?.data?.label ?? node?.label ?? fallbackLabel)
 )
 
-const resolvePipelineNodeDescription = (node: any): string | undefined => {
-  const description = node?.data?.description ?? node?.description
-  if (Array.isArray(description)) {
-    return description.join('\n')
-  }
-  if (typeof description === 'string') {
-    return description
-  }
-  return undefined
-}
-
 export default function CreateJob() {
   const location = useLocation()
   const storedDraftRef = useRef<CreateJobDraft | null>(readCreateJobDraft())
   const shouldPersistDraftRef = useRef(true)
+  const isDocumentUnloadingRef = useRef(false)
   const [jobName, setJobName] = useState(() => storedDraftRef.current?.jobName || '')
   const isAuthenticated = !!getToken()
   const [selectionMode, setSelectionMode] = useState<'tools' | 'pipeline'>(() => storedDraftRef.current?.selectionMode || 'tools')
@@ -294,21 +289,30 @@ export default function CreateJob() {
 
   useEffect(() => {
     shouldPersistDraftRef.current = true
+  }, [])
 
-    const clearDraftOnPageExit = () => {
-      shouldPersistDraftRef.current = false
-      clearCreateJobDraft()
+  useEffect(() => {
+    const markDocumentUnloading = () => {
+      isDocumentUnloadingRef.current = true
     }
 
-    window.addEventListener('beforeunload', clearDraftOnPageExit)
-    window.addEventListener('pagehide', clearDraftOnPageExit)
+    window.addEventListener('beforeunload', markDocumentUnloading)
+    window.addEventListener('pagehide', markDocumentUnloading)
 
     return () => {
-      clearDraftOnPageExit()
-      window.removeEventListener('beforeunload', clearDraftOnPageExit)
-      window.removeEventListener('pagehide', clearDraftOnPageExit)
+      window.removeEventListener('beforeunload', markDocumentUnloading)
+      window.removeEventListener('pagehide', markDocumentUnloading)
     }
   }, [])
+
+  useEffect(() => (
+    () => {
+      if (!shouldPersistDraftRef.current || isDocumentUnloadingRef.current) {
+        return
+      }
+      clearCreateJobDraft()
+    }
+  ), [])
 
   // Check if pipeline_id was passed via navigation state
   useEffect(() => {
@@ -824,16 +828,16 @@ export default function CreateJob() {
     setRequirementSourceSelections(nextSelections)
   }, [selectionMode, toolRequirements])
 
-  const getRequirementSelectionKey = (toolReq: ToolRequirementInfo, req: ToolRequirement): string => (
+  const getRequirementSelectionKey = useCallback((toolReq: ToolRequirementInfo, req: ToolRequirement): string => (
     req.requirement_id || `${toolReq.tool_index}:${req.type}`
-  )
+  ), [])
 
-  const getRequirementSource = (toolReq: ToolRequirementInfo, req: ToolRequirement): 'external' | 'upstream' => {
+  const getRequirementSource = useCallback((toolReq: ToolRequirementInfo, req: ToolRequirement): 'external' | 'upstream' => {
     const key = getRequirementSelectionKey(toolReq, req)
     return requirementSourceSelections[key] || req.default_source || (req.is_intermediate ? 'upstream' : 'external')
-  }
+  }, [getRequirementSelectionKey, requirementSourceSelections])
 
-  const getManualInputSourceOverrides = () => activeToolRequirementCards.flatMap((toolReq) =>
+  const getManualInputSourceOverrides = useCallback(() => activeToolRequirementCards.flatMap((toolReq) =>
     toolReq.requirements
       .filter((req) => (req.available_sources || []).length > 1)
       .map((req) => ({
@@ -841,7 +845,7 @@ export default function CreateJob() {
         requirement_type: req.type,
         source: getRequirementSource(toolReq, req),
       }))
-  )
+  ), [activeToolRequirementCards, getRequirementSource])
 
   const getManualInputBlockId = (toolReq: ToolRequirementInfo): string => (
     `manual:${toolReq.tool_id}`
@@ -1405,9 +1409,9 @@ export default function CreateJob() {
 
   const canAdvanceFromLevelFour = Boolean(selectedVM)
 
-  const inputBlockDisplayName = (inputId: string, fallbackLabel: string): string => (
+  const inputBlockDisplayName = useCallback((inputId: string, fallbackLabel: string): string => (
     inputBlockNames[inputId]?.trim() || fallbackLabel
-  )
+  ), [inputBlockNames])
 
   const handleInputBlockNameChange = (inputId: string, value: string) => {
     setInputBlockNames((prev) => ({ ...prev, [inputId]: value }))
@@ -1424,8 +1428,11 @@ export default function CreateJob() {
   }
 
   const shouldShowRuntimeEstimateCard = Boolean(loadingRuntimeEstimate || runtimeEstimate || runtimeEstimateError)
-  const combinedSelectableFiles = getCombinedSelectableFiles()
-  const selectedLibraryFiles = combinedSelectableFiles.filter((file) => {
+  const combinedSelectableFiles = useMemo(
+    () => getCombinedSelectableFiles(),
+    [dataFileTree, pendingLocalFiles]
+  )
+  const selectedLibraryFiles = useMemo(() => combinedSelectableFiles.filter((file) => {
     if (selectionMode === 'pipeline') {
       return Object.values(pipelineInputMappings).some((fileIds) => fileIds.includes(file.id))
     }
@@ -1433,72 +1440,89 @@ export default function CreateJob() {
     return Object.values(toolFileMappings).some((requirementMap) =>
       Object.values(requirementMap).some((fileIds) => fileIds.includes(file.id))
     )
-  })
+  }), [combinedSelectableFiles, pipelineInputMappings, selectionMode, toolFileMappings])
 
-  useEffect(() => {
-    if (selectionMode !== 'pipeline' || pipelineInputRequirements.length === 0 || combinedSelectableFiles.length === 0) {
-      return
-    }
-
-    setPipelineInputMappings((current) => {
-      let changed = false
-      const next = { ...current }
-
-      pipelineInputRequirements.forEach((inputReq) => {
-        const inputKey = inputReq.id || inputReq.label
-        if ((next[inputKey] || []).length > 0) {
-          return
-        }
-
-        const compatibleIds = combinedSelectableFiles
-          .filter((file) => fileMatchesRequirement(file, inputReq))
-          .map((file) => file.id)
-
-        if (compatibleIds.length > 0) {
-          next[inputKey] = compatibleIds
-          changed = true
-        }
-      })
-
-      return changed ? next : current
-    })
-  }, [combinedSelectableFiles, pipelineInputRequirements, selectionMode])
-
-  const manualReviewPipelinePlanRequest = useMemo<PipelinePlanPreviewRequest | null>(() => {
-    if (currentLevel !== 5 || selectionMode !== 'tools' || selectedTools.length === 0) {
+  const reviewPipelinePlanRequest = useMemo<PipelinePlanPreviewRequest | null>(() => {
+    if (currentLevel !== 5) {
       return null
     }
 
-    const selectableFiles = getCombinedSelectableFiles()
-    const filesById = new Map(selectableFiles.map((file) => [file.id, file]))
-    const selectedInputIds = new Set<number>()
+    const filesById = new Map(combinedSelectableFiles.map((file) => [file.id, file]))
 
-    activeToolRequirementCards.forEach((toolReq) => {
+    if (selectionMode === 'pipeline') {
+      if (!selectedPipelineId) {
+        return null
+      }
+
+      const plannedInputs = pipelineInputRequirements.flatMap((inputReq) => {
+        const inputKey = String(inputReq.id || inputReq.label)
+        const mappedFileIds = pipelineInputMappings[inputKey] || []
+
+        return mappedFileIds
+          .map((fileId) => filesById.get(fileId))
+          .filter((file): file is FileItem & { folderPath?: string } => Boolean(file))
+          .map((file) => ({
+            id: file.id,
+            binding_id: inputKey,
+            label: inputBlockDisplayName(inputKey, inputReq.label),
+            filename: file.filename,
+            file_format: file.file_format || null,
+            size_bytes: file.size_bytes || 0,
+            s3_key: file.s3_key,
+            source: file.id < 0 ? 'pending-local' : 'library',
+          }))
+      })
+
+      const executionPreferences = buildPipelineExecutionPreferences(priorityGroups)
+
+      return {
+        pipeline_id: selectedPipelineId,
+        planned_inputs: plannedInputs,
+        execution_preferences: Object.keys(executionPreferences).length > 0
+          ? executionPreferences
+          : undefined,
+      }
+    }
+
+    if (selectionMode !== 'tools') {
+      return null
+    }
+
+    if (selectedTools.length === 0) {
+      return null
+    }
+
+    const plannedInputs = activeToolRequirementCards.flatMap((toolReq) => {
       const toolKey = toolReq.tool_index.toString()
-      toolReq.requirements.forEach((req) => {
+
+      return toolReq.requirements.flatMap((req) => {
         if (getRequirementSource(toolReq, req) === 'upstream') {
-          return
+          return []
         }
+
+        const bindingId = req.requirement_id || `${toolReq.tool_id}:${req.type}`
         const mappedFileIds = toolFileMappings[toolKey]?.[req.type] || []
-        mappedFileIds.forEach((fileId) => selectedInputIds.add(fileId))
+
+        return mappedFileIds
+          .map((fileId) => filesById.get(fileId))
+          .filter((file): file is FileItem & { folderPath?: string } => Boolean(file))
+          .map((file) => ({
+            id: file.id,
+            binding_id: bindingId,
+            tool_id: toolReq.tool_id,
+            requirement_type: req.type,
+            label: req.label,
+            filename: file.filename,
+            file_format: file.file_format || null,
+            size_bytes: file.size_bytes || 0,
+            s3_key: file.s3_key,
+            source: file.id < 0 ? 'pending-local' : 'library',
+          }))
       })
     })
 
-    const plannedInputs = Array.from(selectedInputIds)
-      .map((fileId) => filesById.get(fileId))
-      .filter((file): file is FileItem & { folderPath?: string } => Boolean(file))
-      .map((file) => ({
-        id: file.id,
-        filename: file.filename,
-        file_format: file.file_format || null,
-        size_bytes: file.size_bytes || 0,
-        s3_key: file.s3_key,
-        source: file.id < 0 ? 'pending-local' : 'library',
-      }))
+    const executionPreferences: Record<string, unknown> = buildManualExecutionPreferences(priorityGroups)
 
-    const executionPreferences: Record<string, unknown> = priorityGroups.length > 0
-      ? buildManualExecutionPreferences(priorityGroups)
-      : {}
     const inputSourceOverrides = getManualInputSourceOverrides()
     if (inputSourceOverrides.length > 0) {
       executionPreferences.input_source_overrides = inputSourceOverrides
@@ -1513,23 +1537,27 @@ export default function CreateJob() {
     }
   }, [
     activeToolRequirementCards,
+    combinedSelectableFiles,
     currentLevel,
-    dataFileTree,
-    pendingLocalFiles,
+    getManualInputSourceOverrides,
+    getRequirementSource,
+    inputBlockDisplayName,
+    pipelineInputMappings,
+    pipelineInputRequirements,
     priorityGroups,
-    requirementSourceSelections,
+    selectedPipelineId,
     selectedTools,
     selectionMode,
     toolFileMappings,
   ])
 
-  const manualReviewPipelinePlanSignature = useMemo(
-    () => manualReviewPipelinePlanRequest ? JSON.stringify(manualReviewPipelinePlanRequest) : '',
-    [manualReviewPipelinePlanRequest]
+  const reviewPipelinePlanSignature = useMemo(
+    () => reviewPipelinePlanRequest ? JSON.stringify(reviewPipelinePlanRequest) : '',
+    [reviewPipelinePlanRequest]
   )
 
   useEffect(() => {
-    if (!manualReviewPipelinePlanRequest) {
+    if (!reviewPipelinePlanRequest) {
       setBackendReviewPipelinePreview(null)
       setLoadingReviewPipelinePreview(false)
       setReviewPipelinePreviewError('')
@@ -1543,7 +1571,7 @@ export default function CreateJob() {
         setLoadingReviewPipelinePreview(true)
         setReviewPipelinePreviewError('')
         setBackendReviewPipelinePreview(null)
-        const preview = await previewPipelinePlan(manualReviewPipelinePlanRequest)
+        const preview = await previewPipelinePlan(reviewPipelinePlanRequest)
         if (!cancelled) {
           setBackendReviewPipelinePreview(preview)
         }
@@ -1565,7 +1593,7 @@ export default function CreateJob() {
     return () => {
       cancelled = true
     }
-  }, [manualReviewPipelinePlanRequest, manualReviewPipelinePlanSignature])
+  }, [reviewPipelinePlanRequest, reviewPipelinePlanSignature])
 
   const livePipelineBox = (
     <div className="builder-live-pipeline-card">
@@ -1603,348 +1631,8 @@ export default function CreateJob() {
     </div>
   )
 
-  const reviewPipelinePreview = useMemo<JobPipelineVisualization | null>(() => {
-    const selectableFiles = getCombinedSelectableFiles()
-    const filesById = new Map(selectableFiles.map((file) => [file.id, file]))
-    const getFilenames = (fileIds: number[]) => fileIds
-      .map((fileId) => filesById.get(fileId)?.filename)
-      .filter((filename): filename is string => Boolean(filename))
-
-    if (selectionMode === 'pipeline') {
-      if (!selectedPipeline) {
-        return null
-      }
-
-      const rawNodes = selectedPipelineNodes
-      const rawEdges = selectedPipelineEdges
-      const fallbackToolLabels = (pipelineRequirements?.tools || [])
-        .map((toolId) => {
-          const matchingTool = availableTools.find((tool) => tool.tool_id === toolId || tool.name.toUpperCase() === toolId)
-          return matchingTool?.name || toolId
-        })
-        .filter((label) => label.trim().length > 0)
-
-      if (rawNodes.length === 0 && fallbackToolLabels.length > 0) {
-        const blocks: JobPipelineBlock[] = fallbackToolLabels.map((label, index) => ({
-          id: `stage:fallback-${index + 1}`,
-          kind: 'tool',
-          column: 'stage',
-          row: index + 1,
-          label,
-          status: 'waiting',
-          stage_id: `fallback-${index + 1}`,
-          stage_number: index + 1,
-          dependency_stage_ids: index > 0 ? [`fallback-${index}`] : [],
-        }))
-
-        const connections: JobPipelineConnection[] = blocks.slice(1).map((block, index) => ({
-          id: `fallback-edge-${index + 1}`,
-          source: blocks[index].id,
-          target: block.id,
-          kind: 'dependency',
-        }))
-
-        return {
-          job_id: 0,
-          workflow_id: 0,
-          latest_execution_id: null,
-          blocks,
-          connections,
-        }
-      }
-
-      const nodeIds = new Set(rawNodes.map((node: any, index: number) => resolvePipelineNodeId(node, index)))
-      const requirementByKey = new Map(
-        pipelineInputRequirements.map((req) => [String(req.id || req.label), req])
-      )
-
-      const stageNodeIds = rawNodes
-        .filter((node: any) => PIPELINE_STAGE_NODE_TYPES.has(resolvePipelineNodeType(node)))
-        .map((node: any, index: number) => resolvePipelineNodeId(node, index))
-      const stageIdSet = new Set(stageNodeIds)
-      const stageDependencies = new Map<string, Set<string>>()
-      const stageDependents = new Map<string, Set<string>>()
-      stageNodeIds.forEach((stageId) => {
-        stageDependencies.set(stageId, new Set())
-        stageDependents.set(stageId, new Set())
-      })
-      rawEdges.forEach((edge: any) => {
-        const source = String(edge?.source || '')
-        const target = String(edge?.target || '')
-        if (!stageIdSet.has(source) || !stageIdSet.has(target)) {
-          return
-        }
-        stageDependencies.get(target)?.add(source)
-        stageDependents.get(source)?.add(target)
-      })
-
-      const stageOrder = new Map(stageNodeIds.map((stageId, index) => [stageId, index]))
-      const inDegree = new Map<string, number>()
-      stageNodeIds.forEach((stageId) => inDegree.set(stageId, stageDependencies.get(stageId)?.size || 0))
-      const queue = stageNodeIds.filter((stageId) => (inDegree.get(stageId) || 0) === 0)
-      const topoStageIds: string[] = []
-      while (queue.length > 0) {
-        const currentId = queue.shift()!
-        topoStageIds.push(currentId)
-        Array.from(stageDependents.get(currentId) || [])
-          .sort((left, right) => (stageOrder.get(left) || 0) - (stageOrder.get(right) || 0))
-          .forEach((dependentId) => {
-            const nextInDegree = (inDegree.get(dependentId) || 0) - 1
-            inDegree.set(dependentId, nextInDegree)
-            if (nextInDegree === 0) {
-              queue.push(dependentId)
-            }
-          })
-      }
-      stageNodeIds.forEach((stageId) => {
-        if (!topoStageIds.includes(stageId)) {
-          topoStageIds.push(stageId)
-        }
-      })
-      const stageNumberById = new Map(topoStageIds.map((stageId, index) => [stageId, index + 1]))
-
-      const blocks: JobPipelineBlock[] = rawNodes.map((node: any, index: number) => {
-        const nodeId = resolvePipelineNodeId(node, index)
-        const nodeType = resolvePipelineNodeType(node)
-        const isInput = PIPELINE_INPUT_NODE_TYPES.has(nodeType)
-        const isResult = PIPELINE_RESULT_NODE_TYPES.has(nodeType)
-        const isCheckpoint = PIPELINE_CHECKPOINT_NODE_TYPES.has(nodeType)
-        const isStage = PIPELINE_STAGE_NODE_TYPES.has(nodeType)
-        const resolvedLabel = resolvePipelineNodeLabel(node, isInput ? 'Input' : isResult ? 'Result' : 'Stage')
-        const requirement = requirementByKey.get(nodeId) || requirementByKey.get(resolvedLabel)
-        const blockLabel = isInput && requirement
-          ? inputBlockDisplayName(String(requirement.id || requirement.label), requirement.label)
-          : resolvedLabel
-        const mappedFileIds = isInput && requirement
-          ? (pipelineInputMappings[String(requirement.id || requirement.label)] || [])
-          : []
-
-        return {
-          id: isStage ? `stage:${nodeId}` : nodeId,
-          kind: isInput ? 'input' : isResult ? 'output' : isCheckpoint ? 'checkpoint' : 'tool',
-          column: isInput ? 'input' : isResult ? 'output' : 'stage',
-          row: stageNumberById.get(nodeId) || index + 1,
-          label: blockLabel,
-          status: 'waiting',
-          stage_id: isStage ? nodeId : undefined,
-          stage_number: isStage ? (stageNumberById.get(nodeId) || index + 1) : undefined,
-          dependency_stage_ids: isStage ? Array.from(stageDependencies.get(nodeId) || []) : undefined,
-          related_stage_id: isResult
-            ? (() => {
-                const inboundStageEdge = rawEdges.find((edge: any) => String(edge?.target || '') === nodeId && stageIdSet.has(String(edge?.source || '')))
-                return inboundStageEdge ? String(inboundStageEdge.source) : undefined
-              })()
-            : undefined,
-          formats: requirement?.formats || undefined,
-          filenames: isInput ? getFilenames(mappedFileIds) : undefined,
-          description: resolvePipelineNodeDescription(node),
-        }
-      })
-
-      const connections: JobPipelineConnection[] = rawEdges.flatMap((edge: any, index: number): JobPipelineConnection[] => {
-        const source = String(edge?.source || '')
-        const target = String(edge?.target || '')
-        if (!nodeIds.has(source) || !nodeIds.has(target)) {
-          return []
-        }
-
-        const sourceNode = rawNodes.find((node: any, nodeIndex: number) => resolvePipelineNodeId(node, nodeIndex) === source)
-        const targetNode = rawNodes.find((node: any, nodeIndex: number) => resolvePipelineNodeId(node, nodeIndex) === target)
-        const sourceType = resolvePipelineNodeType(sourceNode)
-        const targetType = resolvePipelineNodeType(targetNode)
-
-        if (PIPELINE_INPUT_NODE_TYPES.has(sourceType) && PIPELINE_STAGE_NODE_TYPES.has(targetType)) {
-          return [{
-            id: String(edge?.id || `preview-edge-${index + 1}`),
-            source,
-            target: `stage:${target}`,
-            kind: 'input' as const,
-          }]
-        }
-        if (PIPELINE_STAGE_NODE_TYPES.has(sourceType) && PIPELINE_STAGE_NODE_TYPES.has(targetType)) {
-          return [{
-            id: String(edge?.id || `preview-edge-${index + 1}`),
-            source: `stage:${source}`,
-            target: `stage:${target}`,
-            kind: 'dependency' as const,
-          }]
-        }
-        if (PIPELINE_STAGE_NODE_TYPES.has(sourceType) && PIPELINE_RESULT_NODE_TYPES.has(targetType)) {
-          return [{
-            id: String(edge?.id || `preview-edge-${index + 1}`),
-            source: `stage:${source}`,
-            target,
-            kind: 'output' as const,
-          }]
-        }
-        return []
-      })
-
-      return {
-        job_id: 0,
-        workflow_id: 0,
-        latest_execution_id: null,
-        blocks,
-        connections,
-      }
-    }
-
-    if (activeToolRequirementCards.length === 0) {
-      return null
-    }
-
-    const toolIdByName = new Map(activeToolRequirementCards.map((toolReq) => [toolReq.tool_name, toolReq.tool_id]))
-    const selectedToolIdSet = new Set(activeToolRequirementCards.map((toolReq) => toolReq.tool_id))
-    const dependencies = new Map<string, Set<string>>()
-    const dependents = new Map<string, Set<string>>()
-    activeToolRequirementCards.forEach((toolReq) => {
-      dependencies.set(toolReq.tool_id, new Set())
-      dependents.set(toolReq.tool_id, new Set())
-    })
-
-    activeToolRequirementCards.forEach((toolReq) => {
-      toolReq.requirements.forEach((req) => {
-        if (getRequirementSource(toolReq, req) !== 'upstream') {
-          return
-        }
-        const sourceToolId = toolIdByName.get(String(req.source_tool || ''))
-        if (!sourceToolId || sourceToolId === toolReq.tool_id || !selectedToolIdSet.has(sourceToolId)) {
-          return
-        }
-        dependencies.get(toolReq.tool_id)?.add(sourceToolId)
-        dependents.get(sourceToolId)?.add(toolReq.tool_id)
-      })
-    })
-
-    const selectedOrder = new Map(activeToolRequirementCards.map((toolReq, index) => [toolReq.tool_id, index]))
-    const inDegree = new Map<string, number>()
-    activeToolRequirementCards.forEach((toolReq) => inDegree.set(toolReq.tool_id, dependencies.get(toolReq.tool_id)?.size || 0))
-    const queue = activeToolRequirementCards
-      .map((toolReq) => toolReq.tool_id)
-      .filter((toolId) => (inDegree.get(toolId) || 0) === 0)
-      .sort((left, right) => (selectedOrder.get(left) || 0) - (selectedOrder.get(right) || 0))
-
-    const topoToolIds: string[] = []
-    while (queue.length > 0) {
-      const currentToolId = queue.shift()!
-      topoToolIds.push(currentToolId)
-      Array.from(dependents.get(currentToolId) || [])
-        .sort((left, right) => (selectedOrder.get(left) || 0) - (selectedOrder.get(right) || 0))
-        .forEach((dependentToolId) => {
-          const nextInDegree = (inDegree.get(dependentToolId) || 0) - 1
-          inDegree.set(dependentToolId, nextInDegree)
-          if (nextInDegree === 0) {
-            queue.push(dependentToolId)
-          }
-        })
-    }
-    activeToolRequirementCards.forEach((toolReq) => {
-      if (!topoToolIds.includes(toolReq.tool_id)) {
-        topoToolIds.push(toolReq.tool_id)
-      }
-    })
-    const stageNumberByToolId = new Map(topoToolIds.map((toolId, index) => [toolId, index + 1]))
-
-    const stageBlocks: JobPipelineBlock[] = activeToolRequirementCards.map((toolReq, index) => ({
-      id: `stage:${toolReq.tool_id}`,
-      kind: 'tool' as const,
-      column: 'stage' as const,
-      row: stageNumberByToolId.get(toolReq.tool_id) || index + 1,
-      label: toolReq.tool_name,
-      status: 'waiting' as const,
-      stage_id: toolReq.tool_id,
-      stage_number: stageNumberByToolId.get(toolReq.tool_id) || index + 1,
-      dependency_stage_ids: Array.from(dependencies.get(toolReq.tool_id) || []),
-      description: toolReq.description || undefined,
-    }))
-
-    const inputBlocks: JobPipelineBlock[] = manualToolInputBlocks.map((block) => {
-      const toolKey = block.toolReq.tool_index.toString()
-      const mappedFileIds = Array.from(new Set(
-        block.externalRequirements.flatMap((req) => toolFileMappings[toolKey]?.[req.type] || [])
-      ))
-      const formats = Array.from(new Set(block.externalRequirements.flatMap((req) => req.formats)))
-      const descriptionParts: string[] = []
-      if (block.externalRequirements.length > 0) {
-        descriptionParts.push(`Tool block for: ${block.externalRequirements.map((req) => req.label).join(', ')}`)
-      }
-      if (block.upstreamRequirements.length > 0) {
-        descriptionParts.push(`Also receives upstream inputs for: ${block.upstreamRequirements.map((req) => req.label).join(', ')}`)
-      }
-      return {
-        id: block.id,
-        kind: 'input' as const,
-        column: 'input' as const,
-        row: stageNumberByToolId.get(block.toolReq.tool_id) || 1,
-        label: inputBlockDisplayName(block.id, getManualInputBlockDefaultName(block)),
-        status: 'waiting' as const,
-        formats: formats.length > 0 ? formats : undefined,
-        filenames: getFilenames(mappedFileIds),
-        description: descriptionParts.join('\n') || undefined,
-      }
-    })
-
-    const outputBlocks: JobPipelineBlock[] = activeToolRequirementCards.map((toolReq, index) => ({
-      id: `output:${toolReq.tool_id}`,
-      kind: 'output' as const,
-      column: 'output' as const,
-      row: stageNumberByToolId.get(toolReq.tool_id) || index + 1,
-      label: `${toolReq.tool_name} outputs`,
-      status: 'waiting' as const,
-      related_stage_id: toolReq.tool_id,
-      description: 'Produced artifacts collected after this stage finishes.',
-    }))
-
-    const inputConnections: JobPipelineConnection[] = manualToolInputBlocks.map((block) => ({
-      id: `input-edge:${block.toolReq.tool_id}`,
-      source: block.id,
-      target: `stage:${block.toolReq.tool_id}`,
-      kind: 'input' as const,
-    }))
-
-    const dependencyConnections: JobPipelineConnection[] = activeToolRequirementCards.flatMap((toolReq) =>
-      Array.from(dependencies.get(toolReq.tool_id) || []).map((sourceToolId) => ({
-        id: `dependency-edge:${sourceToolId}:${toolReq.tool_id}`,
-        source: `stage:${sourceToolId}`,
-        target: `stage:${toolReq.tool_id}`,
-        kind: 'dependency' as const,
-      }))
-    )
-
-    const outputConnections: JobPipelineConnection[] = activeToolRequirementCards.map((toolReq) => ({
-      id: `output-edge:${toolReq.tool_id}`,
-      source: `stage:${toolReq.tool_id}`,
-      target: `output:${toolReq.tool_id}`,
-      kind: 'output' as const,
-    }))
-
-    return {
-      job_id: 0,
-      workflow_id: 0,
-      latest_execution_id: null,
-      blocks: [...inputBlocks, ...stageBlocks, ...outputBlocks],
-      connections: [...inputConnections, ...dependencyConnections, ...outputConnections],
-    }
-  }, [
-    activeToolRequirementCards,
-    availableTools,
-    dataFileTree,
-    getRequirementSource,
-    inputBlockNames,
-    manualToolInputBlocks,
-    pendingLocalFiles,
-    pipelineInputMappings,
-    pipelineInputRequirements,
-    pipelineRequirements,
-    selectedPipeline,
-    selectedPipelineEdges,
-    selectedPipelineNodes,
-    selectionMode,
-    toolFileMappings,
-  ])
-  const effectiveReviewPipelinePreview = selectionMode === 'tools'
-    ? (backendReviewPipelinePreview || (!loadingReviewPipelinePreview && !reviewPipelinePreviewError ? persistedReviewPipelinePreview : null))
-    : (reviewPipelinePreview || persistedReviewPipelinePreview)
+  const effectiveReviewPipelinePreview = backendReviewPipelinePreview
+    || persistedReviewPipelinePreview
 
   useEffect(() => {
     if (effectiveReviewPipelinePreview) {
@@ -2179,12 +1867,14 @@ export default function CreateJob() {
       if (job && job.id && pendingFileIds.length > 0) {
         setSubmitStatus('Queueing selected files...')
         await enqueuePendingJobUploads(job.id, pendingFilesToUpload, job.upload_session_token)
+        shouldPersistDraftRef.current = false
         clearCreateJobDraft()
         navigate(`/jobs/${job.id}`)
         return
       }
 
       if (job && job.id) {
+        shouldPersistDraftRef.current = false
         clearCreateJobDraft()
         navigate(`/jobs/${job.id}`)
       } else {
@@ -2995,12 +2685,12 @@ export default function CreateJob() {
 
                 <div className="detail-section" style={{ margin: 0 }}>
                   <h2>Pipeline Visualization</h2>
-                  {selectionMode === 'tools' && loadingReviewPipelinePreview && (
+                  {loadingReviewPipelinePreview && (
                     <p style={{ margin: '0 0 0.75rem', color: '#64748b', fontSize: '0.9rem' }}>
                       Building backend execution preview...
                     </p>
                   )}
-                  {selectionMode === 'tools' && reviewPipelinePreviewError && (
+                  {reviewPipelinePreviewError && (
                     <p style={{ margin: '0 0 0.75rem', color: '#b91c1c', fontSize: '0.9rem' }}>
                       {reviewPipelinePreviewError}
                     </p>
@@ -3062,7 +2752,7 @@ export default function CreateJob() {
 
                 {selectionMode === 'pipeline' && pipelineInputRequirements.length > 0 && (
                   <div className="builder-review-card" style={{ marginTop: '1rem' }}>
-                    <h3>Tool Blocks</h3>
+                    <h3>Input Blocks</h3>
                     <div className="builder-input-summary-list">
                       {pipelineInputRequirements.map((inputReq) => {
                         const inputKey = inputReq.id || inputReq.label
@@ -3070,7 +2760,7 @@ export default function CreateJob() {
                         return (
                           <div key={`review-${inputKey}`} className="builder-input-summary-row">
                             <strong>{inputBlockDisplayName(inputKey, inputReq.label)}</strong>
-                            <span>{mappedFileIds.length} file(s) attached</span>
+                            <span>{mappedFileIds.length} file(s) selected</span>
                           </div>
                         )
                       })}

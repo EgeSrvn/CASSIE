@@ -18,10 +18,17 @@ from backend.api.models.pipeline_model import (
     PipelinePublisherResponse,
     PipelineResponse,
 )
+from backend.api.models.engagement_model import VoteType
+from backend.api.services.engagement_service import get_vote_summaries
+from backend.api.services.forum_moderation import validate_community_text
 from backend.api.services.user_service import get_user_by_id
 from backend.api.services.pipeline_analyzer import validate_pipeline_graph
 
 logger = logging.getLogger(__name__)
+
+
+def _validate_pipeline_text(name: Optional[str], description: Optional[str]) -> None:
+    validate_community_text(name or "", description or "")
 
 
 def _parse_jsonb_field(value: Any) -> List[Dict[str, Any]]:
@@ -112,6 +119,29 @@ def _pipeline_from_row(row) -> PipelineResponse:
     )
 
 
+def _attach_pipeline_engagement(
+    pipelines: List[PipelineResponse],
+    *,
+    requester_user_id: Optional[int] = None,
+) -> List[PipelineResponse]:
+    if not pipelines:
+        return pipelines
+
+    vote_map = get_vote_summaries(
+        "pipeline",
+        [pipeline.id for pipeline in pipelines],
+        user_id=requester_user_id,
+    )
+    for pipeline in pipelines:
+        summary = vote_map.get(pipeline.id, {})
+        pipeline.upvote_count = int(summary.get("upvote_count") or 0)
+        pipeline.downvote_count = int(summary.get("downvote_count") or 0)
+        pipeline.score = int(summary.get("score") or 0)
+        user_vote = summary.get("user_vote")
+        pipeline.user_vote = VoteType(user_vote) if user_vote else None
+    return pipelines
+
+
 def create_pipeline(user_id: int, pipeline_data: PipelineCreate) -> PipelineInDB:
     """
     Create a new pipeline for a user.
@@ -133,6 +163,7 @@ def create_pipeline(user_id: int, pipeline_data: PipelineCreate) -> PipelineInDB
             validation = validate_pipeline_graph(pipeline_data.nodes, pipeline_data.edges)
             if not validation["is_valid"]:
                 raise ValueError("Invalid pipeline graph. " + " ".join(validation["errors"]))
+            _validate_pipeline_text(pipeline_data.name, pipeline_data.description)
 
             # Convert nodes and edges to JSON strings for JSONB storage
             # They are lists of dicts from ReactFlow
@@ -202,7 +233,7 @@ def get_pipeline_by_id(pipeline_id: int, user_id: int) -> Optional[PipelineRespo
             if not row:
                 return None
             
-            return _pipeline_from_row(row)
+            return _attach_pipeline_engagement([_pipeline_from_row(row)], requester_user_id=user_id)[0]
             
         except Exception as e:
             logger.error(f"Error getting pipeline {pipeline_id}: {e}", exc_info=True)
@@ -235,7 +266,7 @@ def get_pipeline_by_id_public(pipeline_id: int) -> Optional[PipelineResponse]:
             if not row:
                 return None
             
-            return _pipeline_from_row(row)
+            return _attach_pipeline_engagement([_pipeline_from_row(row)])[0]
             
         except Exception as e:
             logger.error(f"Error getting shared pipeline {pipeline_id}: {e}", exc_info=True)
@@ -265,11 +296,8 @@ def get_pipelines_by_user(user_id: int) -> List[PipelineResponse]:
                 ORDER BY saved_at DESC
             """, (user_id,))
             
-            pipelines = []
-            for row in cur.fetchall():
-                pipelines.append(_pipeline_from_row(row))
-            
-            return pipelines
+            pipelines = [_pipeline_from_row(row) for row in cur.fetchall()]
+            return _attach_pipeline_engagement(pipelines, requester_user_id=user_id)
             
         except Exception as e:
             logger.error(f"Error getting pipelines for user {user_id}: {e}", exc_info=True)
@@ -303,6 +331,10 @@ def update_pipeline(pipeline_id: int, user_id: int, update_data: PipelineUpdate)
             validation = validate_pipeline_graph(candidate_nodes, candidate_edges)
             if not validation["is_valid"]:
                 raise ValueError("Invalid pipeline graph. " + " ".join(validation["errors"]))
+            _validate_pipeline_text(
+                update_data.name if update_data.name is not None else existing_pipeline.name,
+                update_data.description if update_data.description is not None else existing_pipeline.description,
+            )
 
             # Build update query dynamically based on provided fields
             updates = []
@@ -353,7 +385,7 @@ def update_pipeline(pipeline_id: int, user_id: int, update_data: PipelineUpdate)
             
             conn.commit()
             
-            pipeline = _pipeline_from_row(row)
+            pipeline = _attach_pipeline_engagement([_pipeline_from_row(row)], requester_user_id=user_id)[0]
             
             logger.info(f"Updated pipeline {pipeline_id} for user {user_id}")
             return pipeline
@@ -402,7 +434,11 @@ def delete_pipeline(pipeline_id: int, user_id: int) -> bool:
             cur.close()
 
 
-def get_shared_pipelines(search_query: Optional[str] = None) -> List[PipelineResponse]:
+def get_shared_pipelines(
+    search_query: Optional[str] = None,
+    requester_user_id: Optional[int] = None,
+    sort_by: str = "recent",
+) -> List[PipelineResponse]:
     """
     Get all shared pipelines (available to everyone).
     
@@ -413,12 +449,27 @@ def get_shared_pipelines(search_query: Optional[str] = None) -> List[PipelineRes
         cur = conn.cursor()
         
         try:
+            normalized_sort = "popular" if str(sort_by or "").strip().lower() == "popular" else "recent"
+            order_by_clause = (
+                "COALESCE(vote_stats.score, 0) DESC, COALESCE(vote_stats.upvote_count, 0) DESC, saved_at DESC"
+                if normalized_sort == "popular"
+                else "saved_at DESC"
+            )
             if search_query and search_query.strip():
                 like_query = f"%{search_query.strip()}%"
                 cur.execute(
-                    """
+                    f"""
                     SELECT id, user_id, name, description, nodes, edges, saved_at, is_shared
                     FROM pipelines
+                    LEFT JOIN (
+                        SELECT
+                            pipeline_id,
+                            COUNT(*) FILTER (WHERE vote_type = 'upvote') AS upvote_count,
+                            COUNT(*) FILTER (WHERE vote_type = 'downvote') AS downvote_count,
+                            COUNT(*) FILTER (WHERE vote_type = 'upvote') - COUNT(*) FILTER (WHERE vote_type = 'downvote') AS score
+                        FROM pipeline_votes
+                        GROUP BY pipeline_id
+                    ) AS vote_stats ON vote_stats.pipeline_id = pipelines.id
                     WHERE is_shared = true
                       AND (
                           name ILIKE %s
@@ -430,25 +481,31 @@ def get_shared_pipelines(search_query: Optional[str] = None) -> List[PipelineRes
                                 AND COALESCE(node->'data'->>'label', '') ILIKE %s
                           )
                       )
-                    ORDER BY saved_at DESC
+                    ORDER BY {order_by_clause}
                     """,
                     (like_query, like_query, like_query),
                 )
             else:
                 cur.execute(
-                    """
+                    f"""
                     SELECT id, user_id, name, description, nodes, edges, saved_at, is_shared
                     FROM pipelines
+                    LEFT JOIN (
+                        SELECT
+                            pipeline_id,
+                            COUNT(*) FILTER (WHERE vote_type = 'upvote') AS upvote_count,
+                            COUNT(*) FILTER (WHERE vote_type = 'downvote') AS downvote_count,
+                            COUNT(*) FILTER (WHERE vote_type = 'upvote') - COUNT(*) FILTER (WHERE vote_type = 'downvote') AS score
+                        FROM pipeline_votes
+                        GROUP BY pipeline_id
+                    ) AS vote_stats ON vote_stats.pipeline_id = pipelines.id
                     WHERE is_shared = true
-                    ORDER BY saved_at DESC
+                    ORDER BY {order_by_clause}
                     """
                 )
             
-            pipelines = []
-            for row in cur.fetchall():
-                pipelines.append(_pipeline_from_row(row))
-            
-            return pipelines
+            pipelines = [_pipeline_from_row(row) for row in cur.fetchall()]
+            return _attach_pipeline_engagement(pipelines, requester_user_id=requester_user_id)
             
         except Exception as e:
             logger.error(f"Error getting shared pipelines: {e}", exc_info=True)
@@ -468,6 +525,11 @@ def share_pipeline(pipeline_id: int, user_id: int) -> Optional[PipelineResponse]
     Returns:
         Optional[PipelineInDB]: Updated pipeline if found, None otherwise
     """
+    existing_pipeline = get_pipeline_by_id(pipeline_id, user_id)
+    if existing_pipeline is None:
+        return None
+
+    _validate_pipeline_text(existing_pipeline.name, existing_pipeline.description)
     return update_pipeline(pipeline_id, user_id, PipelineUpdate(is_shared=True))
 
 

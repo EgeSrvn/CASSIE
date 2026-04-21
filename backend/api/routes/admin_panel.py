@@ -25,17 +25,19 @@ from backend.api.services.auth_service import (
     decode_access_token,
     verify_password,
 )
+from backend.api.services.engagement_service import (
+    list_reports_for_admin,
+    moderate_report_target,
+    suspend_report_target_owner,
+    update_report_status,
+)
 from backend.api.services.job_execution_service import get_executions_by_job, update_job_execution
 from backend.api.services.job_service import get_job_by_id, update_job
 from backend.api.services.kubernetes_manager import (
     get_kubernetes_pipeline_runner,
     kubernetes_is_available,
 )
-from backend.api.services.user_service import (
-    ensure_admin_user,
-    get_user_by_username,
-    update_user_password,
-)
+from backend.api.services.user_service import ensure_admin_user, get_user_by_username, update_user_password
 from backend.api.utils.config_loader import get_config
 from backend.api.services.workflow_service import get_workflow_by_id
 from tool_registry import get_tool_registry
@@ -99,7 +101,7 @@ def _render_page(*, title: str, body: str, script: str = "") -> HTMLResponse:
         margin-bottom: 0.35rem;
         font-weight: 600;
       }}
-      input {{
+      input, select {{
         width: 100%;
         padding: 0.8rem 0.9rem;
         border-radius: 10px;
@@ -137,6 +139,28 @@ def _render_page(*, title: str, body: str, script: str = "") -> HTMLResponse:
         gap: 0.75rem;
         flex-wrap: wrap;
         align-items: center;
+      }}
+      .tab-nav {{
+        display: flex;
+        gap: 0.65rem;
+        flex-wrap: wrap;
+        margin: 1.25rem 0 1.5rem;
+      }}
+      .tab-link {{
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 0.65rem 0.95rem;
+        text-decoration: none;
+        color: var(--ink);
+        background: rgba(255, 255, 255, 0.72);
+      }}
+      .tab-link.active {{
+        background: var(--accent);
+        color: var(--accent-ink);
+        border-color: var(--accent);
       }}
       .grid {{
         display: grid;
@@ -268,9 +292,24 @@ def _render_page(*, title: str, body: str, script: str = "") -> HTMLResponse:
       .inline-form {{
         display: inline-flex;
         margin: 0;
+        align-items: center;
+        gap: 0.45rem;
+      }}
+      .inline-form.wrap {{
+        flex-wrap: wrap;
       }}
       .inline-form input[type="hidden"] {{
         display: none;
+      }}
+      .inline-form input,
+      .inline-form select {{
+        width: auto;
+        margin-bottom: 0;
+      }}
+      .input-compact {{
+        min-width: 5rem;
+        padding: 0.45rem 0.65rem;
+        font-size: 0.88rem;
       }}
       .pill {{
         display: inline-block;
@@ -286,6 +325,10 @@ def _render_page(*, title: str, body: str, script: str = "") -> HTMLResponse:
       .status-pending {{ color: var(--warn); font-weight: 700; }}
       .status-completed {{ color: #166534; font-weight: 700; }}
       .status-cancelled {{ color: var(--danger); font-weight: 700; }}
+      .status-reviewed,
+      .status-resolved_removed,
+      .status-resolved_suspended {{ color: #166534; font-weight: 700; }}
+      .status-dismissed {{ color: var(--muted); font-weight: 700; }}
       .mono {{ font-family: "SFMono-Regular", Menlo, Consolas, monospace; }}
       .stack {{
         display: grid;
@@ -414,7 +457,7 @@ def _format_duration(started_at: Any) -> str:
 
 def _status_class(value: Any) -> str:
     normalized = str(value or "").strip().lower()
-    if normalized in {"running", "failed", "pending", "completed", "cancelled"}:
+    if normalized in {"running", "failed", "pending", "completed", "cancelled", "reviewed", "dismissed", "resolved_removed", "resolved_suspended"}:
         return f"status-{normalized}"
     return ""
 
@@ -436,7 +479,7 @@ def _html_table(columns: list[tuple[str, str]], rows: Iterable[dict[str, Any]]) 
     return f"<table><thead><tr>{header}</tr></thead><tbody>{''.join(body_rows)}</tbody></table>"
 
 
-def _admin_url(*, message: str | None = None, error: bool = False, job_id: int | None = None) -> str:
+def _admin_url(*, message: str | None = None, error: bool = False, job_id: int | None = None, tab: str | None = None) -> str:
     params: dict[str, str] = {}
     if message:
         params["message"] = message
@@ -444,14 +487,27 @@ def _admin_url(*, message: str | None = None, error: bool = False, job_id: int |
         params["error"] = "1"
     if job_id is not None:
         params["job_id"] = str(job_id)
+    if tab:
+        params["tab"] = tab
     query = urlencode(params)
     return f"{config.admin_panel.path}{f'?{query}' if query else ''}"
 
 
-def _admin_redirect(*, message: str, error: bool = False, job_id: int | None = None) -> RedirectResponse:
+def _admin_redirect(*, message: str, error: bool = False, job_id: int | None = None, tab: str | None = None) -> RedirectResponse:
     return RedirectResponse(
-        url=_admin_url(message=message, error=error, job_id=job_id),
+        url=_admin_url(message=message, error=error, job_id=job_id, tab=tab),
         status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+def _moderation_action_form(action: str, label: str, report_id: int, *, css_class: str = "secondary", extra_fields: str = "") -> str:
+    return (
+        f'<form method="post" action="{escape(config.admin_panel.path)}/moderation-action" class="inline-form">'
+        f'<input type="hidden" name="report_id" value="{report_id}">'
+        f'<input type="hidden" name="action" value="{escape(action)}">'
+        f"{extra_fields}"
+        f'<button type="submit" class="{escape(css_class)} small-button">{escape(label)}</button>'
+        f"</form>"
     )
 
 
@@ -505,8 +561,8 @@ def _status_badge(value: Any) -> str:
     return f'<span class="{_status_class(text)}">{escape(text)}</span>'
 
 
-def _job_link(job_id: int, label: str | None = None) -> str:
-    return f'<a class="secret-link" href="{escape(_admin_url(job_id=job_id))}">{escape(label or f"#{job_id}")}</a>'
+def _job_link(job_id: int, label: str | None = None, *, tab: str | None = None) -> str:
+    return f'<a class="secret-link" href="{escape(_admin_url(job_id=job_id, tab=tab))}">{escape(label or f"#{job_id}")}</a>'
 
 
 def _terminate_button(job_id: int) -> str:
@@ -1284,14 +1340,16 @@ def _collect_dashboard_data(selected_job_id: int | None = None) -> dict[str, Any
             cur.execute(
                 """
                 SELECT
+                    u.id,
                     u.username,
                     u.email,
                     u.created_at,
+                    u.suspended_until,
                     COUNT(j.id) AS job_count,
                     COUNT(*) FILTER (WHERE j.status = 'running') AS running_job_count
                 FROM users u
                 LEFT JOIN jobs j ON j.user_id = u.id
-                GROUP BY u.id, u.username, u.email, u.created_at
+                GROUP BY u.id, u.username, u.email, u.created_at, u.suspended_until
                 ORDER BY u.created_at DESC
                 """
             )
@@ -1365,11 +1423,13 @@ def _collect_dashboard_data(selected_job_id: int | None = None) -> dict[str, Any
 
     users = [
         {
-            "username": row[0],
-            "email": row[1] or "-",
-            "created_at": row[2],
-            "job_count": int(row[3] or 0),
-            "running_job_count": int(row[4] or 0),
+            "user_id": row[0],
+            "username": row[1],
+            "email": row[2] or "-",
+            "created_at": row[3],
+            "suspended_until": row[4],
+            "job_count": int(row[5] or 0),
+            "running_job_count": int(row[6] or 0),
         }
         for row in user_rows
     ]
@@ -1423,6 +1483,7 @@ def _collect_dashboard_data(selected_job_id: int | None = None) -> dict[str, Any
         "users": users,
         "recent_jobs": recent_jobs,
         "all_jobs": all_jobs,
+        "reports": list_reports_for_admin(),
         "selected_job": _collect_job_details(selected_job_id) if selected_job_id is not None else None,
     }
 
@@ -1448,8 +1509,12 @@ def _dashboard_page(
     *,
     error: bool = False,
     selected_job_id: int | None = None,
+    active_tab: str = "overview",
 ) -> HTMLResponse:
     data = _collect_dashboard_data(selected_job_id)
+    allowed_tabs = {"overview", "jobs", "users", "moderation", "system"}
+    if active_tab not in allowed_tabs:
+        active_tab = "overview"
     db_status = "healthy" if data["db_health"].get("healthy") else "degraded"
     running_rows = []
     for item in data["running_jobs"]:
@@ -1459,7 +1524,7 @@ def _dashboard_page(
             stage_label = f'{escape(str(current_stage.get("tool_name") or current_stage.get("tool_id") or "-"))} <span class="{_status_class(current_stage.get("status"))}">{escape(str(current_stage.get("status") or "-"))}</span>'
         running_rows.append(
             {
-                "job": f'{_job_link(item["job_id"])} <strong>{escape(item["job_name"])}</strong>',
+                "job": f'{_job_link(item["job_id"], tab="jobs")} <strong>{escape(item["job_name"])}</strong>',
                 "user": escape(item["username"]),
                 "workflow": escape(item["workflow_name"]),
                 "status": f'<span class="{_status_class(item["job_status"])}">{escape(str(item["job_status"]))}</span> / '
@@ -1480,6 +1545,7 @@ def _dashboard_page(
             "username": escape(user["username"]),
             "email": escape(user["email"]),
             "joined": escape(_format_datetime(user["created_at"])),
+            "suspension": escape(_format_datetime(user["suspended_until"])) if user.get("suspended_until") else "-",
             "jobs": str(user["job_count"]),
             "running": str(user["running_job_count"]),
         }
@@ -1488,7 +1554,7 @@ def _dashboard_page(
 
     recent_rows = [
         {
-            "job": f'{_job_link(job["job_id"])} <strong>{escape(job["job_name"])}</strong>',
+            "job": f'{_job_link(job["job_id"], tab="jobs")} <strong>{escape(job["job_name"])}</strong>',
             "user": escape(job["username"]),
             "status": f'<span class="{_status_class(job["job_status"])}">{escape(str(job["job_status"]))}</span> / '
                       f'<span class="{_status_class(job["execution_status"])}">{escape(str(job["execution_status"]))}</span>',
@@ -1500,7 +1566,7 @@ def _dashboard_page(
 
     all_job_rows = [
         {
-            "job": f'{_job_link(job["job_id"])} <strong>{escape(job["job_name"])}</strong>',
+            "job": f'{_job_link(job["job_id"], tab="jobs")} <strong>{escape(job["job_name"])}</strong>',
             "user": escape(job["username"]),
             "workflow": escape(str(job["workflow_name"] or "-")),
             "status": f'{_status_badge(job["job_status"])} / {_status_badge(job["execution_status"])}',
@@ -1509,45 +1575,68 @@ def _dashboard_page(
                 f'Started: {escape(_format_datetime(job["started_at"]))}'
             ),
             "ops": (
-                f'<a class="button-link secondary small-button" href="{escape(_admin_url(job_id=job["job_id"]))}">Inspect</a> '
+                f'<a class="button-link secondary small-button" href="{escape(_admin_url(job_id=job["job_id"], tab="jobs"))}">Inspect</a> '
                 + (_terminate_button(job["job_id"]) if str(job["job_status"]).lower() in {"running", "pending"} else "")
             ),
         }
         for job in data["all_jobs"]
     ]
 
-    selected_job_html = _render_job_detail(data["selected_job"]) if data.get("selected_job") else ""
-    page_script = _job_logs_live_script(selected_job_id) if data.get("selected_job") and selected_job_id is not None else ""
+    report_rows = [
+        {
+            "target": f'{escape(report["target_label"])} <span class="muted">#{report["target_id"]}</span>',
+            "owner": escape(report["target_owner_display_name"] or report["target_owner_username"] or "-"),
+            "reporter": escape(report["reporter_display_name"] or report["reporter_username"]),
+            "reason": escape(report["reason"]),
+            "details": escape(str(report["details"] or "-")),
+            "status": f'<span class="{_status_class(report["status"])}">{escape(report["status"])}</span>',
+            "created": escape(_format_datetime(report["created_at"])),
+            "preview": escape(str(report["preview"])[:180] + ("..." if len(str(report["preview"])) > 180 else "")),
+            "actions": (
+                '<div class="button-row">'
+                + _moderation_action_form("remove", "Remove", report["id"], css_class="danger")
+                + _moderation_action_form(
+                    "suspend",
+                    "Block User",
+                    report["id"],
+                    css_class="secondary",
+                    extra_fields=(
+                        '<input class="input-compact" type="number" name="duration_value" min="1" max="365" value="7" required>'
+                        '<select class="input-compact" name="duration_unit" required>'
+                        '<option value="days">days</option>'
+                        '<option value="hours">hours</option>'
+                        '<option value="weeks">weeks</option>'
+                        '</select>'
+                    ),
+                )
+                + _moderation_action_form("dismiss", "Dismiss", report["id"], css_class="secondary")
+                + "</div>"
+            ),
+        }
+        for report in data["reports"]
+    ]
 
-    body = f"""
-      <div class="row" style="justify-content: space-between; align-items: flex-start;">
-        <div>
-          <h1>CASSIE Admin Console</h1>
-          <p>
-            Secret route:
-            <a class="secret-link" href="{escape(config.admin_panel.path)}"><code>{escape(config.admin_panel.path)}</code></a>
-          </p>
-        </div>
-        <form method="post" action="{escape(config.admin_panel.path)}/logout">
-          <button type="submit" class="secondary">Log Out</button>
-        </form>
-      </div>
-      {_notice(message, error=error)}
-      <div class="meta">
-        <div><strong>Admin Username</strong> <code>{escape(config.admin_panel.username)}</code></div>
-        <div><strong>Cookie Scope</strong> <code>{escape(config.admin_panel.path)}</code></div>
-        <div><strong>Database Status</strong> <span class="{_status_class(db_status)}">{escape(db_status)}</span></div>
-      </div>
+    report_total = len(data["reports"])
+    open_reports = sum(1 for report in data["reports"] if str(report["status"]).lower() == "open")
+    pipeline_reports = sum(1 for report in data["reports"] if report["target_type"] == "pipeline")
+    forum_reports = sum(1 for report in data["reports"] if report["target_type"] in {"forum_thread", "forum_comment"})
 
-      <div class="cards">
-        <div class="card"><strong>{data["totals"]["running_jobs"]}</strong><span>Running Jobs</span></div>
-        <div class="card"><strong>{data["totals"]["jobs"]}</strong><span>Total Jobs</span></div>
-        <div class="card"><strong>{data["totals"]["users"]}</strong><span>Total Users</span></div>
-        <div class="card"><strong>{data["totals"]["workflows"]}</strong><span>Workflows</span></div>
-        <div class="card"><strong>{data["totals"]["files"]}</strong><span>Tracked Files</span></div>
-        <div class="card"><strong>{data["tool_registry_count"]}</strong><span>Registered Tools</span></div>
-      </div>
+    selected_job_html = _render_job_detail(data["selected_job"]) if data.get("selected_job") and active_tab == "jobs" else ""
+    page_script = _job_logs_live_script(selected_job_id) if data.get("selected_job") and selected_job_id is not None and active_tab == "jobs" else ""
 
+    tabs = [
+        ("overview", "Overview"),
+        ("jobs", "Jobs"),
+        ("users", "Users"),
+        ("moderation", "Moderation"),
+        ("system", "System"),
+    ]
+    tab_nav = "".join(
+        f'<a class="tab-link{" active" if active_tab == tab_key else ""}" href="{escape(_admin_url(tab=tab_key, job_id=selected_job_id if tab_key == "jobs" else None))}">{escape(tab_label)}</a>'
+        for tab_key, tab_label in tabs
+    )
+
+    overview_section = f"""
       <div class="section">
         <h2>Running Jobs</h2>
         <p>Active jobs with user, workflow, execution timing, stage information, and direct kill controls.</p>
@@ -1565,6 +1654,40 @@ def _dashboard_page(
         )}
       </div>
 
+      <div class="section grid cols-2">
+        <div>
+          <h2>Recent Jobs</h2>
+          <p>Latest job and execution summaries across the system.</p>
+          {_html_table(
+            [
+              ("job", "Job"),
+              ("user", "User"),
+              ("status", "Status"),
+              ("timing", "Timing"),
+              ("error", "Last Error"),
+            ],
+            recent_rows,
+          )}
+        </div>
+        <div>
+          <h2>Users Snapshot</h2>
+          <p>Recent account activity and running job counts.</p>
+          {_html_table(
+            [
+              ("username", "Username"),
+              ("email", "Email"),
+              ("joined", "Joined"),
+              ("suspension", "Blocked Until"),
+              ("jobs", "Jobs"),
+              ("running", "Running"),
+            ],
+            user_rows[:12],
+          )}
+        </div>
+      </div>
+    """
+
+    jobs_section = f"""
       <div class="section">
         <h2>Jobs</h2>
         <p>System-wide job index. Use Inspect for a full execution and Kubernetes drill-down.</p>
@@ -1580,40 +1703,55 @@ def _dashboard_page(
           all_job_rows,
         )}
       </div>
-
       {selected_job_html}
+    """
 
-      <div class="section grid cols-2">
-        <div>
-          <h2>Recent Jobs</h2>
-          <p>Latest job/execution summaries across the system.</p>
-          {_html_table(
-            [
-              ("job", "Job"),
-              ("user", "User"),
-              ("status", "Status"),
-              ("timing", "Timing"),
-              ("error", "Last Error"),
-            ],
-            recent_rows,
-          )}
-        </div>
-        <div>
-          <h2>Users</h2>
-          <p>Current user accounts and their job counts.</p>
-          {_html_table(
-            [
-              ("username", "Username"),
-              ("email", "Email"),
-              ("joined", "Joined"),
-              ("jobs", "Jobs"),
-              ("running", "Running"),
-            ],
-            user_rows,
-          )}
-        </div>
+    users_section = f"""
+      <div class="section">
+        <h2>Users</h2>
+        <p>Current user accounts and their job counts.</p>
+        {_html_table(
+          [
+            ("username", "Username"),
+            ("email", "Email"),
+            ("joined", "Joined"),
+            ("suspension", "Blocked Until"),
+            ("jobs", "Jobs"),
+            ("running", "Running"),
+          ],
+          user_rows,
+        )}
       </div>
+    """
 
+    moderation_section = f"""
+      <div class="section">
+        <h2>Moderation</h2>
+        <p>All reported pipelines, forum posts, and forum comments appear here for admin review.</p>
+        <div class="cards">
+          <div class="card"><strong>{open_reports}</strong><span>Open Reports</span></div>
+          <div class="card"><strong>{report_total}</strong><span>Total Reports</span></div>
+          <div class="card"><strong>{pipeline_reports}</strong><span>Pipeline Reports</span></div>
+          <div class="card"><strong>{forum_reports}</strong><span>Forum Reports</span></div>
+        </div>
+        {_html_table(
+          [
+            ("target", "Target"),
+            ("owner", "Owner"),
+            ("reporter", "Reporter"),
+            ("reason", "Reason"),
+            ("details", "Details"),
+            ("status", "Status"),
+            ("created", "Created"),
+            ("preview", "Preview"),
+            ("actions", "Actions"),
+          ],
+          report_rows,
+        )}
+      </div>
+    """
+
+    system_section = f"""
       <div class="section grid cols-2">
         <div>
           <h2>App Config</h2>
@@ -1649,6 +1787,46 @@ def _dashboard_page(
         </form>
       </div>
     """
+
+    tab_sections = {
+        "overview": overview_section,
+        "jobs": jobs_section,
+        "users": users_section,
+        "moderation": moderation_section,
+        "system": system_section,
+    }
+
+    body = f"""
+      <div class="row" style="justify-content: space-between; align-items: flex-start;">
+        <div>
+          <h1>CASSIE Admin Console</h1>
+          <p>
+            Secret route:
+            <a class="secret-link" href="{escape(config.admin_panel.path)}"><code>{escape(config.admin_panel.path)}</code></a>
+          </p>
+        </div>
+        <form method="post" action="{escape(config.admin_panel.path)}/logout">
+          <button type="submit" class="secondary">Log Out</button>
+        </form>
+      </div>
+      {_notice(message, error=error)}
+      <div class="meta">
+        <div><strong>Admin Username</strong> <code>{escape(config.admin_panel.username)}</code></div>
+        <div><strong>Cookie Scope</strong> <code>{escape(config.admin_panel.path)}</code></div>
+        <div><strong>Database Status</strong> <span class="{_status_class(db_status)}">{escape(db_status)}</span></div>
+      </div>
+
+      <div class="cards">
+        <div class="card"><strong>{data["totals"]["running_jobs"]}</strong><span>Running Jobs</span></div>
+        <div class="card"><strong>{data["totals"]["jobs"]}</strong><span>Total Jobs</span></div>
+        <div class="card"><strong>{data["totals"]["users"]}</strong><span>Total Users</span></div>
+        <div class="card"><strong>{data["totals"]["workflows"]}</strong><span>Workflows</span></div>
+        <div class="card"><strong>{data["totals"]["files"]}</strong><span>Tracked Files</span></div>
+        <div class="card"><strong>{data["tool_registry_count"]}</strong><span>Registered Tools</span></div>
+      </div>
+      <div class="tab-nav">{tab_nav}</div>
+      {tab_sections[active_tab]}
+    """
     return _render_page(title="CASSIE Admin Panel", body=body, script=page_script)
 
 
@@ -1663,6 +1841,7 @@ async def admin_panel_home(request: Request):
 
     message = request.query_params.get("message")
     error = request.query_params.get("error") == "1"
+    active_tab = request.query_params.get("tab") or "overview"
     selected_job_id = None
     raw_job_id = request.query_params.get("job_id")
     if raw_job_id:
@@ -1670,7 +1849,7 @@ async def admin_panel_home(request: Request):
             selected_job_id = int(raw_job_id)
         except ValueError:
             selected_job_id = None
-    return _dashboard_page(message=message, error=error, selected_job_id=selected_job_id)
+    return _dashboard_page(message=message, error=error, selected_job_id=selected_job_id, active_tab=active_tab)
 
 
 @router.get(f"{config.admin_panel.path}/job-logs-fragment")
@@ -1826,6 +2005,44 @@ async def admin_panel_terminate_job(
     if error_count:
         message += f" {error_count} cleanup errors were recorded."
     return _admin_redirect(message=message, error=bool(error_count), job_id=job_id)
+
+
+@router.post(f"{config.admin_panel.path}/moderation-action")
+async def admin_panel_moderation_action(
+    request: Request,
+    report_id: int = Form(...),
+    action: str = Form(...),
+    duration_value: int | None = Form(None),
+    duration_unit: str | None = Form(None),
+):
+    ensure_admin_user()
+    admin_user = _get_authenticated_admin(request)
+    if not admin_user:
+        return _admin_redirect(message="Please sign in again", error=True, tab="moderation")
+
+    try:
+        if action == "remove":
+            result = moderate_report_target(report_id)
+            return _admin_redirect(message=result["message"], tab="moderation")
+        if action == "dismiss":
+            if not update_report_status(report_id, "dismissed"):
+                return _admin_redirect(message=f"Report {report_id} was not found", error=True, tab="moderation")
+            return _admin_redirect(message=f"Report {report_id} dismissed", tab="moderation")
+        if action == "suspend":
+            if duration_value is None or duration_unit is None:
+                return _admin_redirect(message="Suspension duration is required", error=True, tab="moderation")
+            result = suspend_report_target_owner(
+                report_id,
+                duration_value=duration_value,
+                duration_unit=duration_unit,
+            )
+            return _admin_redirect(
+                message=f'User {result["username"]} blocked until {_format_datetime(result["suspended_until"])}',
+                tab="moderation",
+            )
+        return _admin_redirect(message=f"Unknown moderation action: {action}", error=True, tab="moderation")
+    except Exception as exc:
+        return _admin_redirect(message=str(exc), error=True, tab="moderation")
 
 
 @router.post(f"{config.admin_panel.path}/logout")

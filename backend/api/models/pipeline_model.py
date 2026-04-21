@@ -10,6 +10,8 @@ from typing import Optional, List, Dict, Any
 from datetime import datetime
 from enum import Enum
 
+from backend.api.models.engagement_model import VoteType
+
 
 class WorkflowType(str, Enum):
     """Workflow type enumeration."""
@@ -32,12 +34,6 @@ class FileType(str, Enum):
     OUTPUT = "output"
     INTERMEDIATE = "intermediate"
     LOG = "log"
-
-
-class VoteType(str, Enum):
-    """Vote type enumeration."""
-    UPVOTE = "upvote"
-    DOWNVOTE = "downvote"
 
 
 # ============================================================================
@@ -188,6 +184,10 @@ class PipelineResponse(PipelineInDB):
     """Pipeline model for API responses."""
     publisher: Optional[PipelinePublisherResponse] = None
     tool_labels: List[str] = Field(default_factory=list)
+    upvote_count: int = 0
+    downvote_count: int = 0
+    score: int = 0
+    user_vote: Optional[VoteType] = None
 
 
 # ============================================================================

@@ -207,7 +207,6 @@ marimo/_lsp/
 __marimo__/
 
 # Additional
-data/*
 
 *.fastq
 *.fasta
@@ -215,3 +214,5 @@ data/*
 emulation/emulation_run/*
 /frontend/node_modules/*
 .cassie/kube/config
+eges_specs.txt
+

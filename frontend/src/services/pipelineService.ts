@@ -11,6 +11,10 @@ export interface Pipeline {
   saved_at: string
   is_shared?: boolean
   tool_labels?: string[]
+  upvote_count?: number
+  downvote_count?: number
+  score?: number
+  user_vote?: 'upvote' | 'downvote' | null
   publisher?: {
     id: number
     username: string
@@ -19,6 +23,13 @@ export interface Pipeline {
     job_title?: string | null
     avatar_url?: string | null
   } | null
+}
+
+export interface EngagementSummary {
+  upvote_count: number
+  downvote_count: number
+  score: number
+  user_vote?: 'upvote' | 'downvote' | null
 }
 
 export interface PipelineCreate {
@@ -116,9 +127,12 @@ export const getPipelineRequirements = async (id: number): Promise<PipelineRequi
   throw new Error(response.data.message || 'Failed to fetch pipeline requirements')
 }
 
-export const getSharedPipelines = async (query?: string): Promise<Pipeline[]> => {
+export const getSharedPipelines = async (query?: string, sort: 'recent' | 'popular' = 'recent'): Promise<Pipeline[]> => {
   const response = await apiClient.get<PipelineListResponse>('/api/pipelines/shared', {
-    params: query && query.trim() ? { q: query.trim() } : undefined,
+    params: {
+      sort,
+      ...(query && query.trim() ? { q: query.trim() } : {}),
+    },
   })
   if (response.data.success) {
     return response.data.data
@@ -140,4 +154,21 @@ export const unsharePipeline = async (id: number): Promise<Pipeline> => {
     return response.data.data
   }
   throw new Error(response.data.message || 'Failed to unshare pipeline')
+}
+
+export const votePipeline = async (id: number, voteType: 'upvote' | 'downvote'): Promise<EngagementSummary> => {
+  const response = await apiClient.post<{ success: boolean; data: EngagementSummary; message?: string }>(`/api/pipelines/${id}/vote`, {
+    vote_type: voteType,
+  })
+  if (response.data.success) {
+    return response.data.data
+  }
+  throw new Error(response.data.message || 'Failed to vote on pipeline')
+}
+
+export const reportPipeline = async (id: number, payload: { reason: string; details?: string }): Promise<void> => {
+  const response = await apiClient.post<{ success: boolean; data: unknown; message?: string }>(`/api/pipelines/${id}/report`, payload)
+  if (!response.data.success) {
+    throw new Error(response.data.message || 'Failed to report pipeline')
+  }
 }

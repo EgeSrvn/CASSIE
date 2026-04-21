@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
+from backend.api.services.machine_specs_service import get_machine_specs
 from backend.api.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -72,14 +73,32 @@ def _training_csv_path() -> Path:
     return Path(os.getenv("CASSIE_RUNTIME_TRAINING_CSV", str(DEFAULT_TRAINING_CSV_PATH)))
 
 
-def _estimated_flops_per_core_second() -> float:
-    raw_value = os.getenv("CASSIE_ESTIMATED_FLOPS_PER_CORE_SECOND")
-    if raw_value:
-        try:
-            return max(0.0, float(raw_value))
-        except ValueError:
-            logger.warning("Invalid CASSIE_ESTIMATED_FLOPS_PER_CORE_SECOND=%s", raw_value)
-    return DEFAULT_ESTIMATED_FLOPS_PER_CORE_SECOND
+def _machine_flops_profile() -> tuple[float, str, str]:
+    try:
+        machine_specs = get_machine_specs()
+        flops_per_core_second = machine_specs.fp64_flops_per_core_second
+        if flops_per_core_second > 0:
+            details = [
+                machine_specs.cpu or "unknown CPU",
+                f"{machine_specs.base_clock_ghz:.2f} GHz base" if machine_specs.base_clock_ghz > 0 else "",
+                machine_specs.simd_summary,
+            ]
+            details_text = ", ".join(item for item in details if item)
+            return (
+                flops_per_core_second,
+                f"machine_specs_{machine_specs.source}",
+                "Estimated from measured container CPU seconds and machine-derived FP64 peak per-core throughput "
+                f"({details_text}). It is not hardware-counter-measured FLOPs.",
+            )
+    except Exception as exc:
+        logger.warning("Failed to derive FLOPS from machine specs: %s", exc)
+
+    return (
+        DEFAULT_ESTIMATED_FLOPS_PER_CORE_SECOND,
+        "fallback_fixed_coefficient",
+        "Estimated from measured container CPU seconds and a conservative fallback FLOPS-per-core coefficient. "
+        "It is not hardware-counter-measured FLOPs.",
+    )
 
 
 def _parse_timestamp(value: Any) -> Optional[datetime]:
@@ -189,6 +208,8 @@ def _build_stage_row(
     stage_spec: Dict[str, Any],
     stage_outputs: List[Dict[str, Any]],
     flops_per_core_second: float,
+    flops_profile_source: str,
+    flops_accuracy_note: str,
 ) -> Optional[Dict[str, Any]]:
     stage_info = stage_spec.get("stage_info") or {}
     if str(stage_spec.get("stage_kind") or "tool") != "tool":
@@ -253,16 +274,14 @@ def _build_stage_row(
         "flops_is_estimated": "true",
         "flops_per_core_second": flops_per_core_second,
         "flops_source": (
-            "estimated_from_measured_cgroup_cpu_seconds"
+            f"{flops_profile_source}_and_measured_cgroup_cpu_seconds"
             if has_measured_cpu
-            else "estimated_from_cpu_limit_and_wall_time"
+            else f"{flops_profile_source}_and_cpu_limit_wall_time"
         ),
         "flops_accuracy_note": (
-            "Estimated from measured container CPU seconds and a configurable FLOPS-per-core-second coefficient. "
-            "It is not hardware-counter-measured FLOPs."
+            flops_accuracy_note
             if has_measured_cpu
-            else "Estimated from allocated CPU limit and wall time because measured container CPU seconds were unavailable. "
-                 "It is not hardware-counter-measured FLOPs."
+            else f"{flops_accuracy_note} Allocated CPU limit and wall time were used because measured container CPU seconds were unavailable."
         ),
         "data_size_gb": round(input_size_bytes / (1024 * 1024 * 1024), 9),
         "read_count_millions": "",
@@ -290,7 +309,7 @@ def append_successful_tool_training_rows(
     outputs_by_stage: Dict[str, List[Dict[str, Any]]],
 ) -> int:
     """Append one CSV row per completed tool stage."""
-    flops_per_core_second = _estimated_flops_per_core_second()
+    flops_per_core_second, flops_profile_source, flops_accuracy_note = _machine_flops_profile()
     rows = []
     for stage_spec in stage_specs:
         stage_id = str(stage_spec.get("stage_id") or "").strip()
@@ -304,6 +323,8 @@ def append_successful_tool_training_rows(
             stage_spec=stage_spec,
             stage_outputs=outputs_by_stage.get(stage_id) or [],
             flops_per_core_second=flops_per_core_second,
+            flops_profile_source=flops_profile_source,
+            flops_accuracy_note=flops_accuracy_note,
         )
         if row:
             rows.append(row)

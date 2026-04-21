@@ -1,9 +1,18 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { createPipeline, getPipeline, getSharedPipelines, Pipeline, PipelineCreate } from '../services/pipelineService'
+import {
+  createPipeline,
+  getPipeline,
+  getSharedPipelines,
+  Pipeline,
+  PipelineCreate,
+  reportPipeline,
+  votePipeline,
+} from '../services/pipelineService'
 import { getToken } from '../services/authService'
 import { getAvailableTools } from '../services/toolService'
 import Navigation from '../components/Navigation'
+import ReportDialog from '../components/ReportDialog'
 import '../styles/globals.css'
 
 export default function Community() {
@@ -11,6 +20,7 @@ export default function Community() {
   const navigate = useNavigate()
   const [allPipelines, setAllPipelines] = useState<Pipeline[]>([])
   const [loading, setLoading] = useState(true)
+  const [sortBy, setSortBy] = useState<'recent' | 'popular'>('recent')
   const [error, setError] = useState<string>('')
   const [savingPipelineId, setSavingPipelineId] = useState<number | null>(null)
   const [search, setSearch] = useState('')
@@ -18,10 +28,15 @@ export default function Community() {
   const [toolFilterOpen, setToolFilterOpen] = useState(false)
   const [toolCatalog, setToolCatalog] = useState<string[]>([])
   const [currentPage, setCurrentPage] = useState(1)
+  const [reportingPipeline, setReportingPipeline] = useState<Pipeline | null>(null)
+  const [submittingReport, setSubmittingReport] = useState(false)
   const isAuthenticated = !!getToken()
 
   useEffect(() => {
     void loadPipelines()
+  }, [sortBy])
+
+  useEffect(() => {
     void loadToolCatalog()
   }, [])
 
@@ -29,7 +44,7 @@ export default function Community() {
     try {
       setLoading(true)
       setError('')
-      const data = await getSharedPipelines()
+      const data = await getSharedPipelines(undefined, sortBy)
       setAllPipelines(data)
     } catch (err: any) {
       console.error('Failed to load shared pipelines:', err)
@@ -68,7 +83,7 @@ export default function Community() {
   const pipelines = useMemo(() => {
     const normalizedSearch = search.trim().toLowerCase()
 
-    return allPipelines.filter((pipeline) => {
+    const filtered = allPipelines.filter((pipeline) => {
       const matchesSearch =
         !normalizedSearch ||
         pipeline.name.toLowerCase().includes(normalizedSearch) ||
@@ -81,11 +96,13 @@ export default function Community() {
 
       return matchesSearch && matchesTool
     })
-  }, [allPipelines, search, selectedTools])
+
+    return filtered
+  }, [allPipelines, search, selectedTools, sortBy])
 
   useEffect(() => {
     setCurrentPage(1)
-  }, [search, selectedTools])
+  }, [search, selectedTools, sortBy])
 
   const totalPages = Math.max(1, Math.ceil(pipelines.length / ITEMS_PER_PAGE))
   const currentPageSafe = Math.min(currentPage, totalPages)
@@ -116,6 +133,19 @@ export default function Community() {
 
   const handleViewPipeline = (pipelineId: number) => {
     navigate(`/pipelines/builder/${pipelineId}`)
+  }
+
+  const applyPipelineEngagement = (pipelineId: number, summary: { upvote_count: number; downvote_count: number; score: number; user_vote?: 'upvote' | 'downvote' | null }) => {
+    setAllPipelines((current) =>
+      current.map((pipeline) =>
+        pipeline.id === pipelineId
+          ? {
+              ...pipeline,
+              ...summary,
+            }
+          : pipeline
+      )
+    )
   }
 
   const handleSavePipeline = async (pipelineId: number, e: React.MouseEvent) => {
@@ -151,6 +181,70 @@ export default function Community() {
     }
   }
 
+  const handleVotePipeline = async (pipelineId: number, voteType: 'upvote' | 'downvote', e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (!isAuthenticated) {
+      navigate('/login')
+      return
+    }
+
+    try {
+      const summary = await votePipeline(pipelineId, voteType)
+      applyPipelineEngagement(pipelineId, summary)
+    } catch (err: any) {
+      alert(err.message || 'Failed to vote on pipeline')
+    }
+  }
+
+  const openReportPipeline = (pipeline: Pipeline, e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (!isAuthenticated) {
+      navigate('/login')
+      return
+    }
+    setReportingPipeline(pipeline)
+  }
+
+  const handleReportPipeline = async (payload: { reason: string; details?: string }) => {
+    if (!reportingPipeline) {
+      return
+    }
+    try {
+      setSubmittingReport(true)
+      await reportPipeline(reportingPipeline.id, payload)
+      setReportingPipeline(null)
+      alert('Pipeline reported to the admin team.')
+    } catch (err: any) {
+      alert(err.message || 'Failed to report pipeline')
+    } finally {
+      setSubmittingReport(false)
+    }
+  }
+
+  const renderVoteButton = (
+    pipeline: Pipeline,
+    voteType: 'upvote' | 'downvote',
+    count: number
+  ) => {
+    const isActive = pipeline.user_vote === voteType
+    const label = voteType === 'upvote' ? 'Upvote' : 'Downvote'
+    const icon = voteType === 'upvote' ? '▲' : '▼'
+
+    return (
+      <button
+        type="button"
+        onClick={(e) => handleVotePipeline(pipeline.id, voteType, e)}
+        className={`engagement-symbol-button engagement-vote-button engagement-symbol-${voteType} ${isActive ? 'active' : ''}`}
+        aria-label={`${label} pipeline ${pipeline.name}`}
+        title={isActive ? `Take back ${label.toLowerCase()}` : label}
+      >
+        <span className="engagement-vote-icon" aria-hidden="true">{icon}</span>
+        <span className="engagement-vote-label">{label}</span>
+        <span className="engagement-vote-count">{count}</span>
+      </button>
+    )
+  }
+
   return (
     <div className="page-container">
       <Navigation />
@@ -168,6 +262,17 @@ export default function Community() {
               className="community-search-input"
               placeholder="Search pipeline name or tool, for example: spades, quast, fastqc"
             />
+            <div className="community-sort-controls">
+              <label htmlFor="community-sort">Sort by</label>
+              <select
+                id="community-sort"
+                className="community-sort-select"
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value as 'recent' | 'popular')}>
+                <option value="recent">Most Recent</option>
+                <option value="popular">Most Popular</option>
+              </select>
+            </div>
             <div className="community-tool-dropdown">
               <button
                 type="button"
@@ -232,7 +337,15 @@ export default function Community() {
                     className="card pipeline-card pipeline-card-immersive"
                     onClick={() => handleViewPipeline(pipeline.id)}
                   >
-                    <span className="dashboard-card-eyebrow">Community Share</span>
+                    <button
+                      type="button"
+                      className="engagement-symbol-button engagement-symbol-report pipeline-report-button"
+                      onClick={(e) => openReportPipeline(pipeline, e)}
+                      aria-label={`Report pipeline ${pipeline.name}`}
+                      title="Report"
+                    >
+                      ⚑
+                    </button>
                     <h3 className="pipeline-card-title">{pipeline.name}</h3>
                     {pipeline.description && (
                       <p className="pipeline-card-description">
@@ -278,52 +391,61 @@ export default function Community() {
                       </button>
                     )}
 
-                    <div className="pipeline-card-meta">
-                      <span className="pipeline-card-date">
-                        {new Date(pipeline.saved_at).toLocaleDateString()}
-                      </span>
-                      <div className="button-row compact-actions">
-                        {isAuthenticated ? (
-                          <>
-                            <button
-                              onClick={(e) => handleSavePipeline(pipeline.id, e)}
-                              disabled={savingPipelineId === pipeline.id}
-                              className="btn-secondary"
-                            >
-                              {savingPipelineId === pipeline.id ? 'Saving...' : 'Save'}
-                            </button>
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                handleViewPipeline(pipeline.id)
-                              }}
-                              className="btn-primary"
-                            >
-                              View
-                            </button>
-                          </>
-                        ) : (
-                          <>
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                navigate('/login')
-                              }}
-                              className="btn-secondary"
-                            >
-                              Login to Save
-                            </button>
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                handleViewPipeline(pipeline.id)
-                              }}
-                              className="btn-primary"
-                            >
-                              View
-                            </button>
-                          </>
-                        )}
+                    <div className="pipeline-card-footer">
+                      <div className="community-engagement-bar">
+                        <div className="community-engagement-actions engagement-vote-cluster">
+                          {renderVoteButton(pipeline, 'upvote', pipeline.upvote_count || 0)}
+                          {renderVoteButton(pipeline, 'downvote', pipeline.downvote_count || 0)}
+                        </div>
+                      </div>
+
+                      <div className="pipeline-card-meta">
+                        <span className="pipeline-card-date">
+                          {new Date(pipeline.saved_at).toLocaleDateString()}
+                        </span>
+                        <div className="button-row compact-actions">
+                          {isAuthenticated ? (
+                            <>
+                              <button
+                                onClick={(e) => handleSavePipeline(pipeline.id, e)}
+                                disabled={savingPipelineId === pipeline.id}
+                                className="btn-secondary"
+                              >
+                                {savingPipelineId === pipeline.id ? 'Saving...' : 'Save'}
+                              </button>
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  handleViewPipeline(pipeline.id)
+                                }}
+                                className="btn-primary"
+                              >
+                                View
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  navigate('/login')
+                                }}
+                                className="btn-secondary"
+                              >
+                                Login to Save
+                              </button>
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  handleViewPipeline(pipeline.id)
+                                }}
+                                className="btn-primary"
+                              >
+                                View
+                              </button>
+                            </>
+                          )}
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -373,6 +495,18 @@ export default function Community() {
             )}
           </>
         )}
+        <ReportDialog
+          isOpen={Boolean(reportingPipeline)}
+          title="Report Pipeline"
+          targetLabel="pipeline"
+          submitting={submittingReport}
+          onClose={() => {
+            if (!submittingReport) {
+              setReportingPipeline(null)
+            }
+          }}
+          onSubmit={handleReportPipeline}
+        />
       </div>
     </div>
   )

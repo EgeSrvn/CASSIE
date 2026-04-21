@@ -22,6 +22,7 @@ from pydantic import BaseModel, EmailStr, Field
 from backend.api.models.user_model import UserCreate, UserProfileUpdate, UserResponse
 from backend.api.services.user_service import (
     clear_account_deletion_code,
+    clear_login_two_factor_code,
     clear_password_reset_code,
     create_user,
     delete_user_account,
@@ -30,8 +31,10 @@ from backend.api.services.user_service import (
     get_user_by_id,
     get_user_by_username,
     purge_expired_unverified_users,
+    reset_email_security_preferences,
     set_account_deletion_code,
     set_email_verification_code,
+    set_login_two_factor_code,
     set_password_reset_code,
     update_user_password,
     update_user_profile,
@@ -45,6 +48,7 @@ from backend.api.services.auth_service import (
     decode_access_token,
 )
 from backend.api.services.email_service import send_email
+from backend.api.services.user_notification_service import build_login_two_factor_email
 from backend.api.utils.response_builder import (
     success_response,
     error_response,
@@ -85,6 +89,14 @@ class LoginResponse(BaseModel):
     user: UserResponse
 
 
+class LoginTwoFactorChallengeResponse(BaseModel):
+    username: str
+    email: EmailStr
+    two_factor_required: bool = True
+    verification_preview_code: Optional[str] = None
+    expires_in_minutes: int
+
+
 class VerificationChallengeResponse(BaseModel):
     email: EmailStr
     verification_required: bool = True
@@ -111,6 +123,15 @@ class AccountDeletionCodeRequest(BaseModel):
     code: str = Field(..., min_length=4, max_length=12)
 
 
+class LoginTwoFactorConfirmRequest(BaseModel):
+    username: str = Field(..., min_length=1)
+    code: str = Field(..., min_length=4, max_length=12)
+
+
+class LoginTwoFactorResendRequest(BaseModel):
+    username: str = Field(..., min_length=1)
+
+
 class TokenData(BaseModel):
     """Token payload data."""
     user_id: int
@@ -123,6 +144,32 @@ class AuthContext(BaseModel):
     token_type: str = "access"
     job_id: Optional[int] = None
     expected_total_input_files: Optional[int] = None
+
+
+def _is_user_suspended(user) -> bool:
+    suspended_until = getattr(user, "suspended_until", None)
+    if suspended_until is None:
+        return False
+    if suspended_until.tzinfo is None:
+        suspended_until = suspended_until.replace(tzinfo=timezone.utc)
+    return suspended_until > datetime.now(timezone.utc)
+
+
+def _suspension_error_response(user):
+    suspended_until = getattr(user, "suspended_until", None)
+    if suspended_until is not None and suspended_until.tzinfo is None:
+        suspended_until = suspended_until.replace(tzinfo=timezone.utc)
+    formatted_until = suspended_until.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC") if suspended_until else "an unknown time"
+    reason = getattr(user, "suspension_reason", None)
+    details = {"suspended_until": formatted_until}
+    if reason:
+        details["reason"] = reason
+    return error_response(
+        error_code=ErrorCode.FORBIDDEN,
+        message=f"Your account is temporarily blocked until {formatted_until}",
+        details=details,
+        status_code=status.HTTP_403_FORBIDDEN,
+    )
 
 
 def _resolved_avatar_url(user) -> Optional[str]:
@@ -154,6 +201,8 @@ def _user_response_from_model(user) -> UserResponse:
         website_url=getattr(user, "website_url", None),
         avatar_url=_resolved_avatar_url(user),
         email_verified=getattr(user, "email_verified", False),
+        login_two_factor_enabled=getattr(user, "login_two_factor_enabled", False),
+        job_notifications_enabled=getattr(user, "job_notifications_enabled", False),
         created_at=user.created_at,
         updated_at=user.updated_at
     )
@@ -177,6 +226,14 @@ def _issue_password_reset(user_id: int) -> tuple[str, int]:
     expires_in_minutes = CODE_EXPIRY_MINUTES
     expires_at = datetime.now(timezone.utc) + timedelta(minutes=expires_in_minutes)
     set_password_reset_code(user_id, code, expires_at)
+    return code, expires_in_minutes
+
+
+def _issue_login_two_factor(user_id: int) -> tuple[str, int]:
+    code = _generate_one_time_code()
+    expires_in_minutes = CODE_EXPIRY_MINUTES
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=expires_in_minutes)
+    set_login_two_factor_code(user_id, code, expires_at)
     return code, expires_in_minutes
 
 
@@ -236,6 +293,21 @@ def _build_password_reset_email(username: str, code: str, expires_in_minutes: in
         "<p>If you did not request a reset, you can ignore this email.</p>"
     )
     return subject, text_body, html_body
+
+
+def _build_login_two_factor_challenge(user, *, code: str, expires_in_minutes: int) -> LoginTwoFactorChallengeResponse:
+    email_sent = False
+    if user.email:
+        subject, text_body, html_body = build_login_two_factor_email(user.username, code, expires_in_minutes)
+        email_sent = send_email(user.email, subject, text_body, html_body)
+
+    return LoginTwoFactorChallengeResponse(
+        username=user.username,
+        email=user.email,
+        two_factor_required=True,
+        verification_preview_code=None if email_sent else code,
+        expires_in_minutes=expires_in_minutes,
+    )
 
 
 def _build_account_deletion_email(username: str, code: str, expires_in_minutes: int) -> tuple[str, str, str]:
@@ -305,6 +377,11 @@ async def get_auth_context(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found",
             headers={"WWW-Authenticate": "Bearer"},
+        )
+    if _is_user_suspended(user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=_suspension_error_response(user)["message"],
         )
 
     context = AuthContext(
@@ -494,6 +571,10 @@ async def login(request: LoginRequest):
         error_data = unauthorized_response("Invalid username or password")
         return JSONResponse(content=error_data, status_code=status.HTTP_401_UNAUTHORIZED)
 
+    if _is_user_suspended(user):
+        error_data = _suspension_error_response(user)
+        return JSONResponse(content=error_data, status_code=status.HTTP_403_FORBIDDEN)
+
     if user.email and not getattr(user, "email_verified", False):
         error_data = error_response(
             error_code=ErrorCode.FORBIDDEN,
@@ -505,6 +586,22 @@ async def login(request: LoginRequest):
             status_code=status.HTTP_403_FORBIDDEN,
         )
         return JSONResponse(content=error_data, status_code=status.HTTP_403_FORBIDDEN)
+
+    if getattr(user, "login_two_factor_enabled", False):
+        if not user.email or not getattr(user, "email_verified", False):
+            error_data = error_response(
+                error_code=ErrorCode.FORBIDDEN,
+                message="Two-factor login requires a verified email address. Please verify your email before signing in.",
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
+            return JSONResponse(content=error_data, status_code=status.HTTP_403_FORBIDDEN)
+
+        login_code, expires_in_minutes = _issue_login_two_factor(user.id)
+        challenge = _build_login_two_factor_challenge(user, code=login_code, expires_in_minutes=expires_in_minutes)
+        return success_response(
+            data=challenge.model_dump(exclude_none=True),
+            message="Enter the login code sent to your email" if challenge.verification_preview_code is None else "Enter the login code shown below to finish signing in.",
+        )
     
     # Create access token
     token_data = {
@@ -522,6 +619,130 @@ async def login(request: LoginRequest):
             user=user_response
         ).model_dump(),
         message="Login successful"
+    )
+
+
+@router.post("/login/2fa/confirm")
+async def confirm_login_two_factor(request: LoginTwoFactorConfirmRequest):
+    purge_expired_unverified_users()
+
+    user = get_user_by_username(request.username)
+    if user is None:
+        error_data = unauthorized_response("Invalid login code")
+        return JSONResponse(content=error_data, status_code=status.HTTP_401_UNAUTHORIZED)
+
+    if _is_user_suspended(user):
+        error_data = _suspension_error_response(user)
+        return JSONResponse(content=error_data, status_code=status.HTTP_403_FORBIDDEN)
+
+    if not getattr(user, "login_two_factor_enabled", False):
+        error_data = error_response(
+            error_code=ErrorCode.VALIDATION_ERROR,
+            message="Two-factor login is not enabled for this account",
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+
+    if not user.email or not getattr(user, "email_verified", False):
+        error_data = error_response(
+            error_code=ErrorCode.FORBIDDEN,
+            message="Two-factor login requires a verified email address.",
+            status_code=status.HTTP_403_FORBIDDEN,
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_403_FORBIDDEN)
+
+    if not user.login_two_factor_code or not user.login_two_factor_expires_at:
+        error_data = error_response(
+            error_code=ErrorCode.VALIDATION_ERROR,
+            message="No login code is active. Start sign-in again to get a new code.",
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+
+    expires_at = user.login_two_factor_expires_at
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if expires_at < datetime.now(timezone.utc):
+        clear_login_two_factor_code(user.id)
+        error_data = error_response(
+            error_code=ErrorCode.VALIDATION_ERROR,
+            message="The login code has expired. Start sign-in again or request a new code.",
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+
+    if user.login_two_factor_code != request.code.strip():
+        error_data = error_response(
+            error_code=ErrorCode.VALIDATION_ERROR,
+            message="Incorrect login code",
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+
+    clear_login_two_factor_code(user.id)
+    access_token = create_access_token(data={"user_id": user.id, "username": user.username})
+    user_response = _user_response_from_model(get_user_by_id(user.id) or user)
+    return success_response(
+        data=LoginResponse(
+            access_token=access_token,
+            token_type="bearer",
+            user=user_response,
+        ).model_dump(),
+        message="Login successful",
+    )
+
+
+@router.post("/login/2fa/resend")
+async def resend_login_two_factor(request: LoginTwoFactorResendRequest):
+    purge_expired_unverified_users()
+
+    user = get_user_by_username(request.username)
+    if user is None:
+        error_data = error_response(
+            error_code=ErrorCode.NOT_FOUND,
+            message="Account not found",
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_404_NOT_FOUND)
+
+    if not getattr(user, "login_two_factor_enabled", False):
+        error_data = error_response(
+            error_code=ErrorCode.VALIDATION_ERROR,
+            message="Two-factor login is not enabled for this account",
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+
+    if not user.email or not getattr(user, "email_verified", False):
+        error_data = error_response(
+            error_code=ErrorCode.FORBIDDEN,
+            message="Two-factor login requires a verified email address.",
+            status_code=status.HTTP_403_FORBIDDEN,
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_403_FORBIDDEN)
+
+    if not user.login_two_factor_code or not user.login_two_factor_expires_at:
+        error_data = error_response(
+            error_code=ErrorCode.VALIDATION_ERROR,
+            message="Start sign-in again before requesting a new login code.",
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+
+    cooldown_remaining = _cooldown_remaining_seconds(user.login_two_factor_expires_at, CODE_EXPIRY_MINUTES)
+    if cooldown_remaining > 0:
+        error_data = error_response(
+            error_code=ErrorCode.VALIDATION_ERROR,
+            message=f"Please wait {cooldown_remaining} seconds before requesting another login code.",
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_429_TOO_MANY_REQUESTS)
+
+    login_code, expires_in_minutes = _issue_login_two_factor(user.id)
+    challenge = _build_login_two_factor_challenge(user, code=login_code, expires_in_minutes=expires_in_minutes)
+    return success_response(
+        data=challenge.model_dump(exclude_none=True),
+        message="A new login code has been sent" if challenge.verification_preview_code is None else "A new login code has been generated.",
     )
 
 
@@ -847,11 +1068,46 @@ async def update_profile(
                 error_code=ErrorCode.VALIDATION_ERROR,
                 message=error_msg,
                 status_code=status.HTTP_400_BAD_REQUEST,
-            )
+        )
             return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
         update_user_password(current_user.id, payload.new_password)
 
-    updated_user = update_user_profile(current_user.id, payload) or get_user_by_id(current_user.id)
+    email_changed = payload.email is not None and payload.email != existing_user.email
+    requested_two_factor = payload.login_two_factor_enabled
+    requested_job_notifications = payload.job_notifications_enabled
+
+    if email_changed and payload.email is not None:
+        other_user = get_user_by_email(payload.email)
+        if other_user is not None and other_user.id != current_user.id:
+            error_data = error_response(
+                error_code=ErrorCode.CONFLICT,
+                message="That email address is already in use.",
+                status_code=status.HTTP_409_CONFLICT,
+            )
+            return JSONResponse(content=error_data, status_code=status.HTTP_409_CONFLICT)
+
+    if (requested_two_factor or requested_job_notifications) and (
+        not existing_user.email or not getattr(existing_user, "email_verified", False)
+    ):
+        error_data = error_response(
+            error_code=ErrorCode.VALIDATION_ERROR,
+            message="A verified email address is required before enabling login 2FA or job notifications.",
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+
+    profile_payload = payload.model_copy(
+        update={
+            "email": None if email_changed else payload.email,
+            "login_two_factor_enabled": None if email_changed else requested_two_factor,
+            "job_notifications_enabled": None if email_changed else requested_job_notifications,
+        }
+    )
+
+    updated_user = update_user_profile(current_user.id, profile_payload) or get_user_by_id(current_user.id)
+    if email_changed and payload.email is not None:
+        updated_user = reset_email_security_preferences(current_user.id, payload.email) or updated_user
+
     if updated_user is None:
         error_data = error_response(
             error_code=ErrorCode.INTERNAL_ERROR,

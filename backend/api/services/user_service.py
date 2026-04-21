@@ -14,6 +14,16 @@ from backend.api.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+USER_SELECT_COLUMNS = """
+    id, username, email, password_hash, bucket_name, email_verified,
+    display_name, bio, affiliation, job_title, location, website_url, avatar_url, login_two_factor_enabled, job_notifications_enabled,
+    email_verification_code, email_verification_expires_at,
+    password_reset_code, password_reset_expires_at,
+    login_two_factor_code, login_two_factor_expires_at,
+    suspended_until, suspension_reason,
+    created_at, updated_at
+"""
+
 
 def purge_expired_unverified_users() -> int:
     """Delete accounts that were never verified before their verification window expired."""
@@ -54,12 +64,18 @@ def _row_to_user(row) -> UserInDB:
         location=row[10],
         website_url=row[11],
         avatar_url=row[12],
-        email_verification_code=row[13],
-        email_verification_expires_at=row[14],
-        password_reset_code=row[15],
-        password_reset_expires_at=row[16],
-        created_at=row[17],
-        updated_at=row[18]
+        login_two_factor_enabled=bool(row[13]),
+        job_notifications_enabled=bool(row[14]),
+        email_verification_code=row[15],
+        email_verification_expires_at=row[16],
+        password_reset_code=row[17],
+        password_reset_expires_at=row[18],
+        login_two_factor_code=row[19],
+        login_two_factor_expires_at=row[20],
+        suspended_until=row[21],
+        suspension_reason=row[22],
+        created_at=row[23],
+        updated_at=row[24]
     )
 
 
@@ -97,15 +113,10 @@ def create_user(user_data: UserCreate, email_verified: bool = False) -> UserInDB
             password_hash = hash_password(user_data.password)
             
             # Insert user
-            cur.execute("""
+            cur.execute(f"""
                 INSERT INTO users (username, email, password_hash, bucket_name, email_verified)
                 VALUES (%s, %s, %s, %s, %s)
-                RETURNING
-                    id, username, email, password_hash, bucket_name, email_verified,
-                    display_name, bio, affiliation, job_title, location, website_url, avatar_url,
-                    email_verification_code, email_verification_expires_at,
-                    password_reset_code, password_reset_expires_at,
-                    created_at, updated_at
+                RETURNING {USER_SELECT_COLUMNS}
             """, (
                 user_data.username,
                 user_data.email,
@@ -140,13 +151,9 @@ def get_user_by_username(username: str) -> Optional[UserInDB]:
         cur = conn.cursor()
         
         try:
-            cur.execute("""
+            cur.execute(f"""
                 SELECT
-                    id, username, email, password_hash, bucket_name, email_verified,
-                    display_name, bio, affiliation, job_title, location, website_url, avatar_url,
-                    email_verification_code, email_verification_expires_at,
-                    password_reset_code, password_reset_expires_at,
-                    created_at, updated_at
+                    {USER_SELECT_COLUMNS}
                 FROM users
                 WHERE username = %s
             """, (username,))
@@ -174,13 +181,9 @@ def get_user_by_id(user_id: int) -> Optional[UserInDB]:
         cur = conn.cursor()
         
         try:
-            cur.execute("""
+            cur.execute(f"""
                 SELECT
-                    id, username, email, password_hash, bucket_name, email_verified,
-                    display_name, bio, affiliation, job_title, location, website_url, avatar_url,
-                    email_verification_code, email_verification_expires_at,
-                    password_reset_code, password_reset_expires_at,
-                    created_at, updated_at
+                    {USER_SELECT_COLUMNS}
                 FROM users
                 WHERE id = %s
             """, (user_id,))
@@ -208,13 +211,9 @@ def get_user_by_email(email: str) -> Optional[UserInDB]:
         cur = conn.cursor()
         
         try:
-            cur.execute("""
+            cur.execute(f"""
                 SELECT
-                    id, username, email, password_hash, bucket_name, email_verified,
-                    display_name, bio, affiliation, job_title, location, website_url, avatar_url,
-                    email_verification_code, email_verification_expires_at,
-                    password_reset_code, password_reset_expires_at,
-                    created_at, updated_at
+                    {USER_SELECT_COLUMNS}
                 FROM users
                 WHERE email = %s
             """, (email,))
@@ -327,16 +326,11 @@ def update_user_password(user_id: int, new_password: str) -> Optional[UserInDB]:
         try:
             password_hash = hash_password(new_password)
             cur.execute(
-                """
+                f"""
                 UPDATE users
                 SET password_hash = %s, updated_at = NOW()
                 WHERE id = %s
-                RETURNING
-                    id, username, email, password_hash, bucket_name, email_verified,
-                    display_name, bio, affiliation, job_title, location, website_url, avatar_url,
-                    email_verification_code, email_verification_expires_at,
-                    password_reset_code, password_reset_expires_at,
-                    created_at, updated_at
+                RETURNING {USER_SELECT_COLUMNS}
                 """,
                 (password_hash, user_id),
             )
@@ -372,6 +366,8 @@ def update_user_profile(user_id: int, profile_update: UserProfileUpdate) -> Opti
                 "location": profile_update.location,
                 "website_url": profile_update.website_url,
                 "avatar_url": profile_update.avatar_url,
+                "login_two_factor_enabled": profile_update.login_two_factor_enabled,
+                "job_notifications_enabled": profile_update.job_notifications_enabled,
             }
             for column, value in field_map.items():
                 if value is not None:
@@ -389,12 +385,7 @@ def update_user_profile(user_id: int, profile_update: UserProfileUpdate) -> Opti
                 UPDATE users
                 SET {', '.join(updates)}
                 WHERE id = %s
-                RETURNING
-                    id, username, email, password_hash, bucket_name, email_verified,
-                    display_name, bio, affiliation, job_title, location, website_url, avatar_url,
-                    email_verification_code, email_verification_expires_at,
-                    password_reset_code, password_reset_expires_at,
-                    created_at, updated_at
+                RETURNING {USER_SELECT_COLUMNS}
                 """,
                 params,
             )
@@ -430,15 +421,10 @@ def ensure_admin_user() -> UserInDB:
             password_hash = hash_password(config.admin_panel.default_password)
             admin_email = f"{config.admin_panel.username}@local.admin"
             cur.execute(
-                """
+                f"""
                 INSERT INTO users (username, email, password_hash, bucket_name, email_verified)
                 VALUES (%s, %s, %s, %s, %s)
-                RETURNING
-                    id, username, email, password_hash, bucket_name, email_verified,
-                    display_name, bio, affiliation, job_title, location, website_url, avatar_url,
-                    email_verification_code, email_verification_expires_at,
-                    password_reset_code, password_reset_expires_at,
-                    created_at, updated_at
+                RETURNING {USER_SELECT_COLUMNS}
                 """,
                 (
                     config.admin_panel.username,
@@ -465,18 +451,13 @@ def set_email_verification_code(user_id: int, code: str, expires_at: datetime) -
         cur = conn.cursor()
         try:
             cur.execute(
-                """
+                f"""
                 UPDATE users
                 SET email_verification_code = %s,
                     email_verification_expires_at = %s,
                     updated_at = NOW()
                 WHERE id = %s
-                RETURNING
-                    id, username, email, password_hash, bucket_name, email_verified,
-                    display_name, bio, affiliation, job_title, location, website_url, avatar_url,
-                    email_verification_code, email_verification_expires_at,
-                    password_reset_code, password_reset_expires_at,
-                    created_at, updated_at
+                RETURNING {USER_SELECT_COLUMNS}
                 """,
                 (code, expires_at, user_id),
             )
@@ -496,19 +477,14 @@ def verify_user_email(user_id: int) -> Optional[UserInDB]:
         cur = conn.cursor()
         try:
             cur.execute(
-                """
+                f"""
                 UPDATE users
                 SET email_verified = TRUE,
                     email_verification_code = NULL,
                     email_verification_expires_at = NULL,
                     updated_at = NOW()
                 WHERE id = %s
-                RETURNING
-                    id, username, email, password_hash, bucket_name, email_verified,
-                    display_name, bio, affiliation, job_title, location, website_url, avatar_url,
-                    email_verification_code, email_verification_expires_at,
-                    password_reset_code, password_reset_expires_at,
-                    created_at, updated_at
+                RETURNING {USER_SELECT_COLUMNS}
                 """,
                 (user_id,),
             )
@@ -528,18 +504,13 @@ def set_password_reset_code(user_id: int, code: str, expires_at: datetime) -> Op
         cur = conn.cursor()
         try:
             cur.execute(
-                """
+                f"""
                 UPDATE users
                 SET password_reset_code = %s,
                     password_reset_expires_at = %s,
                     updated_at = NOW()
                 WHERE id = %s
-                RETURNING
-                    id, username, email, password_hash, bucket_name, email_verified,
-                    display_name, bio, affiliation, job_title, location, website_url, avatar_url,
-                    email_verification_code, email_verification_expires_at,
-                    password_reset_code, password_reset_expires_at,
-                    created_at, updated_at
+                RETURNING {USER_SELECT_COLUMNS}
                 """,
                 (code, expires_at, user_id),
             )
@@ -554,23 +525,102 @@ def set_password_reset_code(user_id: int, code: str, expires_at: datetime) -> Op
             cur.close()
 
 
+def set_login_two_factor_code(user_id: int, code: str, expires_at: datetime) -> Optional[UserInDB]:
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                f"""
+                UPDATE users
+                SET login_two_factor_code = %s,
+                    login_two_factor_expires_at = %s,
+                    updated_at = NOW()
+                WHERE id = %s
+                RETURNING {USER_SELECT_COLUMNS}
+                """,
+                (code, expires_at, user_id),
+            )
+            row = cur.fetchone()
+            conn.commit()
+            return _row_to_user(row) if row else None
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Error setting login two-factor code: {e}", exc_info=True)
+            raise
+        finally:
+            cur.close()
+
+
+def clear_login_two_factor_code(user_id: int) -> Optional[UserInDB]:
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                f"""
+                UPDATE users
+                SET login_two_factor_code = NULL,
+                    login_two_factor_expires_at = NULL,
+                    updated_at = NOW()
+                WHERE id = %s
+                RETURNING {USER_SELECT_COLUMNS}
+                """,
+                (user_id,),
+            )
+            row = cur.fetchone()
+            conn.commit()
+            return _row_to_user(row) if row else None
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Error clearing login two-factor code: {e}", exc_info=True)
+            raise
+        finally:
+            cur.close()
+
+
+def reset_email_security_preferences(user_id: int, new_email: str) -> Optional[UserInDB]:
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                f"""
+                UPDATE users
+                SET email = %s,
+                    email_verified = FALSE,
+                    email_verification_code = NULL,
+                    email_verification_expires_at = NULL,
+                    login_two_factor_enabled = FALSE,
+                    job_notifications_enabled = FALSE,
+                    login_two_factor_code = NULL,
+                    login_two_factor_expires_at = NULL,
+                    updated_at = NOW()
+                WHERE id = %s
+                RETURNING {USER_SELECT_COLUMNS}
+                """,
+                (new_email, user_id),
+            )
+            row = cur.fetchone()
+            conn.commit()
+            return _row_to_user(row) if row else None
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Error resetting email security preferences: {e}", exc_info=True)
+            raise
+        finally:
+            cur.close()
+
+
 def clear_password_reset_code(user_id: int) -> Optional[UserInDB]:
     with get_db_connection() as conn:
         cur = conn.cursor()
         try:
             cur.execute(
-                """
+                f"""
                 UPDATE users
                 SET password_reset_code = NULL,
                     password_reset_expires_at = NULL,
                     updated_at = NOW()
                 WHERE id = %s
-                RETURNING
-                    id, username, email, password_hash, bucket_name, email_verified,
-                    display_name, bio, affiliation, job_title, location, website_url, avatar_url,
-                    email_verification_code, email_verification_expires_at,
-                    password_reset_code, password_reset_expires_at,
-                    created_at, updated_at
+                RETURNING {USER_SELECT_COLUMNS}
                 """,
                 (user_id,),
             )
@@ -580,6 +630,32 @@ def clear_password_reset_code(user_id: int) -> Optional[UserInDB]:
         except Exception as e:
             conn.rollback()
             logger.error(f"Error clearing password reset code: {e}", exc_info=True)
+            raise
+        finally:
+            cur.close()
+
+
+def set_user_suspension(user_id: int, suspended_until: Optional[datetime], reason: Optional[str] = None) -> Optional[UserInDB]:
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                f"""
+                UPDATE users
+                SET suspended_until = %s,
+                    suspension_reason = %s,
+                    updated_at = NOW()
+                WHERE id = %s
+                RETURNING {USER_SELECT_COLUMNS}
+                """,
+                (suspended_until, reason, user_id),
+            )
+            row = cur.fetchone()
+            conn.commit()
+            return _row_to_user(row) if row else None
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Error updating user suspension: {e}", exc_info=True)
             raise
         finally:
             cur.close()

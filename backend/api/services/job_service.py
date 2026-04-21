@@ -42,8 +42,15 @@ def _build_pipeline_stage_snapshot(
     execution_preferences: Optional[Dict[str, Any]],
 ) -> Optional[List[Dict[str, Any]]]:
     from backend.api.services.pipeline_service import get_pipeline_by_id
-    from backend.api.services.pipeline_converter import extract_edges, extract_stage_nodes, sort_tool_nodes_by_priority
-    from tool_registry import get_tool_by_id, get_tool_id_from_label
+    from backend.api.services.pipeline_converter import (
+        build_stage_result_label_map,
+        extract_edges,
+        extract_stage_nodes,
+        resolve_node_label,
+        resolve_node_tool_id,
+        sort_tool_nodes_by_priority,
+    )
+    from tool_registry import get_tool_by_id
 
     pipeline = get_pipeline_by_id(pipeline_id, user_id)
     if not pipeline:
@@ -54,6 +61,7 @@ def _build_pipeline_stage_snapshot(
         return None
 
     edges = extract_edges(pipeline.edges)
+    result_labels_by_stage = build_stage_result_label_map(pipeline.nodes, pipeline.edges)
     dependency_map: Dict[str, List[str]] = {node_id: [] for node_id in stage_nodes}
     for edge in edges:
         source = str(edge.get("source") or "").strip()
@@ -87,15 +95,17 @@ def _build_pipeline_stage_snapshot(
                     "stage_kind": "checkpoint",
                     "tool_id": "CHECKPOINT",
                     "tool_name": str(node.get("label") or "Checkpoint"),
+                    "stage_label": resolve_node_label(node) or str(node.get("label") or "Checkpoint"),
                     "dependency_stage_ids": list(dependency_map.get(node_id, [])),
                     "input_requirements": [],
                     "produces": [],
+                    "result_labels": list(result_labels_by_stage.get(str(node_id), [])),
                 }
             )
             stage_number += 1
             continue
 
-        tool_id = get_tool_id_from_label(str(node.get("label") or ""))
+        tool_id = resolve_node_tool_id(node)
         tool = get_tool_by_id(tool_id) if tool_id else None
         if not tool:
             continue
@@ -107,9 +117,11 @@ def _build_pipeline_stage_snapshot(
                 "stage_kind": "tool",
                 "tool_id": str(tool.get("id") or ""),
                 "tool_name": str(tool.get("name") or tool.get("id") or ""),
+                "stage_label": resolve_node_label(node) or str(tool.get("name") or tool.get("id") or ""),
                 "dependency_stage_ids": list(dependency_map.get(node_id, [])),
                 "input_requirements": list(tool.get("input_requirements") or []),
                 "produces": list(tool.get("produces") or []),
+                "result_labels": list(result_labels_by_stage.get(str(node_id), [])),
             }
         )
         stage_number += 1
@@ -635,6 +647,9 @@ def update_job(job_id: int, user_id: int, job_update: JobUpdate) -> Optional[Job
         cur = conn.cursor()
         
         try:
+            existing_job = get_job_by_id(job_id, user_id)
+            previous_status = existing_job.status if existing_job else None
+
             # Build update query dynamically based on provided fields
             updates = []
             values = []
@@ -711,7 +726,7 @@ def update_job(job_id: int, user_id: int, job_update: JobUpdate) -> Optional[Job
                     logger.warning(f"Invalid cloud_provider value: {row[9]}")
                     cloud_provider_value = None
             
-            return JobInDB(
+            updated_job = JobInDB(
                 id=row[0],
                 user_id=row[1],
                 name=row[2],
@@ -727,6 +742,19 @@ def update_job(job_id: int, user_id: int, job_update: JobUpdate) -> Optional[Job
                 created_at=row[12],
                 updated_at=row[13]
             )
+
+            if (
+                previous_status != JobStatus.COMPLETED
+                and updated_job.status == JobStatus.COMPLETED
+            ):
+                try:
+                    from backend.api.services.user_notification_service import send_job_completed_notification
+
+                    send_job_completed_notification(user_id, job_id=updated_job.id, job_name=updated_job.name)
+                except Exception as notification_error:
+                    logger.warning(f"Failed to send job completion notification for job {updated_job.id}: {notification_error}", exc_info=True)
+
+            return updated_job
             
         except Exception as e:
             conn.rollback()

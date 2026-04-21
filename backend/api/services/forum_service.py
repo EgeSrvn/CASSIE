@@ -17,12 +17,18 @@ from backend.api.models.forum_model import (
     ForumThreadListResponse,
     ForumThreadSummaryResponse,
 )
+from backend.api.models.engagement_model import VoteType
+from backend.api.services.engagement_service import get_vote_summaries
 from backend.api.services.forum_moderation import validate_forum_text
 from backend.api.services.minio_client import MinIOClient
 from backend.api.services.user_service import get_user_by_id
 from backend.api.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+def _normalize_forum_sort(sort_by: Optional[str]) -> str:
+    return "popular" if str(sort_by or "").strip().lower() == "popular" else "recent"
 
 
 def _resolved_avatar_url(user) -> Optional[str]:
@@ -154,10 +160,72 @@ def _answer_row_to_response(row) -> ForumAnswerResponse:
     )
 
 
-def list_forum_threads(search_query: Optional[str] = None, page: int = 1, per_page: int = 20) -> ForumThreadListResponse:
+def _attach_thread_engagement(
+    threads: list[ForumThreadSummaryResponse],
+    *,
+    requester_user_id: Optional[int] = None,
+) -> list[ForumThreadSummaryResponse]:
+    if not threads:
+        return threads
+
+    vote_map = get_vote_summaries(
+        "forum_thread",
+        [thread.id for thread in threads],
+        user_id=requester_user_id,
+    )
+    for thread in threads:
+        summary = vote_map.get(thread.id, {})
+        thread.upvote_count = int(summary.get("upvote_count") or 0)
+        thread.downvote_count = int(summary.get("downvote_count") or 0)
+        thread.score = int(summary.get("score") or 0)
+        user_vote = summary.get("user_vote")
+        thread.user_vote = VoteType(user_vote) if user_vote else None
+    return threads
+
+
+def _attach_comment_engagement(
+    comments: list[ForumCommentResponse],
+    *,
+    requester_user_id: Optional[int] = None,
+) -> list[ForumCommentResponse]:
+    all_comments: list[ForumCommentResponse] = []
+
+    def walk(items: list[ForumCommentResponse]) -> None:
+        for item in items:
+            all_comments.append(item)
+            if item.replies:
+                walk(item.replies)
+
+    walk(comments)
+    if not all_comments:
+        return comments
+
+    vote_map = get_vote_summaries(
+        "forum_comment",
+        [comment.id for comment in all_comments],
+        user_id=requester_user_id,
+    )
+    for comment in all_comments:
+        summary = vote_map.get(comment.id, {})
+        comment.upvote_count = int(summary.get("upvote_count") or 0)
+        comment.downvote_count = int(summary.get("downvote_count") or 0)
+        comment.score = int(summary.get("score") or 0)
+        user_vote = summary.get("user_vote")
+        comment.user_vote = VoteType(user_vote) if user_vote else None
+    return comments
+
+
+def list_forum_threads(
+    search_query: Optional[str] = None,
+    page: int = 1,
+    per_page: int = 20,
+    requester_user_id: Optional[int] = None,
+    sort_by: Optional[str] = None,
+) -> ForumThreadListResponse:
     safe_page = max(page, 1)
     safe_per_page = min(max(per_page, 1), 50)
     offset = (safe_page - 1) * safe_per_page
+    normalized_sort = _normalize_forum_sort(sort_by)
 
     where_clause = ""
     params: list[object] = []
@@ -182,6 +250,11 @@ def list_forum_threads(search_query: Optional[str] = None, page: int = 1, per_pa
             total = int(cur.fetchone()[0])
 
             params.extend([safe_per_page, offset])
+            order_by_clause = (
+                "COALESCE(vote_stats.score, 0) DESC, COALESCE(vote_stats.upvote_count, 0) DESC, last_activity_at DESC, t.created_at DESC"
+                if normalized_sort == "popular"
+                else "last_activity_at DESC, t.created_at DESC"
+            )
             cur.execute(
                 f"""
                 SELECT
@@ -217,14 +290,23 @@ def list_forum_threads(search_query: Optional[str] = None, page: int = 1, per_pa
                     FROM forum_comments
                     GROUP BY thread_id
                 ) AS comment_stats ON comment_stats.thread_id = t.id
+                LEFT JOIN (
+                    SELECT
+                        thread_id,
+                        COUNT(*) FILTER (WHERE vote_type = 'upvote') AS upvote_count,
+                        COUNT(*) FILTER (WHERE vote_type = 'downvote') AS downvote_count,
+                        COUNT(*) FILTER (WHERE vote_type = 'upvote') - COUNT(*) FILTER (WHERE vote_type = 'downvote') AS score
+                    FROM forum_thread_votes
+                    GROUP BY thread_id
+                ) AS vote_stats ON vote_stats.thread_id = t.id
                 {where_clause}
-                ORDER BY last_activity_at DESC, t.created_at DESC
+                ORDER BY {order_by_clause}
                 LIMIT %s OFFSET %s
                 """,
                 params,
             )
 
-            items = [_thread_row_to_summary(row) for row in cur.fetchall()]
+            items = _attach_thread_engagement([_thread_row_to_summary(row) for row in cur.fetchall()], requester_user_id=requester_user_id)
             return ForumThreadListResponse(
                 items=items,
                 total=total,
@@ -271,7 +353,7 @@ def create_forum_thread(user_id: int, payload: ForumThreadCreate) -> ForumThread
             cur.close()
 
 
-def get_forum_thread(thread_id: int, increment_view_count: bool = True) -> Optional[ForumThreadDetailResponse]:
+def get_forum_thread(thread_id: int, increment_view_count: bool = True, requester_user_id: Optional[int] = None) -> Optional[ForumThreadDetailResponse]:
     with get_db_connection() as conn:
         cur = conn.cursor()
         try:
@@ -382,7 +464,8 @@ def get_forum_thread(thread_id: int, increment_view_count: bool = True) -> Optio
     for answer in answers:
         answer.comments = [attach_replies(comment) for comment in comments_by_answer.get(answer.id, [])]
 
-    summary = _thread_row_to_summary(thread_row)
+    summary = _attach_thread_engagement([_thread_row_to_summary(thread_row)], requester_user_id=requester_user_id)[0]
+    thread_comments = _attach_comment_engagement(thread_comments, requester_user_id=requester_user_id)
     return ForumThreadDetailResponse(
         **summary.model_dump(),
         thread_comments=thread_comments,
@@ -537,7 +620,7 @@ def get_forum_thread_summary(thread_id: int) -> Optional[ForumThreadSummaryRespo
                 (thread_id,),
             )
             row = cur.fetchone()
-            return _thread_row_to_summary(row) if row else None
+            return _attach_thread_engagement([_thread_row_to_summary(row)])[0] if row else None
         finally:
             cur.close()
 
@@ -606,7 +689,7 @@ def get_forum_comment(comment_id: int) -> Optional[ForumCommentResponse]:
                         "author_name": parent_author.display_name or parent_author.username,
                         "body": parent_row[2],
                     }
-            return comment
+            return _attach_comment_engagement([comment])[0]
         finally:
             cur.close()
 

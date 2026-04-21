@@ -1,0 +1,64 @@
+{
+  "metrics": [
+    {
+      "metric": "CPU",
+      "value": "Intel Core i7-10750H"
+    },
+    {
+      "metric": "Architecture",
+      "value": "Comet Lake (10th Gen)"
+    },
+    {
+      "metric": "Cores",
+      "value": 6
+    },
+    {
+      "metric": "Threads",
+      "value": 12
+    },
+    {
+      "metric": "Base Clock",
+      "value": "2.60 GHz"
+    },
+    {
+      "metric": "Max Turbo",
+      "value": "Up to 5.00 GHz"
+    },
+    {
+      "metric": "SIMD Support",
+      "value": "AVX2,FMA,SSE"
+    },
+    {
+      "metric": "FP64 Peak @ Base Clock",
+      "value": "~250 GFLOP/s"
+    },
+    {
+      "metric": "FP64 Peak @ Turbo (idealized)",
+      "value": "~480 GFLOP/s"
+    },
+    {
+      "metric": "FP32 Peak @ Base Clock",
+      "value": "~500 GFLOP/s"
+    },
+    {
+      "metric": "FP32 Peak @ Turbo (idealized)",
+      "value": "~960 GFLOP/s"
+    },
+    {
+      "metric": "Typical Real Scalar Code",
+      "value": "~5-50 GFLOP/s"
+    },
+    {
+      "metric": "Typical Optimized Multithreaded Code",
+      "value": "~50-150 GFLOP/s"
+    },
+    {
+      "metric": "Highly Optimized BLAS / GEMM",
+      "value": "~150-300+ GFLOP/s"
+    },
+    {
+      "metric": "Memory Installed",
+      "value": "4 GB"
+    }
+  ]
+}

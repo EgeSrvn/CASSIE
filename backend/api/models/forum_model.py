@@ -3,6 +3,8 @@ from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
+from backend.api.models.engagement_model import VoteType
+
 
 class ForumAuthorResponse(BaseModel):
     id: int
@@ -39,6 +41,10 @@ class ForumCommentResponse(BaseModel):
     author: ForumAuthorResponse
     parent_comment_preview: Optional[dict] = None
     replies: List["ForumCommentResponse"] = Field(default_factory=list)
+    upvote_count: int = 0
+    downvote_count: int = 0
+    score: int = 0
+    user_vote: Optional[VoteType] = None
 
 
 class ForumAnswerResponse(BaseModel):
@@ -65,6 +71,10 @@ class ForumThreadSummaryResponse(BaseModel):
     updated_at: datetime
     last_activity_at: datetime
     author: ForumAuthorResponse
+    upvote_count: int = 0
+    downvote_count: int = 0
+    score: int = 0
+    user_vote: Optional[VoteType] = None
 
 
 class ForumThreadDetailResponse(ForumThreadSummaryResponse):

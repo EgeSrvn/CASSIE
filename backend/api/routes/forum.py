@@ -8,8 +8,10 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, 
 from fastapi.responses import JSONResponse, RedirectResponse
 
 from backend.api.models.forum_model import ForumCommentCreate, ForumThreadCreate
+from backend.api.models.engagement_model import ReportCreate, VoteRequest
 from backend.api.models.user_model import UserResponse
-from backend.api.routes.auth import get_current_user
+from backend.api.routes.auth import get_current_user, get_current_user_optional
+from backend.api.services.engagement_service import create_report, set_vote
 from backend.api.services.forum_service import (
     append_comment_image_keys,
     append_thread_image_keys,
@@ -68,11 +70,19 @@ def _validate_forum_upload_count(files: list[UploadFile], existing_count: int) -
 @router.get("")
 async def list_threads(
     q: Optional[str] = Query(None, description="Search threads by title/body with LIKE matching"),
+    sort: str = Query("recent", description="Sort threads by recent or popular"),
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=50),
+    current_user: Optional[UserResponse] = Depends(get_current_user_optional),
 ):
     try:
-        result = list_forum_threads(search_query=q, page=page, per_page=per_page)
+        result = list_forum_threads(
+            search_query=q,
+            sort_by=sort,
+            page=page,
+            per_page=per_page,
+            requester_user_id=current_user.id if current_user else None,
+        )
         return success_response(data=result.model_dump(), message="Forum threads retrieved successfully")
     except Exception as e:
         logger.error(f"Failed to list forum threads: {e}", exc_info=True)
@@ -132,9 +142,12 @@ async def get_forum_media(owner_user_id: int, key: str = Query(...)):
 
 
 @router.get("/{thread_id}")
-async def get_thread(thread_id: int):
+async def get_thread(
+    thread_id: int,
+    current_user: Optional[UserResponse] = Depends(get_current_user_optional),
+):
     try:
-        thread = get_forum_thread(thread_id)
+        thread = get_forum_thread(thread_id, requester_user_id=current_user.id if current_user else None)
         if thread is None:
             return JSONResponse(content=not_found_response("Forum thread", thread_id), status_code=status.HTTP_404_NOT_FOUND)
         return success_response(data=thread.model_dump(), message="Forum thread retrieved successfully")
@@ -406,6 +419,146 @@ async def remove_comment(
             content=error_response(
                 error_code=ErrorCode.INTERNAL_ERROR,
                 message="Failed to delete forum comment",
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            ),
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+
+@router.post("/{thread_id}/vote")
+async def vote_forum_thread(
+    thread_id: int,
+    payload: VoteRequest,
+    current_user: UserResponse = Depends(get_current_user),
+):
+    try:
+        summary = set_vote(
+            target_type="forum_thread",
+            target_id=thread_id,
+            user_id=current_user.id,
+            vote_type=payload.vote_type,
+        )
+        return success_response(data=summary, message="Forum post vote updated successfully")
+    except ValueError as e:
+        return JSONResponse(
+            content=error_response(
+                error_code=ErrorCode.VALIDATION_ERROR,
+                message=str(e),
+                status_code=status.HTTP_400_BAD_REQUEST,
+            ),
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    except Exception as e:
+        logger.error(f"Failed to vote on forum thread {thread_id}: {e}", exc_info=True)
+        return JSONResponse(
+            content=error_response(
+                error_code=ErrorCode.INTERNAL_ERROR,
+                message="Failed to update forum vote",
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            ),
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+
+@router.post("/comments/{comment_id}/vote")
+async def vote_forum_comment(
+    comment_id: int,
+    payload: VoteRequest,
+    current_user: UserResponse = Depends(get_current_user),
+):
+    try:
+        summary = set_vote(
+            target_type="forum_comment",
+            target_id=comment_id,
+            user_id=current_user.id,
+            vote_type=payload.vote_type,
+        )
+        return success_response(data=summary, message="Forum comment vote updated successfully")
+    except ValueError as e:
+        return JSONResponse(
+            content=error_response(
+                error_code=ErrorCode.VALIDATION_ERROR,
+                message=str(e),
+                status_code=status.HTTP_400_BAD_REQUEST,
+            ),
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    except Exception as e:
+        logger.error(f"Failed to vote on forum comment {comment_id}: {e}", exc_info=True)
+        return JSONResponse(
+            content=error_response(
+                error_code=ErrorCode.INTERNAL_ERROR,
+                message="Failed to update forum comment vote",
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            ),
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+
+@router.post("/{thread_id}/report")
+async def report_forum_thread(
+    thread_id: int,
+    payload: ReportCreate,
+    current_user: UserResponse = Depends(get_current_user),
+):
+    try:
+        report = create_report(
+            target_type="forum_thread",
+            target_id=thread_id,
+            reporter_user_id=current_user.id,
+            payload=payload,
+        )
+        return success_response(data=report, message="Forum post reported successfully")
+    except ValueError as e:
+        return JSONResponse(
+            content=error_response(
+                error_code=ErrorCode.VALIDATION_ERROR,
+                message=str(e),
+                status_code=status.HTTP_400_BAD_REQUEST,
+            ),
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    except Exception as e:
+        logger.error(f"Failed to report forum thread {thread_id}: {e}", exc_info=True)
+        return JSONResponse(
+            content=error_response(
+                error_code=ErrorCode.INTERNAL_ERROR,
+                message="Failed to report forum post",
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            ),
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+
+@router.post("/comments/{comment_id}/report")
+async def report_forum_comment(
+    comment_id: int,
+    payload: ReportCreate,
+    current_user: UserResponse = Depends(get_current_user),
+):
+    try:
+        report = create_report(
+            target_type="forum_comment",
+            target_id=comment_id,
+            reporter_user_id=current_user.id,
+            payload=payload,
+        )
+        return success_response(data=report, message="Forum comment reported successfully")
+    except ValueError as e:
+        return JSONResponse(
+            content=error_response(
+                error_code=ErrorCode.VALIDATION_ERROR,
+                message=str(e),
+                status_code=status.HTTP_400_BAD_REQUEST,
+            ),
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    except Exception as e:
+        logger.error(f"Failed to report forum comment {comment_id}: {e}", exc_info=True)
+        return JSONResponse(
+            content=error_response(
+                error_code=ErrorCode.INTERNAL_ERROR,
+                message="Failed to report forum comment",
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             ),
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

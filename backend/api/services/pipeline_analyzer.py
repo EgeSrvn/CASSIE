@@ -8,9 +8,9 @@ import logging
 from typing import List, Dict, Any
 
 from backend.api.models.pipeline_model import PipelineInDB
+from backend.api.services.pipeline_converter import resolve_node_tool_id
 from tool_registry import (
     get_tool_by_id,
-    get_tool_id_from_label,
     get_tool_requirements,
     tool_produces_requirement,
     validate_tool_flag_values,
@@ -209,7 +209,7 @@ def analyze_pipeline_requirements(pipeline: PipelineInDB) -> Dict[str, Any]:
         node_label = _resolve_node_label(node)
         
         if node_type == "tool":
-            tool_id = get_tool_id_from_label(node_label)
+            tool_id = resolve_node_tool_id(node)
             if tool_id:
                 tools_in_pipeline.add(tool_id)
                 if tool_id not in ordered_tools_in_pipeline:
@@ -222,7 +222,7 @@ def analyze_pipeline_requirements(pipeline: PipelineInDB) -> Dict[str, Any]:
                     for source_id in incoming_edges.get(node_id, [])
                     for upstream_node in [nodes_by_id.get(source_id)]
                     if upstream_node and _resolve_node_type(upstream_node).lower() == "tool"
-                    for upstream_tool_id in [get_tool_id_from_label(_resolve_node_label(upstream_node))]
+                    for upstream_tool_id in [resolve_node_tool_id(upstream_node)]
                     if upstream_tool_id
                 }
 
@@ -265,7 +265,7 @@ def analyze_pipeline_requirements(pipeline: PipelineInDB) -> Dict[str, Any]:
             target_node = nodes_by_id.get(target_id)
             if not target_node or _resolve_node_type(target_node).lower() != "tool":
                 continue
-            tool_id = get_tool_id_from_label(_resolve_node_label(target_node))
+            tool_id = resolve_node_tool_id(target_node)
             tool = get_tool_by_id(tool_id) if tool_id else None
             if tool:
                 downstream_tool_labels.append(tool["name"])
@@ -416,7 +416,7 @@ def validate_pipeline_graph(nodes: Any, edges: Any) -> Dict[str, Any]:
         if not outgoing_edges.get(node_id):
             errors.append(f'Tool "{label}" must connect to another tool or a result node.')
 
-        tool_id = get_tool_id_from_label(label)
+        tool_id = resolve_node_tool_id(node)
         if tool_id:
             node_data = node.get("data") if isinstance(node.get("data"), dict) else {}
             raw_flag_values = node_data.get("flagValues") or node_data.get("toolConfig") or {}

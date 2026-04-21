@@ -20,6 +20,8 @@ export interface User {
   username: string
   email: string
   email_verified?: boolean
+  login_two_factor_enabled?: boolean
+  job_notifications_enabled?: boolean
   display_name?: string | null
   bio?: string | null
   affiliation?: string | null
@@ -50,6 +52,16 @@ export interface AuthResponse {
   access_token: string
   user: User
 }
+
+export interface LoginTwoFactorChallenge {
+  username: string
+  email: string
+  two_factor_required: boolean
+  verification_preview_code?: string | null
+  expires_in_minutes: number
+}
+
+export type LoginResult = AuthResponse | LoginTwoFactorChallenge
 
 export interface AuthError extends Error {
   verificationEmail?: string
@@ -93,29 +105,46 @@ export interface ProfileUpdateRequest {
   website_url?: string
   current_password?: string
   new_password?: string
+  login_two_factor_enabled?: boolean
+  job_notifications_enabled?: boolean
 }
 
 const normalizeProfilePayload = (payload: ProfileUpdateRequest): ProfileUpdateRequest => {
   const normalized: ProfileUpdateRequest = {}
-  ;(Object.entries(payload) as Array<[keyof ProfileUpdateRequest, string | undefined]>).forEach(([key, value]) => {
+  ;(Object.entries(payload) as Array<[keyof ProfileUpdateRequest, string | boolean | undefined]>).forEach(([key, value]) => {
+    if (typeof value === 'boolean') {
+      Object.assign(normalized, { [key]: value })
+      return
+    }
     if (typeof value !== 'string') {
       return
     }
-    normalized[key] = value.trim()
+    Object.assign(normalized, { [key]: value.trim() })
   })
   return normalized
 }
 
-export const login = async (credentials: LoginRequest): Promise<AuthResponse> => {
+const storeAuthenticatedSession = (user: User, accessToken: string) => {
+  setStoredUser(user)
+  setToken(accessToken)
+}
+
+export const login = async (credentials: LoginRequest): Promise<LoginResult> => {
   try {
-    const response = await apiClient.post<{ success: boolean; data: { access_token: string; token_type: string; user: User }; message?: string }>('/api/auth/login', credentials)
-    if (response.data.success && response.data.data.access_token) {
-      setStoredUser(response.data.data.user)
-      setToken(response.data.data.access_token)
+    const response = await apiClient.post<{
+      success: boolean
+      data: { access_token?: string; token_type?: string; user?: User } & Partial<LoginTwoFactorChallenge>
+      message?: string
+    }>('/api/auth/login', credentials)
+    if (response.data.success && response.data.data.access_token && response.data.data.user) {
+      storeAuthenticatedSession(response.data.data.user, response.data.data.access_token)
       return {
         access_token: response.data.data.access_token,
         user: response.data.data.user
       }
+    }
+    if (response.data.success && response.data.data.two_factor_required) {
+      return response.data.data as LoginTwoFactorChallenge
     }
     throw new Error(response.data.message || 'Login failed')
   } catch (error: any) {
@@ -128,6 +157,32 @@ export const login = async (credentials: LoginRequest): Promise<AuthResponse> =>
     }
     throw loginError
   }
+}
+
+export const confirmLoginTwoFactor = async (username: string, code: string): Promise<AuthResponse> => {
+  const response = await apiClient.post<{ success: boolean; data: { access_token: string; token_type: string; user: User }; message?: string }>(
+    '/api/auth/login/2fa/confirm',
+    { username, code }
+  )
+  if (response.data.success && response.data.data.access_token && response.data.data.user) {
+    storeAuthenticatedSession(response.data.data.user, response.data.data.access_token)
+    return {
+      access_token: response.data.data.access_token,
+      user: response.data.data.user,
+    }
+  }
+  throw new Error(response.data.message || 'Failed to confirm login code')
+}
+
+export const resendLoginTwoFactor = async (username: string): Promise<LoginTwoFactorChallenge> => {
+  const response = await apiClient.post<{ success: boolean; data: LoginTwoFactorChallenge; message?: string }>(
+    '/api/auth/login/2fa/resend',
+    { username }
+  )
+  if (response.data.success) {
+    return response.data.data
+  }
+  throw new Error(response.data.message || 'Failed to resend login code')
 }
 
 export const register = async (userData: RegisterRequest): Promise<VerificationChallenge> => {
@@ -170,6 +225,7 @@ export const getPublicProfile = async (userId: number): Promise<ProfileResponse>
 export const updateProfile = async (payload: ProfileUpdateRequest): Promise<User> => {
   const response = await apiClient.put<{ success: boolean; data: User }>('/api/auth/profile', normalizeProfilePayload(payload))
   if (response.data.success) {
+    setStoredUser(response.data.data)
     return response.data.data
   }
   throw new Error('Failed to update profile')
@@ -203,6 +259,7 @@ export const uploadProfileAvatar = async (file: File): Promise<User> => {
     },
   })
   if (response.data.success) {
+    setStoredUser(response.data.data)
     return response.data.data
   }
   throw new Error('Failed to upload profile picture')

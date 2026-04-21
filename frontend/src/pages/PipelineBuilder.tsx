@@ -12,6 +12,7 @@ import ReactFlow, {
   Node,
   Edge,
   Connection,
+  CoordinateExtent,
 } from 'reactflow'
 import 'reactflow/dist/style.css'
 import { createPipeline, updatePipeline, getPipeline, Pipeline } from '../services/pipelineService'
@@ -33,6 +34,8 @@ interface NodeData {
   label: string
   description?: string[]
   toolId?: string
+  accentColor?: string
+  nodeClassName?: string
   flagValues?: Record<string, FlagValue>
   priorityOrder?: number
   prioritySelected?: boolean
@@ -50,10 +53,19 @@ interface ToolNodeTemplate {
   description: string[]
 }
 
+interface PaletteSectionDefinition {
+  id: string
+  title: string
+  description: string
+  items: ToolNodeTemplate[]
+}
+
 const INPUT_NODE_TYPES = new Set(['fastqinput', 'fastainput', 'input', 'inputnode', 'start'])
 const RESULT_NODE_TYPES = new Set(['result', 'end'])
 const CHECKPOINT_NODE_TYPES = new Set(['checkpoint'])
 const STAGE_NODE_TYPES = new Set(['tool', 'checkpoint'])
+const PIPELINE_NODE_EXTENT: CoordinateExtent = [[48, 48], [2800, 2200]]
+const PIPELINE_TRANSLATE_EXTENT: CoordinateExtent = [[-160, -120], [3200, 2600]]
 
 const TOOL_NODE_TEMPLATES: ToolNodeTemplate[] = [
   {
@@ -112,6 +124,50 @@ const TOOL_NODE_TEMPLATES: ToolNodeTemplate[] = [
     description: ['Input: assembly FASTA and Meryl DB', 'Output: reference-free assembly quality reports'],
   },
 ]
+
+const getToolPaletteSectionMeta = (toolType: string) => {
+  const normalized = String(toolType || '').trim().toLowerCase()
+  if (normalized === 'transform' || normalized === 'assembly') {
+    return {
+      id: 'tool-type-assembly',
+      title: 'Assembly Blocks',
+      description: 'Core assembly and graph-construction stages.',
+    }
+  }
+  if (normalized === 'qc' || normalized === 'quality_control') {
+    return {
+      id: 'tool-type-quality-control',
+      title: 'Quality Control Blocks',
+      description: 'Evaluation, profiling, and validation tools.',
+    }
+  }
+  if (normalized === 'annotation') {
+    return {
+      id: 'tool-type-annotation',
+      title: 'Annotation Blocks',
+      description: 'Lift-over and comparative annotation stages.',
+    }
+  }
+  return {
+    id: `tool-type-${normalized || 'specialized'}`,
+    title: normalized ? `${normalized.charAt(0).toUpperCase()}${normalized.slice(1)} Blocks` : 'Specialized Blocks',
+    description: 'Additional specialized processing stages.',
+  }
+}
+
+const getNodeEditorHelpText = (nodeType: string) => {
+  const normalized = String(nodeType || '').trim().toLowerCase()
+  if (normalized === 'tool') {
+    return 'Rename this tool block without changing its tool selection or editable flags.'
+  }
+  if (normalized === 'result' || normalized === 'end') {
+    return 'This result label is used when CASSIE names pipeline outputs.'
+  }
+  if (normalized === 'checkpoint') {
+    return 'Use a descriptive checkpoint name so paused branches are easier to follow later.'
+  }
+  return 'Choose a clear block name so this input is easier to identify during later job uploads.'
+}
 
 const createUniqueNodeId = () => {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -429,6 +485,48 @@ const hasCustomizedFlagValues = (
   })
 }
 
+const getToolNodeAccentColor = (toolType: string): string => {
+  const normalized = String(toolType || '').trim().toLowerCase()
+  if (normalized === 'annotation') {
+    return '#7c3aed'
+  }
+  if (normalized === 'qc') {
+    return '#b45309'
+  }
+  if (normalized === 'transform' || normalized === 'assembly') {
+    return '#0f766e'
+  }
+  return '#2563eb'
+}
+
+const getToolNodeClassName = (toolType: string): string => {
+  const normalized = String(toolType || '').trim().toLowerCase()
+  if (normalized === 'annotation') {
+    return 'pipeline-node-box-tool-annotation'
+  }
+  if (normalized === 'qc') {
+    return 'pipeline-node-box-tool-qc'
+  }
+  if (normalized === 'transform' || normalized === 'assembly') {
+    return 'pipeline-node-box-tool-transform'
+  }
+  return 'pipeline-node-box-tool'
+}
+
+const getPaletteButtonClassName = (toolType: string): string => {
+  const normalized = String(toolType || '').trim().toLowerCase()
+  if (normalized === 'annotation') {
+    return 'pipeline-palette-button pipeline-palette-button-annotation'
+  }
+  if (normalized === 'qc' || normalized === 'quality_control') {
+    return 'pipeline-palette-button pipeline-palette-button-qc'
+  }
+  if (normalized === 'transform' || normalized === 'assembly') {
+    return 'pipeline-palette-button pipeline-palette-button-transform'
+  }
+  return 'pipeline-palette-button pipeline-palette-button-generic'
+}
+
 const NodeBox = ({
   label,
   description,
@@ -437,6 +535,7 @@ const NodeBox = ({
   showSource = true,
   menuSlot,
   footerBadge,
+  className,
 }: {
   label: string
   description?: string[]
@@ -445,8 +544,9 @@ const NodeBox = ({
   showSource?: boolean
   menuSlot?: ReactNode
   footerBadge?: ReactNode
+  className?: string
 }) => (
-  <div className="pipeline-node-box">
+  <div className={`pipeline-node-box ${className || ''}`.trim()}>
     {showTarget && (
       <Handle
         type="target"
@@ -479,61 +579,70 @@ const NodeBox = ({
   </div>
 )
 
+const NodeMenu = ({ data }: { data: NodeData }) => {
+  if (!data.onToggleMenu || !data.onEdit || !data.onCopy || !data.onDelete) {
+    return null
+  }
+
+  return (
+    <div className="pipeline-node-menu-wrap">
+      <button
+        type="button"
+        className="pipeline-node-menu-trigger"
+        onClick={(event) => {
+          event.preventDefault()
+          event.stopPropagation()
+          data.onToggleMenu?.()
+        }}
+      >
+        ⋮
+      </button>
+      {data.isMenuOpen && (
+        <div className="pipeline-node-menu">
+          <button
+            type="button"
+            onClick={(event) => {
+              event.preventDefault()
+              event.stopPropagation()
+              data.onEdit?.()
+            }}
+          >
+            Edit
+          </button>
+          <button
+            type="button"
+            onClick={(event) => {
+              event.preventDefault()
+              event.stopPropagation()
+              data.onCopy?.()
+            }}
+          >
+            Copy
+          </button>
+          <button
+            type="button"
+            className="danger"
+            onClick={(event) => {
+              event.preventDefault()
+              event.stopPropagation()
+              data.onDelete?.()
+            }}
+          >
+            Delete
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
 const ToolNode = ({ data }: { data: NodeData }) => (
   <NodeBox
     label={data.label}
     description={data.description}
-    color="#2563eb"
-    menuSlot={
-      <div className="pipeline-node-menu-wrap">
-        <button
-          type="button"
-          className="pipeline-node-menu-trigger"
-          onClick={(event) => {
-            event.preventDefault()
-            event.stopPropagation()
-            data.onToggleMenu?.()
-          }}
-        >
-          ⋮
-        </button>
-        {data.isMenuOpen && (
-          <div className="pipeline-node-menu">
-            <button
-              type="button"
-              onClick={(event) => {
-                event.preventDefault()
-                event.stopPropagation()
-                data.onEdit?.()
-              }}
-            >
-              Edit
-            </button>
-            <button
-              type="button"
-              onClick={(event) => {
-                event.preventDefault()
-                event.stopPropagation()
-                data.onCopy?.()
-              }}
-            >
-              Copy
-            </button>
-            <button
-              type="button"
-              className="danger"
-              onClick={(event) => {
-                event.preventDefault()
-                event.stopPropagation()
-                data.onDelete?.()
-              }}
-            >
-              Delete
-            </button>
-          </div>
-        )}
-      </div>
-    }
+    color={data.accentColor || '#2563eb'}
+    className={data.nodeClassName || 'pipeline-node-box-tool'}
+    menuSlot={<NodeMenu data={data} />}
     footerBadge={
       <div className={`pipeline-node-config-chip ${data.hasCustomConfig ? 'custom' : 'default'}`}>
         {data.hasCustomConfig ? 'Custom flags' : 'Default flags'}
@@ -549,28 +658,30 @@ const nodeTypes = {
       label={data.label}
       description={data.description}
       color="#f59e0b"
+      className="pipeline-node-box-checkpoint"
+      menuSlot={<NodeMenu data={data} />}
     />
   ),
   fastqInput: ({ data }: { data: NodeData }) => (
-    <NodeBox label={data.label} description={data.description} color="#7c3aed" showTarget={false} />
+    <NodeBox label={data.label} description={data.description} color="#7c3aed" className="pipeline-node-box-input" showTarget={false} menuSlot={<NodeMenu data={data} />} />
   ),
   fastaInput: ({ data }: { data: NodeData }) => (
-    <NodeBox label={data.label} description={data.description} color="#8b5cf6" showTarget={false} />
+    <NodeBox label={data.label} description={data.description} color="#8b5cf6" className="pipeline-node-box-input" showTarget={false} menuSlot={<NodeMenu data={data} />} />
   ),
   result: ({ data }: { data: NodeData }) => (
-    <NodeBox label={data.label} description={data.description} color="#22c55e" showSource={false} />
+    <NodeBox label={data.label} description={data.description} color="#22c55e" className="pipeline-node-box-result" showSource={false} menuSlot={<NodeMenu data={data} />} />
   ),
   inputNode: ({ data }: { data: NodeData }) => (
-    <NodeBox label={data.label} description={data.description} color="#7c3aed" showTarget={false} />
+    <NodeBox label={data.label} description={data.description} color="#7c3aed" className="pipeline-node-box-input" showTarget={false} menuSlot={<NodeMenu data={data} />} />
   ),
   input: ({ data }: { data: NodeData }) => (
-    <NodeBox label={data.label} description={data.description} color="#7c3aed" showTarget={false} />
+    <NodeBox label={data.label} description={data.description} color="#7c3aed" className="pipeline-node-box-input" showTarget={false} menuSlot={<NodeMenu data={data} />} />
   ),
   start: ({ data }: { data: NodeData }) => (
-    <NodeBox label={data.label} description={data.description} color="#ec4899" showTarget={false} />
+    <NodeBox label={data.label} description={data.description} color="#ec4899" className="pipeline-node-box-input" showTarget={false} menuSlot={<NodeMenu data={data} />} />
   ),
   end: ({ data }: { data: NodeData }) => (
-    <NodeBox label={data.label} description={data.description} color="#22c55e" showSource={false} />
+    <NodeBox label={data.label} description={data.description} color="#22c55e" className="pipeline-node-box-result" showSource={false} menuSlot={<NodeMenu data={data} />} />
   ),
 }
 
@@ -590,8 +701,14 @@ export default function PipelineBuilder() {
   const [openNodeMenuId, setOpenNodeMenuId] = useState<string | null>(null)
   const [editingNodeId, setEditingNodeId] = useState<string | null>(null)
   const [editingTool, setEditingTool] = useState<Tool | null>(null)
+  const [editingNodeLabel, setEditingNodeLabel] = useState('')
+  const [editingNodeLabelError, setEditingNodeLabelError] = useState('')
   const [editingDraftValues, setEditingDraftValues] = useState<Record<string, FlagValue>>({})
   const [editingErrors, setEditingErrors] = useState<Record<string, string>>({})
+  const [openSidebarSections, setOpenSidebarSections] = useState<Record<string, boolean>>({
+    inputs: false,
+    utility: false,
+  })
   const [openPriorityGroups, setOpenPriorityGroups] = useState<number[]>([0])
   const [isPriorityModalOpen, setIsPriorityModalOpen] = useState(false)
   const validationErrors = useMemo(() => validatePipelineGraph(nodes, edges), [nodes, edges])
@@ -628,6 +745,27 @@ export default function PipelineBuilder() {
     return toolCatalog.find((tool) => tool.name.toLowerCase() === String(nodeData.label || '').toLowerCase()) || null
   }, [toolCatalog, toolCatalogById])
 
+  const editingNodeType = useMemo(
+    () => String(nodes.find((node) => node.id === editingNodeId)?.type || '').trim().toLowerCase(),
+    [editingNodeId, nodes]
+  )
+  const toolPaletteSections = useMemo<PaletteSectionDefinition[]>(() => {
+    const groups = new Map<string, PaletteSectionDefinition>()
+    TOOL_NODE_TEMPLATES.forEach((template) => {
+      const sectionMeta = getToolPaletteSectionMeta(toolCatalogById.get(template.toolId)?.type || '')
+      const existing = groups.get(sectionMeta.id)
+      if (existing) {
+        existing.items.push(template)
+        return
+      }
+      groups.set(sectionMeta.id, {
+        ...sectionMeta,
+        items: [template],
+      })
+    })
+    return Array.from(groups.values())
+  }, [toolCatalogById])
+
   useEffect(() => {
     const syncAuthState = () => {
       setIsAuthenticated(!!getToken())
@@ -651,6 +789,18 @@ export default function PipelineBuilder() {
         setToolCatalog([])
       })
   }, [])
+
+  useEffect(() => {
+    setOpenSidebarSections((current) => {
+      const next = { ...current }
+      toolPaletteSections.forEach((section) => {
+        if (typeof next[section.id] !== 'boolean') {
+          next[section.id] = false
+        }
+      })
+      return next
+    })
+  }, [toolPaletteSections])
 
   useEffect(() => {
     if (id) {
@@ -737,6 +887,7 @@ export default function PipelineBuilder() {
         label: template.label,
         description: [...template.description],
         toolId: template.toolId,
+        accentColor: getToolNodeAccentColor(toolDefinition?.type || ''),
         flagValues: defaultFlagValues,
         priorityOrder: 10_000,
         prioritySelected: false,
@@ -847,6 +998,8 @@ export default function PipelineBuilder() {
 
     setEditingNodeId(nodeId)
     setEditingTool(tool)
+    setEditingNodeLabel(String(node.data?.label || ''))
+    setEditingNodeLabelError('')
     setEditingDraftValues(validation.normalized)
     setEditingErrors(validation.errors)
     setOpenNodeMenuId(null)
@@ -855,6 +1008,8 @@ export default function PipelineBuilder() {
   const closeEditModal = useCallback(() => {
     setEditingNodeId(null)
     setEditingTool(null)
+    setEditingNodeLabel('')
+    setEditingNodeLabelError('')
     setEditingDraftValues({})
     setEditingErrors({})
   }, [])
@@ -869,14 +1024,42 @@ export default function PipelineBuilder() {
     setEditingErrors(validation.errors)
   }, [editingDraftValues, editingTool])
 
-  const saveToolConfiguration = useCallback(() => {
-    if (!editingNodeId || !editingTool) {
+  const saveNodeConfiguration = useCallback(() => {
+    if (!editingNodeId) {
       return
     }
 
-    const validation = normalizeDraftFlagValues(editingTool.editable_flags || [], editingDraftValues)
-    setEditingErrors(validation.errors)
-    if (Object.keys(validation.errors).length > 0) {
+    const normalizedLabel = editingNodeLabel.trim()
+    if (!normalizedLabel) {
+      setEditingNodeLabelError('Block name is required.')
+      return
+    }
+    setEditingNodeLabelError('')
+
+    if (editingTool) {
+      const validation = normalizeDraftFlagValues(editingTool.editable_flags || [], editingDraftValues)
+      setEditingErrors(validation.errors)
+      if (Object.keys(validation.errors).length > 0) {
+        return
+      }
+
+      setNodes((currentNodes) =>
+        currentNodes.map((node) => {
+          if (node.id !== editingNodeId) {
+            return node
+          }
+          return {
+            ...node,
+            data: {
+              ...node.data,
+              label: normalizedLabel,
+              toolId: editingTool.tool_id,
+              flagValues: validation.normalized,
+            },
+          }
+        })
+      )
+      closeEditModal()
       return
     }
 
@@ -889,22 +1072,17 @@ export default function PipelineBuilder() {
           ...node,
           data: {
             ...node.data,
-            toolId: editingTool.tool_id,
-            flagValues: validation.normalized,
+            label: normalizedLabel,
           },
         }
       })
     )
     closeEditModal()
-  }, [closeEditModal, editingDraftValues, editingNodeId, editingTool, setNodes])
+  }, [closeEditModal, editingDraftValues, editingNodeId, editingNodeLabel, editingTool, setNodes])
 
   const decoratedNodes = useMemo(
     () =>
       nodes.map((node) => {
-        if (String(node.type || '').toLowerCase() !== 'tool') {
-          return node
-        }
-
         const tool = resolveToolForNode(node.data)
         const flagDefinitions = tool?.editable_flags || []
         return {
@@ -912,8 +1090,12 @@ export default function PipelineBuilder() {
           data: {
             ...node.data,
             toolId: node.data.toolId || tool?.tool_id,
+            accentColor: node.data.accentColor || getToolNodeAccentColor(tool?.type || ''),
+            nodeClassName: getToolNodeClassName(tool?.type || ''),
             isMenuOpen: openNodeMenuId === node.id,
-            hasCustomConfig: hasCustomizedFlagValues(flagDefinitions, node.data.flagValues),
+            hasCustomConfig: String(node.type || '').toLowerCase() === 'tool'
+              ? hasCustomizedFlagValues(flagDefinitions, node.data.flagValues)
+              : false,
             onToggleMenu: () => setOpenNodeMenuId((current) => current === node.id ? null : node.id),
             onEdit: () => openEditModal(node.id),
             onCopy: () => handleCopyNode(node.id),
@@ -923,6 +1105,13 @@ export default function PipelineBuilder() {
       }),
     [handleCopyNode, handleDeleteNode, nodes, openEditModal, openNodeMenuId, resolveToolForNode]
   )
+
+  const toggleSidebarSection = useCallback((sectionId: string) => {
+    setOpenSidebarSections((current) => ({
+      ...current,
+      [sectionId]: !current[sectionId],
+    }))
+  }, [])
 
   const onConnect = useCallback(
     (params: Connection) =>
@@ -1040,107 +1229,149 @@ export default function PipelineBuilder() {
               <div className="card">
                 <h2 className="sidebar-title">Components</h2>
                 <p className="sidebar-description">
-                  Click a component to add it to the canvas. Tool blocks keep their own default flags, and each tool block
-                  can be edited, copied, or deleted from its menu.
+                  Add blocks by section, collapse groups you are not using, and rename any block later from its menu.
                 </p>
-                <div className="sidebar-buttons">
-                  <button
-                    onClick={() =>
-                      addNode('fastqInput', 'FASTQ Input', [
-                        'One FASTQ file per node',
-                        'Use separate nodes for R1 and R2',
-                      ])
-                    }
-                    className="btn-primary"
-                  >
-                    FASTQ Input
-                  </button>
-                  <button
-                    onClick={() =>
-                      addNode('fastaInput', 'FASTA Input', [
-                        'Reference or assembly FASTA',
-                        'Use separate nodes per FASTA file',
-                      ])
-                    }
-                    className="btn-primary"
-                  >
-                    FASTA Input
-                  </button>
-                  <button
-                    onClick={() =>
-                      addNode('input', 'GFF/GTF Input', [
-                        'Reference or lifted annotation',
-                        'Supports GFF, GFF3, and GTF files',
-                      ])
-                    }
-                    className="btn-primary"
-                  >
-                    GFF/GTF Input
-                  </button>
-                  <button
-                    onClick={() =>
-                      addNode('input', 'HAL Alignment Input', [
-                        'Whole-genome HAL alignment',
-                        'Used by CAT',
-                      ])
-                    }
-                    className="btn-primary"
-                  >
-                    HAL Input
-                  </button>
-                  <button
-                    onClick={() =>
-                      addNode('input', 'Reference Genome Name (TXT)', [
-                        'Plain text file with the HAL reference genome name',
-                        'Used by CAT',
-                      ])
-                    }
-                    className="btn-primary"
-                  >
-                    TXT Input
-                  </button>
-                  <button
-                    onClick={() =>
-                      addNode('input', 'Meryl DB Input', [
-                        'Upload a .meryl directory archive',
-                        'Used by Merqury',
-                      ])
-                    }
-                    className="btn-primary"
-                    >
-                      Meryl Input
+                <div className="pipeline-sidebar-sections">
+                  <section className="pipeline-sidebar-section">
+                    <button type="button" className="pipeline-sidebar-section-header" onClick={() => toggleSidebarSection('inputs')}>
+                      <span>
+                        <strong>Input Blocks</strong>
+                        <small>External files that later appear in job input assignment.</small>
+                      </span>
+                      <span className={`pipeline-sidebar-chevron ${openSidebarSections.inputs ? 'open' : ''}`}>▾</span>
                     </button>
-                  <button
-                    onClick={() =>
-                      addNode('checkpoint', 'Checkpoint', [
-                        'Pause only this branch until the job is resumed',
-                        'Other independent branches can continue normally',
-                      ])
-                    }
-                    className="btn-secondary"
-                  >
-                    Checkpoint
-                  </button>
-                  {TOOL_NODE_TEMPLATES.map((toolTemplate) => (
-                    <button
-                      key={toolTemplate.toolId}
-                      onClick={() => addToolNode(toolTemplate)}
-                      className="btn-secondary"
-                    >
-                      {toolTemplate.label}
+                    {openSidebarSections.inputs && (
+                      <div className="pipeline-sidebar-section-body sidebar-buttons">
+                        <button
+                          onClick={() =>
+                            addNode('fastqInput', 'FASTQ Input', [
+                              'One FASTQ file per node',
+                              'Use separate nodes for R1 and R2',
+                            ])
+                          }
+                          className="pipeline-palette-button pipeline-palette-button-input"
+                        >
+                          FASTQ Input
+                        </button>
+                        <button
+                          onClick={() =>
+                            addNode('fastaInput', 'FASTA Input', [
+                              'Reference or assembly FASTA',
+                              'Use separate nodes per FASTA file',
+                            ])
+                          }
+                          className="pipeline-palette-button pipeline-palette-button-input"
+                        >
+                          FASTA Input
+                        </button>
+                        <button
+                          onClick={() =>
+                            addNode('input', 'GFF/GTF Input', [
+                              'Reference or lifted annotation',
+                              'Supports GFF, GFF3, and GTF files',
+                            ])
+                          }
+                          className="pipeline-palette-button pipeline-palette-button-input"
+                        >
+                          GFF/GTF Input
+                        </button>
+                        <button
+                          onClick={() =>
+                            addNode('input', 'HAL Alignment Input', [
+                              'Whole-genome HAL alignment',
+                              'Used by CAT',
+                            ])
+                          }
+                          className="pipeline-palette-button pipeline-palette-button-input"
+                        >
+                          HAL Input
+                        </button>
+                        <button
+                          onClick={() =>
+                            addNode('input', 'Reference Genome Name (TXT)', [
+                              'Plain text file with the HAL reference genome name',
+                              'Used by CAT',
+                            ])
+                          }
+                          className="pipeline-palette-button pipeline-palette-button-input"
+                        >
+                          TXT Input
+                        </button>
+                        <button
+                          onClick={() =>
+                            addNode('input', 'Meryl DB Input', [
+                              'Upload a .meryl directory archive',
+                              'Used by Merqury',
+                            ])
+                          }
+                          className="pipeline-palette-button pipeline-palette-button-input"
+                        >
+                          Meryl Input
+                        </button>
+                      </div>
+                    )}
+                  </section>
+
+                  <section className="pipeline-sidebar-section">
+                    <button type="button" className="pipeline-sidebar-section-header" onClick={() => toggleSidebarSection('utility')}>
+                      <span>
+                        <strong>Utility Blocks</strong>
+                        <small>Checkpoint and result nodes for control flow and output naming.</small>
+                      </span>
+                      <span className={`pipeline-sidebar-chevron ${openSidebarSections.utility ? 'open' : ''}`}>▾</span>
                     </button>
+                    {openSidebarSections.utility && (
+                      <div className="pipeline-sidebar-section-body sidebar-buttons">
+                        <button
+                          onClick={() =>
+                            addNode('checkpoint', 'Checkpoint', [
+                              'Pause only this branch until the job is resumed',
+                              'Other independent branches can continue normally',
+                            ])
+                          }
+                          className="pipeline-palette-button pipeline-palette-button-checkpoint"
+                        >
+                          Checkpoint
+                        </button>
+                        <button
+                          onClick={() =>
+                            addNode('result', 'Result Block', [
+                              'Connect every tool to a result node',
+                              'Result labels become part of output naming',
+                            ])
+                          }
+                          className="pipeline-palette-button pipeline-palette-button-result"
+                        >
+                          Result Block
+                        </button>
+                      </div>
+                    )}
+                  </section>
+
+                  {toolPaletteSections.map((section) => (
+                    <section key={section.id} className="pipeline-sidebar-section">
+                      <button type="button" className="pipeline-sidebar-section-header" onClick={() => toggleSidebarSection(section.id)}>
+                        <span>
+                          <strong>{section.title}</strong>
+                          <small>{section.description}</small>
+                        </span>
+                        <span className={`pipeline-sidebar-chevron ${openSidebarSections[section.id] ? 'open' : ''}`}>▾</span>
+                      </button>
+                      {openSidebarSections[section.id] && (
+                        <div className="pipeline-sidebar-section-body sidebar-buttons">
+                          {section.items.map((toolTemplate) => (
+                            <button
+                              key={toolTemplate.toolId}
+                              onClick={() => addToolNode(toolTemplate)}
+                              className={getPaletteButtonClassName(toolCatalogById.get(toolTemplate.toolId)?.type || '')}
+                            >
+                              {toolTemplate.label}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </section>
                   ))}
-                  <button
-                    onClick={() =>
-                      addNode('result', 'Result Block', [
-                        'Connect every tool to a result node',
-                        'Intermediate tools can also connect onward',
-                      ])
-                    }
-                    className="btn-success"
-                  >
-                    Result Block
-                  </button>
                 </div>
               </div>
 
@@ -1219,6 +1450,7 @@ export default function PipelineBuilder() {
                 </div>
               </div>
               <ReactFlow
+                className="pipeline-react-flow"
                 nodes={decoratedNodes}
                 edges={edges}
                 onNodesChange={onNodesChange}
@@ -1226,6 +1458,11 @@ export default function PipelineBuilder() {
                 onConnect={onConnect}
                 nodeTypes={nodeTypes}
                 fitView
+                fitViewOptions={{ padding: 0.16 }}
+                nodeExtent={PIPELINE_NODE_EXTENT}
+                translateExtent={PIPELINE_TRANSLATE_EXTENT}
+                snapToGrid
+                snapGrid={[20, 20]}
                 onPaneClick={() => setOpenNodeMenuId(null)}
                 defaultEdgeOptions={{
                   type: 'smoothstep',
@@ -1233,7 +1470,7 @@ export default function PipelineBuilder() {
                   style: { stroke: '#2563eb' },
                 }}
               >
-                <Background />
+                <Background color="#d5c29d" gap={24} size={1.15} />
                 <Controls />
               </ReactFlow>
             </div>
@@ -1245,12 +1482,27 @@ export default function PipelineBuilder() {
         <div className="modal-overlay" onClick={closeEditModal}>
           <div className="modal-content pipeline-flag-modal" onClick={(event) => event.stopPropagation()}>
             <div className="modal-header">
-              <h2>{editingTool?.name || 'Tool'} Settings</h2>
+              <h2>{editingTool?.name || 'Block'} Settings</h2>
               <button type="button" className="modal-close" onClick={closeEditModal}>
                 ×
               </button>
             </div>
             <div className="modal-body">
+              <div className="form-group pipeline-flag-field">
+                <label htmlFor="pipeline-node-label">Block Name</label>
+                <input
+                  id="pipeline-node-label"
+                  type="text"
+                  className="form-input"
+                  value={editingNodeLabel}
+                  onChange={(event) => setEditingNodeLabel(event.target.value)}
+                  placeholder="Enter a descriptive block name"
+                />
+                <p className="pipeline-flag-help">{getNodeEditorHelpText(editingNodeType)}</p>
+                {editingNodeLabelError && (
+                  <p className="pipeline-flag-error">{editingNodeLabelError}</p>
+                )}
+              </div>
               {editingTool?.editable_flags && editingTool.editable_flags.length > 0 ? (
                 <div className="pipeline-flag-form">
                   {editingTool.editable_flags.map((flag) => {
@@ -1307,7 +1559,9 @@ export default function PipelineBuilder() {
                 </div>
               ) : (
                 <p className="pipeline-flag-empty-state">
-                  This tool currently runs with its default settings in CASSIE and has no user-editable flags in the builder.
+                  {editingNodeType === 'tool'
+                    ? 'This tool currently runs with its default settings in CASSIE and has no user-editable flags in the builder.'
+                    : 'This block only needs a clear display name to make later pipeline and job steps easier to follow.'}
                 </p>
               )}
             </div>
@@ -1315,8 +1569,8 @@ export default function PipelineBuilder() {
               <button type="button" className="btn-secondary" onClick={closeEditModal}>
                 Cancel
               </button>
-              <button type="button" className="btn-primary" onClick={saveToolConfiguration}>
-                Save Tool Settings
+              <button type="button" className="btn-primary" onClick={saveNodeConfiguration}>
+                Save Block Settings
               </button>
             </div>
           </div>

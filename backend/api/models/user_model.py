@@ -23,6 +23,8 @@ class UserBase(BaseModel):
     website_url: Optional[str] = Field(None, max_length=500, description="Website URL")
     avatar_url: Optional[str] = Field(None, max_length=500, description="Avatar image URL")
     email_verified: bool = Field(False, description="Whether the email address has been verified")
+    login_two_factor_enabled: bool = Field(False, description="Whether email-based login 2FA is enabled")
+    job_notifications_enabled: bool = Field(False, description="Whether email job notifications are enabled")
 
 
 class UserCreate(UserBase):
@@ -62,6 +64,8 @@ class UserProfileUpdate(BaseModel):
     avatar_url: Optional[str] = Field(None, max_length=500)
     current_password: Optional[str] = Field(None, min_length=1)
     new_password: Optional[str] = Field(None, min_length=8)
+    login_two_factor_enabled: Optional[bool] = None
+    job_notifications_enabled: Optional[bool] = None
 
     @field_validator("email", "display_name", "bio", "affiliation", "job_title", "location", "website_url", "avatar_url", "current_password", "new_password", mode="before")
     @classmethod
@@ -79,6 +83,10 @@ class UserInDB(UserBase):
     email_verification_expires_at: Optional[datetime] = None
     password_reset_code: Optional[str] = None
     password_reset_expires_at: Optional[datetime] = None
+    login_two_factor_code: Optional[str] = None
+    login_two_factor_expires_at: Optional[datetime] = None
+    suspended_until: Optional[datetime] = None
+    suspension_reason: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 

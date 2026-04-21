@@ -72,6 +72,10 @@ router = APIRouter(prefix="/jobs", tags=["jobs"])
 
 class PipelinePlanInput(BaseModel):
     id: Optional[int] = None
+    binding_id: Optional[str] = None
+    tool_id: Optional[str] = None
+    requirement_type: Optional[str] = None
+    label: Optional[str] = None
     filename: str
     file_format: Optional[str] = None
     size_bytes: int = 0

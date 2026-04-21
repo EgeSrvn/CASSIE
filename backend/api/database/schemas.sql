@@ -15,14 +15,20 @@ CREATE TABLE IF NOT EXISTS users (
     password_hash VARCHAR(255) NOT NULL,
     bucket_name VARCHAR(100) UNIQUE NOT NULL,
     email_verified BOOLEAN NOT NULL DEFAULT FALSE,
+    login_two_factor_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    job_notifications_enabled BOOLEAN NOT NULL DEFAULT FALSE,
     email_verification_code VARCHAR(12),
     email_verification_expires_at TIMESTAMP,
     password_reset_code VARCHAR(12),
     password_reset_expires_at TIMESTAMP,
+    login_two_factor_code VARCHAR(12),
+    login_two_factor_expires_at TIMESTAMP,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     account_deletion_code VARCHAR(12),
-    account_deletion_expires_at TIMESTAMP
+    account_deletion_expires_at TIMESTAMP,
+    suspended_until TIMESTAMP,
+    suspension_reason VARCHAR(255)
 );
 
 -- Indexes for users table
@@ -106,6 +112,30 @@ BEGIN
     END IF;
     IF NOT EXISTS (
         SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'users' AND column_name = 'login_two_factor_enabled'
+    ) THEN
+        ALTER TABLE users ADD COLUMN login_two_factor_enabled BOOLEAN NOT NULL DEFAULT FALSE;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'users' AND column_name = 'job_notifications_enabled'
+    ) THEN
+        ALTER TABLE users ADD COLUMN job_notifications_enabled BOOLEAN NOT NULL DEFAULT FALSE;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'users' AND column_name = 'login_two_factor_code'
+    ) THEN
+        ALTER TABLE users ADD COLUMN login_two_factor_code VARCHAR(12);
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'users' AND column_name = 'login_two_factor_expires_at'
+    ) THEN
+        ALTER TABLE users ADD COLUMN login_two_factor_expires_at TIMESTAMP;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
         WHERE table_name = 'users' AND column_name = 'account_deletion_code'
     ) THEN
         ALTER TABLE users ADD COLUMN account_deletion_code VARCHAR(12);
@@ -115,6 +145,18 @@ BEGIN
         WHERE table_name = 'users' AND column_name = 'account_deletion_expires_at'
     ) THEN
         ALTER TABLE users ADD COLUMN account_deletion_expires_at TIMESTAMP;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'users' AND column_name = 'suspended_until'
+    ) THEN
+        ALTER TABLE users ADD COLUMN suspended_until TIMESTAMP;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'users' AND column_name = 'suspension_reason'
+    ) THEN
+        ALTER TABLE users ADD COLUMN suspension_reason VARCHAR(255);
     END IF;
 END $$;
 
@@ -209,6 +251,62 @@ CREATE INDEX IF NOT EXISTS idx_forum_comments_parent_comment_id ON forum_comment
 CREATE INDEX IF NOT EXISTS idx_forum_comments_user_id ON forum_comments(user_id);
 CREATE INDEX IF NOT EXISTS idx_forum_comments_created_at ON forum_comments(created_at ASC);
 
+CREATE TABLE IF NOT EXISTS forum_thread_votes (
+    id SERIAL PRIMARY KEY,
+    thread_id INTEGER NOT NULL REFERENCES forum_threads(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    vote_type VARCHAR(16) NOT NULL CHECK (vote_type IN ('upvote', 'downvote')),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL,
+    UNIQUE (thread_id, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_forum_thread_votes_thread_id ON forum_thread_votes(thread_id);
+CREATE INDEX IF NOT EXISTS idx_forum_thread_votes_user_id ON forum_thread_votes(user_id);
+
+CREATE TABLE IF NOT EXISTS forum_comment_votes (
+    id SERIAL PRIMARY KEY,
+    comment_id INTEGER NOT NULL REFERENCES forum_comments(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    vote_type VARCHAR(16) NOT NULL CHECK (vote_type IN ('upvote', 'downvote')),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL,
+    UNIQUE (comment_id, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_forum_comment_votes_comment_id ON forum_comment_votes(comment_id);
+CREATE INDEX IF NOT EXISTS idx_forum_comment_votes_user_id ON forum_comment_votes(user_id);
+
+CREATE TABLE IF NOT EXISTS moderation_reports (
+    id SERIAL PRIMARY KEY,
+    reporter_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    target_type VARCHAR(32) NOT NULL CHECK (target_type IN ('pipeline', 'forum_thread', 'forum_comment')),
+    target_id INTEGER NOT NULL,
+    reason VARCHAR(160) NOT NULL,
+    details TEXT,
+    status VARCHAR(20) NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'reviewed', 'dismissed')),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL,
+    UNIQUE (reporter_user_id, target_type, target_id)
+);
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'moderation_reports' AND column_name = 'status'
+    ) THEN
+        ALTER TABLE moderation_reports DROP CONSTRAINT IF EXISTS moderation_reports_status_check;
+        ALTER TABLE moderation_reports
+            ADD CONSTRAINT moderation_reports_status_check
+            CHECK (status IN ('open', 'reviewed', 'dismissed', 'resolved_removed', 'resolved_suspended'));
+    END IF;
+END $$;
+
+CREATE INDEX IF NOT EXISTS idx_moderation_reports_target ON moderation_reports(target_type, target_id);
+CREATE INDEX IF NOT EXISTS idx_moderation_reports_reporter ON moderation_reports(reporter_user_id);
+CREATE INDEX IF NOT EXISTS idx_moderation_reports_status ON moderation_reports(status);
+
 -- Forum triggers are declared here because the forum tables are created after the
 -- main trigger block above in this legacy schema file.
 DROP TRIGGER IF EXISTS trigger_update_forum_threads_updated_at ON forum_threads;
@@ -226,6 +324,24 @@ CREATE TRIGGER trigger_update_forum_answers_updated_at
 DROP TRIGGER IF EXISTS trigger_update_forum_comments_updated_at ON forum_comments;
 CREATE TRIGGER trigger_update_forum_comments_updated_at
     BEFORE UPDATE ON forum_comments
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+DROP TRIGGER IF EXISTS trigger_update_forum_thread_votes_updated_at ON forum_thread_votes;
+CREATE TRIGGER trigger_update_forum_thread_votes_updated_at
+    BEFORE UPDATE ON forum_thread_votes
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+DROP TRIGGER IF EXISTS trigger_update_forum_comment_votes_updated_at ON forum_comment_votes;
+CREATE TRIGGER trigger_update_forum_comment_votes_updated_at
+    BEFORE UPDATE ON forum_comment_votes
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+DROP TRIGGER IF EXISTS trigger_update_moderation_reports_updated_at ON moderation_reports;
+CREATE TRIGGER trigger_update_moderation_reports_updated_at
+    BEFORE UPDATE ON moderation_reports
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
 
@@ -843,6 +959,25 @@ CREATE TABLE IF NOT EXISTS pipelines (
 CREATE INDEX IF NOT EXISTS idx_pipelines_user_id ON pipelines(user_id);
 CREATE INDEX IF NOT EXISTS idx_pipelines_saved_at ON pipelines(saved_at);
 -- Note: idx_pipelines_is_shared is created in the migration block below
+
+CREATE TABLE IF NOT EXISTS pipeline_votes (
+    id SERIAL PRIMARY KEY,
+    pipeline_id INTEGER NOT NULL REFERENCES pipelines(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    vote_type VARCHAR(16) NOT NULL CHECK (vote_type IN ('upvote', 'downvote')),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL,
+    UNIQUE (pipeline_id, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_pipeline_votes_pipeline_id ON pipeline_votes(pipeline_id);
+CREATE INDEX IF NOT EXISTS idx_pipeline_votes_user_id ON pipeline_votes(user_id);
+
+DROP TRIGGER IF EXISTS trigger_update_pipeline_votes_updated_at ON pipeline_votes;
+CREATE TRIGGER trigger_update_pipeline_votes_updated_at
+    BEFORE UPDATE ON pipeline_votes
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
 
 -- Add pipeline_id column to jobs table if it doesn't exist (for existing databases)
 -- This must run after pipelines table is created

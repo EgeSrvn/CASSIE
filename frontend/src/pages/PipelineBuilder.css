@@ -19,38 +19,103 @@
 .pipeline-canvas {
   position: relative;
   border: 1px solid #d9c7a5;
-  border-radius: 8px;
-  background: #F5EEDC;
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, rgba(245, 238, 220, 0.99), rgba(241, 229, 207, 0.95)),
+    linear-gradient(135deg, rgba(39, 84, 138, 0.04), rgba(221, 168, 83, 0.08));
+  overflow: hidden;
+  box-shadow: 0 18px 36px rgba(24, 59, 78, 0.08);
+}
+
+.pipeline-canvas::before {
+  content: '';
+  position: absolute;
+  inset: 12px 12px 14px;
+  border: 2px solid rgba(24, 59, 78, 0.14);
+  border-radius: 16px;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.pipeline-react-flow {
+  position: relative;
+  z-index: 2;
+  height: calc(100% - 72px);
+  min-height: 520px;
+}
+
+.pipeline-react-flow .react-flow__controls {
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow: 0 10px 22px rgba(24, 59, 78, 0.12);
 }
 
 .pipeline-node-box {
   position: relative;
   width: 320px;
   min-height: 80px;
-  background: #F5EEDC;
-  border-radius: 8px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-  border: 1px solid #d9c7a5;
+  background: linear-gradient(180deg, rgba(245, 238, 220, 0.98), rgba(241, 229, 207, 0.94));
+  border-radius: 18px;
+  box-shadow: 0 12px 28px rgba(24, 59, 78, 0.12);
+  border: 1px solid rgba(217, 199, 165, 0.95);
   overflow: visible;
+  transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
 }
 
 .pipeline-node-box:hover {
-  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.15);
+  box-shadow: 0 18px 30px rgba(24, 59, 78, 0.16);
   border-color: #27548A;
+  transform: translateY(-1px);
+}
+
+.pipeline-node-box-tool {
+  background: linear-gradient(180deg, rgba(235, 243, 252, 0.99), rgba(218, 232, 248, 0.96));
+  border-color: rgba(39, 84, 138, 0.28);
+}
+
+.pipeline-node-box-tool-transform {
+  background: linear-gradient(180deg, rgba(224, 246, 241, 0.99), rgba(205, 238, 230, 0.96));
+  border-color: rgba(15, 118, 110, 0.3);
+}
+
+.pipeline-node-box-tool-qc {
+  background: linear-gradient(180deg, rgba(255, 243, 224, 0.99), rgba(250, 228, 189, 0.96));
+  border-color: rgba(180, 83, 9, 0.32);
+}
+
+.pipeline-node-box-tool-annotation {
+  background: linear-gradient(180deg, rgba(242, 235, 255, 0.99), rgba(229, 217, 255, 0.95));
+  border-color: rgba(124, 58, 237, 0.28);
+}
+
+.pipeline-node-box-checkpoint {
+  background: linear-gradient(180deg, rgba(255, 245, 224, 0.99), rgba(251, 232, 190, 0.96));
+  border-color: rgba(221, 168, 83, 0.38);
+}
+
+.pipeline-node-box-input {
+  background: linear-gradient(180deg, rgba(242, 235, 255, 0.99), rgba(233, 223, 255, 0.95));
+  border-color: rgba(124, 58, 237, 0.26);
+}
+
+.pipeline-node-box-result {
+  background: linear-gradient(180deg, rgba(231, 248, 236, 0.99), rgba(211, 241, 219, 0.95));
+  border-color: rgba(34, 197, 94, 0.26);
 }
 
 .pipeline-node-header {
   position: relative;
-  padding: 0.75rem 3.35rem 0.75rem 1rem;
+  padding: 0.9rem 3.35rem 0.85rem 1rem;
   background: #27548A;
   color: #F5EEDC;
+  border-radius: 17px 17px 0 0;
 }
 
 .pipeline-node-label {
-  font-size: 0.875rem;
-  font-weight: 600;
-  text-align: center;
-  line-height: 1.4;
+  font-size: 0.9rem;
+  font-weight: 700;
+  text-align: left;
+  line-height: 1.45;
   margin: 0;
   word-break: break-word;
 }
@@ -68,8 +133,9 @@
 }
 
 .pipeline-node-body {
-  padding: 0.75rem 1rem;
-  background: #F5EEDC;
+  padding: 0.9rem 1rem 1rem;
+  background: transparent;
+  border-top: 1px solid rgba(24, 59, 78, 0.08);
 }
 
 .pipeline-node-description {
@@ -83,16 +149,18 @@
   background: #183B4E !important;
   width: 14px !important;
   height: 14px !important;
-  border-radius: 4px !important;
-  border: 2px solid white !important;
+  border-radius: 5px !important;
+  border: 2px solid #f8f3e7 !important;
+  box-shadow: 0 0 0 3px rgba(24, 59, 78, 0.08);
 }
 
 .pipeline-handle-source {
   background: #DDA853 !important;
   width: 14px !important;
   height: 14px !important;
-  border-radius: 4px !important;
+  border-radius: 5px !important;
   border: 2px solid #F5EEDC !important;
+  box-shadow: 0 0 0 3px rgba(221, 168, 83, 0.12);
 }
 
 .pipeline-handle-target:hover,
@@ -174,13 +242,13 @@
 }
 
 .pipeline-node-config-chip.default {
-  background: #eef2ff;
-  color: #4f46e5;
+  background: rgba(39, 84, 138, 0.1);
+  color: #1d4ed8;
 }
 
 .pipeline-node-config-chip.custom {
-  background: #dbeafe;
-  color: #1d4ed8;
+  background: rgba(16, 185, 129, 0.14);
+  color: #047857;
 }
 
 .pipeline-canvas-header {
@@ -450,10 +518,124 @@
   margin-bottom: 1rem;
 }
 
+.pipeline-sidebar-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.pipeline-sidebar-section {
+  border: 1px solid rgba(39, 84, 138, 0.12);
+  border-radius: 16px;
+  background: rgba(245, 238, 220, 0.64);
+  overflow: hidden;
+}
+
+.pipeline-sidebar-section-header {
+  width: 100%;
+  border: none;
+  background: linear-gradient(135deg, rgba(39, 84, 138, 0.08), rgba(221, 168, 83, 0.16));
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.85rem;
+  padding: 0.95rem 1rem;
+  text-align: left;
+  cursor: pointer;
+  color: #183b4e;
+}
+
+.pipeline-sidebar-section-header span:first-child {
+  display: flex;
+  flex-direction: column;
+  gap: 0.18rem;
+}
+
+.pipeline-sidebar-section-header strong {
+  font-size: 0.94rem;
+}
+
+.pipeline-sidebar-section-header small {
+  color: #59636f;
+  line-height: 1.45;
+}
+
+.pipeline-sidebar-chevron {
+  font-size: 1rem;
+  transition: transform 0.2s ease;
+}
+
+.pipeline-sidebar-chevron.open {
+  transform: rotate(180deg);
+}
+
+.pipeline-sidebar-section-body {
+  padding: 0.95rem;
+}
+
 .sidebar-buttons {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
+}
+
+.sidebar-buttons .btn-primary,
+.sidebar-buttons .btn-secondary,
+.sidebar-buttons .btn-success {
+  width: 100%;
+  justify-content: flex-start;
+}
+
+.pipeline-palette-button {
+  width: 100%;
+  justify-content: flex-start;
+  text-align: left;
+  border: 1px solid transparent;
+  border-radius: 14px;
+  padding: 0.85rem 0.95rem;
+  color: #183b4e;
+  font-weight: 600;
+  transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+}
+
+.pipeline-palette-button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 10px 20px rgba(24, 59, 78, 0.12);
+}
+
+.pipeline-palette-button-input {
+  background: linear-gradient(180deg, rgba(242, 235, 255, 0.99), rgba(229, 217, 255, 0.95));
+  border-color: rgba(124, 58, 237, 0.24);
+}
+
+.pipeline-palette-button-checkpoint {
+  background: linear-gradient(180deg, rgba(255, 245, 224, 0.99), rgba(251, 232, 190, 0.96));
+  border-color: rgba(221, 168, 83, 0.35);
+}
+
+.pipeline-palette-button-result {
+  background: linear-gradient(180deg, rgba(231, 248, 236, 0.99), rgba(211, 241, 219, 0.95));
+  border-color: rgba(34, 197, 94, 0.28);
+}
+
+.pipeline-palette-button-transform {
+  background: linear-gradient(180deg, rgba(224, 246, 241, 0.99), rgba(205, 238, 230, 0.96));
+  border-color: rgba(15, 118, 110, 0.3);
+}
+
+.pipeline-palette-button-qc {
+  background: linear-gradient(180deg, rgba(255, 243, 224, 0.99), rgba(250, 228, 189, 0.96));
+  border-color: rgba(180, 83, 9, 0.32);
+}
+
+.pipeline-palette-button-annotation {
+  background: linear-gradient(180deg, rgba(242, 235, 255, 0.99), rgba(229, 217, 255, 0.95));
+  border-color: rgba(124, 58, 237, 0.28);
+}
+
+.pipeline-palette-button-generic {
+  background: linear-gradient(180deg, rgba(235, 243, 252, 0.99), rgba(218, 232, 248, 0.96));
+  border-color: rgba(39, 84, 138, 0.26);
 }
 
 .pipeline-form {
@@ -493,18 +675,19 @@
 }
 
 .btn-success {
-  background: #22c55e;
+  background: linear-gradient(135deg, #27548A, #183B4E);
   color: white;
   padding: 0.5rem 1rem;
   border: none;
-  border-radius: 4px;
+  border-radius: 8px;
   cursor: pointer;
   font-size: 0.875rem;
-  font-weight: 500;
+  font-weight: 600;
+  box-shadow: 0 8px 18px rgba(24, 59, 78, 0.18);
 }
 
 .btn-success:hover {
-  background: #16a34a;
+  background: linear-gradient(135deg, #183B4E, #27548A);
 }
 
 @media (max-width: 1024px) {

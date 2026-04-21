@@ -404,6 +404,8 @@ def estimate_runtime_for_pipeline_graph(
     vm_name: Optional[str],
     input_assignments: Optional[List[RuntimeInputAssignment]] = None,
 ) -> RuntimeEstimate:
+    from backend.api.services.pipeline_converter import resolve_node_tool_id
+
     resolved_vm_name, display_name, partition_factor = _vm_speed_multiplier(vm_name)
     vm_price_per_minute = _vm_price_per_minute(resolved_vm_name)
     fixed_overhead = _fixed_overhead_minutes()
@@ -425,8 +427,7 @@ def estimate_runtime_for_pipeline_graph(
         if str(node.get("type") or "").strip().lower() != "tool":
             continue
         node_id = str(node.get("id") or "")
-        tool_label = str((node.get("data") or {}).get("label") or "")
-        tool_id = get_tool_id_from_label(tool_label)
+        tool_id = resolve_node_tool_id(node)
         if not tool_id:
             continue
         tool_ids.append(tool_id)

@@ -117,6 +117,10 @@ export interface JobPipelineVisualization {
 
 export interface PipelinePlanPreviewInput {
   id?: number
+  binding_id?: string
+  tool_id?: string
+  requirement_type?: string
+  label?: string
   filename: string
   file_format?: string | null
   size_bytes?: number

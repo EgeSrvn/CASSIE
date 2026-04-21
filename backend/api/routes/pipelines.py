@@ -14,8 +14,10 @@ from backend.api.models.pipeline_model import (
     PipelineUpdate,
     PipelineResponse
 )
+from backend.api.models.engagement_model import ReportCreate, VoteRequest
 from backend.api.models.user_model import UserResponse
 from backend.api.routes.auth import get_current_user, get_current_user_optional
+from backend.api.services.engagement_service import create_report, set_vote
 from backend.api.services.pipeline_service import (
     create_pipeline,
     get_pipeline_by_id,
@@ -110,7 +112,9 @@ async def create_pipeline_endpoint(
 
 @router.get("/shared", response_model=dict)
 async def list_shared_pipelines(
-    q: Optional[str] = Query(None, description="Partial search text for pipeline names or contained tool labels")
+    q: Optional[str] = Query(None, description="Partial search text for pipeline names or contained tool labels"),
+    sort: str = Query("recent", description="Sort shared pipelines by recent or popular"),
+    current_user: Optional[UserResponse] = Depends(get_current_user_optional),
 ):
     """
     List all shared pipelines (public access, no authentication required).
@@ -119,7 +123,11 @@ async def list_shared_pipelines(
         JSONResponse: List of shared pipelines
     """
     try:
-        pipelines = get_shared_pipelines(search_query=q)
+        pipelines = get_shared_pipelines(
+            search_query=q,
+            requester_user_id=current_user.id if current_user else None,
+            sort_by=sort,
+        )
         pipeline_responses = [PipelineResponse.model_validate(p) for p in pipelines]
         
         return success_response(
@@ -330,3 +338,65 @@ async def unshare_pipeline_endpoint(
         data=pipeline_response,
         message="Pipeline unshared successfully"
     )
+
+
+@router.post("/{pipeline_id}/vote", response_model=dict)
+async def vote_pipeline_endpoint(
+    pipeline_id: int,
+    payload: VoteRequest,
+    current_user: UserResponse = Depends(get_current_user),
+):
+    try:
+        summary = set_vote(
+            target_type="pipeline",
+            target_id=pipeline_id,
+            user_id=current_user.id,
+            vote_type=payload.vote_type,
+        )
+        return success_response(data=summary, message="Pipeline vote updated successfully")
+    except ValueError as e:
+        error_data = error_response(
+            error_code=ErrorCode.VALIDATION_ERROR,
+            message=str(e),
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+    except Exception as e:
+        logger.error(f"Error voting on pipeline {pipeline_id}: {e}", exc_info=True)
+        error_data = error_response(
+            error_code=ErrorCode.INTERNAL_ERROR,
+            message="Failed to update pipeline vote",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@router.post("/{pipeline_id}/report", response_model=dict)
+async def report_pipeline_endpoint(
+    pipeline_id: int,
+    payload: ReportCreate,
+    current_user: UserResponse = Depends(get_current_user),
+):
+    try:
+        report = create_report(
+            target_type="pipeline",
+            target_id=pipeline_id,
+            reporter_user_id=current_user.id,
+            payload=payload,
+        )
+        return success_response(data=report, message="Pipeline reported successfully")
+    except ValueError as e:
+        error_data = error_response(
+            error_code=ErrorCode.VALIDATION_ERROR,
+            message=str(e),
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+    except Exception as e:
+        logger.error(f"Error reporting pipeline {pipeline_id}: {e}", exc_info=True)
+        error_data = error_response(
+            error_code=ErrorCode.INTERNAL_ERROR,
+            message="Failed to report pipeline",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)

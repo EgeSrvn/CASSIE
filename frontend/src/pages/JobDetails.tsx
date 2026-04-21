@@ -43,13 +43,13 @@ const formatVmSlots = (vm: VM): string => `${vm.available_job_slots}/${vm.max_jo
 
 type JobDetailTab = 'information' | 'pipeline' | 'tracking' | 'resources' | 'inputs' | 'outputs'
 
-const JOB_DETAIL_TABS: Array<{ id: JobDetailTab; label: string }> = [
-  { id: 'information', label: 'Job Information' },
-  { id: 'pipeline', label: 'Pipeline Visualization' },
-  { id: 'tracking', label: 'Execution Tracking' },
-  { id: 'resources', label: 'Active Resource Usage' },
-  { id: 'inputs', label: 'Input Files' },
-  { id: 'outputs', label: 'Output Files' },
+const JOB_DETAIL_TABS: Array<{ id: JobDetailTab; label: string; description: string }> = [
+  { id: 'information', label: 'Job Information', description: 'Overview, status, selected VM, and launch actions.' },
+  { id: 'pipeline', label: 'Pipeline Visualization', description: 'Stage map of how the job will flow from inputs to outputs.' },
+  { id: 'tracking', label: 'Execution Tracking', description: 'Per-run history, stage progress, and execution timing.' },
+  { id: 'resources', label: 'Active Resource Usage', description: 'Live CPU, memory, and storage use against VM capacity.' },
+  { id: 'inputs', label: 'Input Files', description: 'Files queued or attached to this job before execution.' },
+  { id: 'outputs', label: 'Output Files', description: 'Generated artifacts, previews, and ZIP export actions.' },
 ]
 
 export default function JobDetails() {
@@ -252,6 +252,7 @@ export default function JobDetails() {
   const visibleInputCount = inputFiles.length + pendingQueuedFiles.length
   const selectedVMDetails = job?.vm_name ? availableVMs.find(vm => vm.name === job.vm_name) || null : null
   const latestExecution = executions.length > 0 ? executions[0] : null
+  const activeTabDetails = JOB_DETAIL_TABS.find((tab) => tab.id === activeTab) || JOB_DETAIL_TABS[0]
   const hasWaitingCheckpoint = executions.some((execution) =>
     execution.status === 'running' &&
     (execution.parameters_used?.stages || []).some((stage) => stage.status === 'waiting_for_checkpoint')
@@ -720,18 +721,27 @@ export default function JobDetails() {
 
         {error && <div className="error-message">{error}</div>}
         <div className="builder-stepper" style={{ marginBottom: '1.25rem' }}>
-          {JOB_DETAIL_TABS.map(tab => (
+          {JOB_DETAIL_TABS.map((tab, index) => (
             <button
               key={tab.id}
               type="button"
               className={`builder-step ${activeTab === tab.id ? 'active' : ''}`}
               onClick={() => setActiveTab(tab.id)}
             >
+              <span className="builder-step-number">{index + 1}</span>
               <span className="builder-step-copy">
                 <strong>{tab.label}</strong>
+                <small>{tab.description}</small>
               </span>
             </button>
           ))}
+        </div>
+        <div className="builder-level-header">
+          <div>
+            <p className="builder-level-kicker">Stage {JOB_DETAIL_TABS.findIndex((tab) => tab.id === activeTabDetails.id) + 1}</p>
+            <h2>{activeTabDetails.label}</h2>
+          </div>
+          <p>{activeTabDetails.description}</p>
         </div>
         <div className="job-details-container">
           {activeTab === 'information' && (
@@ -872,16 +882,8 @@ export default function JobDetails() {
                   const currentStageLabel = getCurrentStageLabel(execution)
 
                   return (
-                    <div
-                      key={execution.id}
-                      style={{
-                        padding: '1rem',
-                        border: '1px solid #e2e8f0',
-                        borderRadius: '8px',
-                        backgroundColor: '#F5EEDC'
-                      }}
-                    >
-                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '1rem', flexWrap: 'wrap', marginBottom: '0.75rem' }}>
+                    <div key={execution.id} className="execution-card">
+                      <div className="execution-card-header">
                         <div><strong>Execution #{execution.execution_number}</strong></div>
                         <div>
                           <strong>Status:</strong>{' '}
@@ -893,24 +895,14 @@ export default function JobDetails() {
                       </div>
 
                       {execution.started_at && (
-                        <div style={{ marginBottom: '0.5rem', color: '#475569', fontSize: '0.9rem' }}>
+                        <div className="execution-card-meta">
                           Started: {formatLocalDateTime(execution.started_at)}
                           {execution.completed_at ? ` | Completed: ${formatLocalDateTime(execution.completed_at)}` : ''}
                         </div>
                       )}
 
                       {currentStageLabel && (
-                        <div
-                          style={{
-                            marginBottom: '0.75rem',
-                            padding: '0.75rem',
-                            borderRadius: '6px',
-                            backgroundColor: '#eff6ff',
-                            color: '#1e3a8a',
-                            border: '1px solid #bfdbfe',
-                            fontSize: '0.95rem'
-                          }}
-                        >
+                        <div className="execution-progress-banner">
                           <strong>Current Progress:</strong> {currentStageLabel}
                         </div>
                       )}
@@ -922,18 +914,10 @@ export default function JobDetails() {
                       )}
 
                       {stages.length > 0 && (
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                        <div className="execution-stage-list">
                           {stages.map((stage) => (
-                            <div
-                              key={`${execution.id}-${stage.stage_number}-${stage.tool_id}`}
-                              style={{
-                                padding: '0.75rem',
-                                borderRadius: '6px',
-                                backgroundColor: '#f8fafc',
-                                border: '1px solid #e2e8f0'
-                              }}
-                            >
-                              <div style={{ display: 'flex', justifyContent: 'space-between', gap: '1rem', flexWrap: 'wrap' }}>
+                            <div key={`${execution.id}-${stage.stage_number}-${stage.tool_id}`} className="execution-stage-card">
+                              <div className="execution-stage-header">
                                 <div>
                                   <strong>Tool {stage.stage_number}:</strong> {stage.tool_name || stage.tool_id}
                                 </div>
@@ -945,7 +929,7 @@ export default function JobDetails() {
                               </div>
 
                               {stage.started_at && (
-                                <div style={{ marginTop: '0.5rem', fontSize: '0.9rem', color: '#64748b' }}>
+                                <div className="execution-stage-meta">
                                   Started: {formatLocalDateTime(stage.started_at)}
                                   {stage.completed_at ? ` | Completed: ${formatLocalDateTime(stage.completed_at)}` : ''}
                                   {formatDurationClock(stage.started_at, stage.completed_at) ? ` | Time: ${formatDurationClock(stage.started_at, stage.completed_at)}` : ''}
@@ -1043,19 +1027,19 @@ export default function JobDetails() {
             
             {/* Show pipeline requirements if job has a pipeline_id */}
             {job.pipeline_id && (
-              <div style={{ marginBottom: '1.5rem', padding: '1rem', backgroundColor: '#f8fafc', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
-                <h3 style={{ marginTop: 0, marginBottom: '0.75rem', fontSize: '1rem', fontWeight: '600' }}>
+              <div className="pipeline-requirements-card">
+                <h3 className="pipeline-requirements-title">
                   Pipeline Input Requirements
                 </h3>
                 {loadingRequirements ? (
-                  <p style={{ color: '#64748b', fontSize: '0.875rem' }}>Loading requirements...</p>
+                  <p className="pipeline-requirements-copy">Loading requirements...</p>
                 ) : pipelineRequirements ? (
                   pipelineRequirements.input_requirements.length > 0 ? (
                     <>
-                      <p style={{ marginBottom: '1rem', color: '#64748b', fontSize: '0.875rem' }}>
+                      <p className="pipeline-requirements-copy">
                         This pipeline requires the following input files:
                       </p>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                      <div className="pipeline-requirements-list">
                         {pipelineRequirements.input_requirements.map((req) => {
                           // Check if this requirement is already satisfied by existing files
                           const isSatisfied = inputFiles.some(f => {
@@ -1064,24 +1048,27 @@ export default function JobDetails() {
                           const isPending = !isSatisfied && pendingQueuedFiles.some(file =>
                             fileMatchesRequirement(file.filename, req.formats, file.file_format)
                           )
-                          
-                          const borderColor = isSatisfied ? '#86efac' : (isPending ? '#93c5fd' : '#e2e8f0')
-                          const bgColor = isSatisfied ? '#dcfce7' : (isPending ? '#eff6ff' : '#fff')
+
+                          const stateClassName = isSatisfied
+                            ? 'satisfied'
+                            : isPending
+                              ? 'pending'
+                              : 'missing'
                           return (
-                            <div key={req.type} style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', padding: '0.5rem', backgroundColor: bgColor, borderRadius: '4px', border: `1px solid ${borderColor}` }}>
-                              <div style={{ flex: 1 }}>
+                            <div key={req.type} className={`pipeline-requirement-item ${stateClassName}`}>
+                              <div className="pipeline-requirement-main">
                                 <strong>{req.label}</strong>
-                                <span style={{ marginLeft: '0.5rem', color: '#64748b', fontSize: '0.875rem' }}>
+                                <span className="pipeline-requirement-formats">
                                   ({req.formats.join(', ').toUpperCase()})
                                 </span>
-                                <span style={{ marginLeft: '0.5rem', color: '#475569', fontSize: '0.875rem' }}>
+                                <span className="pipeline-requirement-tools">
                                   Used by: {getPipelineRequirementTools(req).join(', ')}
                                 </span>
                                 {isSatisfied && (
-                                  <span style={{ marginLeft: '0.5rem', color: '#16a34a', fontSize: '0.875rem' }}>✓ Satisfied</span>
+                                  <span className="pipeline-requirement-status success">Satisfied</span>
                                 )}
                                 {isPending && (
-                                  <span style={{ marginLeft: '0.5rem', color: '#2563eb', fontSize: '0.875rem' }}>Uploading</span>
+                                  <span className="pipeline-requirement-status pending">Uploading</span>
                                 )}
                               </div>
                             </div>
@@ -1090,12 +1077,12 @@ export default function JobDetails() {
                       </div>
                     </>
                   ) : (
-                    <p style={{ color: '#64748b', fontSize: '0.875rem' }}>
+                    <p className="pipeline-requirements-copy">
                       This pipeline does not require any specific input files.
                     </p>
                   )
                 ) : (
-                  <p style={{ color: '#f59e0b', fontSize: '0.875rem' }}>
+                  <p className="pipeline-requirements-copy warning">
                     Failed to load pipeline requirements. Please refresh the page.
                   </p>
                 )}

@@ -174,6 +174,7 @@ class KubernetesPipelineRunner:
         vm_name: Optional[str],
     ) -> None:
         from backend.api.services.vm_queue_service import schedule_queued_jobs
+        from backend.api.services.user_notification_service import send_job_checkpoint_notification
 
         try:
             loop = asyncio.get_event_loop()
@@ -273,6 +274,16 @@ class KubernetesPipelineRunner:
                         if stage_info.get("status") != "waiting_for_checkpoint":
                             stage_info["status"] = "waiting_for_checkpoint"
                             state_changed = True
+                            await loop.run_in_executor(
+                                self._metadata_executor,
+                                lambda stage_info=stage_info: send_job_checkpoint_notification(
+                                    user_id,
+                                    job_id=job_id,
+                                    job_name=str(getattr(job, "name", f"Job {job_id}") or f"Job {job_id}"),
+                                    checkpoint_name=str(stage_info.get("tool_name") or stage_info.get("stage_id") or "Checkpoint"),
+                                    stage_number=stage_info.get("stage_number"),
+                                ),
+                            )
                         continue
 
                     stage_inputs = self._collect_stage_inputs(spec, current_inputs, outputs_by_stage)
@@ -842,7 +853,14 @@ class KubernetesPipelineRunner:
         user_id: int,
         execution_preferences: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
-        from backend.api.services.pipeline_converter import extract_edges, extract_stage_nodes, sort_tool_nodes_by_priority
+        from backend.api.services.pipeline_converter import (
+            build_stage_result_label_map,
+            extract_edges,
+            extract_stage_nodes,
+            resolve_node_label,
+            resolve_node_tool_id,
+            sort_tool_nodes_by_priority,
+        )
         from backend.api.services.pipeline_service import get_pipeline_by_id
 
         pipeline = get_pipeline_by_id(pipeline_id, user_id)
@@ -854,6 +872,7 @@ class KubernetesPipelineRunner:
             return []
 
         edges = extract_edges(pipeline.edges)
+        result_labels_by_stage = build_stage_result_label_map(pipeline.nodes, pipeline.edges)
         dependency_map: Dict[str, List[str]] = {node_id: [] for node_id in stage_nodes}
         for edge in edges:
             source = str(edge.get("source") or "").strip()
@@ -880,19 +899,20 @@ class KubernetesPipelineRunner:
             if node_type == "checkpoint":
                 tool = {
                     "id": "CHECKPOINT",
-                    "name": str(node.get("label") or "Checkpoint"),
+                    "name": resolve_node_label(node) or "Checkpoint",
                     "docker": {},
                     "input_requirements": [],
                 }
                 tool_config = {}
                 stage_kind = "checkpoint"
             else:
-                tool_id = get_tool_id_from_label(str(node.get("label") or ""))
+                tool_id = resolve_node_tool_id(node)
                 tool = get_tool_by_id(tool_id) if tool_id else None
                 if not tool:
                     continue
                 tool_config = self._extract_pipeline_node_config(node)
                 stage_kind = "tool"
+            stage_label = resolve_node_label(node) or str((tool or {}).get("name") or (tool or {}).get("id") or node_id)
             specs.append(
                 {
                     "stage_id": node_id,
@@ -902,6 +922,8 @@ class KubernetesPipelineRunner:
                     "tool_config": tool_config,
                     "stage_kind": stage_kind,
                     "priority_order": int(((node.get("data") or {}).get("priorityOrder")) or stage_number - 1),
+                    "stage_label": stage_label,
+                    "result_labels": list(result_labels_by_stage.get(node_id, [])),
                 }
             )
             stage_number += 1
@@ -936,8 +958,9 @@ class KubernetesPipelineRunner:
         if not isinstance(raw_values, dict):
             return {}
 
+        explicit_tool_id = str(node_data.get("toolId") or node_data.get("tool_id") or "").strip().upper()
         label = str(node_data.get("label") or node.get("label") or "").strip()
-        tool_id = get_tool_id_from_label(label)
+        tool_id = explicit_tool_id or get_tool_id_from_label(label)
         if not tool_id:
             return {}
 
@@ -973,6 +996,63 @@ class KubernetesPipelineRunner:
         if "text" in label_lower or "txt" in label_lower or "name" in label_lower or "config" in label_lower:
             return {"type": "text_input", "label": label or "Text Input", "formats": ["txt"]}
         return {"type": "input", "label": label or "Pipeline Input", "formats": []}
+
+    def _select_preview_inputs(
+        self,
+        initial_inputs: List[Dict[str, Any]],
+        *,
+        binding_ids: Optional[List[str]] = None,
+        tool_id: Optional[str] = None,
+        requirement_type: Optional[str] = None,
+        requirement: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        normalized_binding_ids = {
+            str(binding_id).strip()
+            for binding_id in (binding_ids or [])
+            if str(binding_id).strip()
+        }
+        normalized_tool_id = str(tool_id or "").strip().upper()
+        normalized_requirement_type = str(requirement_type or "").strip().lower()
+
+        targeted_matches: List[Dict[str, Any]] = []
+        for artifact in initial_inputs:
+            artifact_binding_id = str(artifact.get("binding_id") or "").strip()
+            artifact_tool_id = str(artifact.get("tool_id") or "").strip().upper()
+            artifact_requirement_type = str(artifact.get("requirement_type") or "").strip().lower()
+
+            if normalized_binding_ids and artifact_binding_id in normalized_binding_ids:
+                targeted_matches.append(artifact)
+                continue
+
+            if (
+                normalized_tool_id
+                and normalized_requirement_type
+                and artifact_tool_id == normalized_tool_id
+                and artifact_requirement_type == normalized_requirement_type
+            ):
+                targeted_matches.append(artifact)
+
+        if targeted_matches:
+            return targeted_matches
+
+        if requirement is None:
+            return list(initial_inputs)
+
+        return [
+            artifact for artifact in initial_inputs
+            if self._artifact_matches_requirement(artifact, requirement)
+        ]
+
+    def _resolve_preview_input_label(
+        self,
+        default_label: str,
+        matching_inputs: List[Dict[str, Any]],
+    ) -> str:
+        for artifact in matching_inputs:
+            label = str(artifact.get("label") or "").strip()
+            if label:
+                return label
+        return default_label
 
     def _build_explicit_pipeline_input_blocks(
         self,
@@ -1019,10 +1099,16 @@ class KubernetesPipelineRunner:
                 if source == node_id and target in stage_numbers and target not in downstream_stage_ids:
                     downstream_stage_ids.append(target)
 
-            matching_inputs = [
-                artifact for artifact in initial_inputs
-                if self._artifact_matches_requirement(artifact, {"formats": classification.get("formats") or []})
-            ] if classification.get("formats") else list(initial_inputs)
+            requirement = {"formats": classification.get("formats") or []}
+            matching_inputs = self._select_preview_inputs(
+                initial_inputs,
+                binding_ids=[node_id, f"input:{node_id}"],
+                requirement=requirement if classification.get("formats") else None,
+            )
+            block_label = self._resolve_preview_input_label(
+                str(classification.get("label") or "Pipeline Input"),
+                matching_inputs,
+            )
 
             block_id = f"input:{node_id}"
             blocks.append(
@@ -1031,7 +1117,7 @@ class KubernetesPipelineRunner:
                     "kind": "input",
                     "column": "input",
                     "row": min((stage_numbers.get(stage_id) or 1) for stage_id in downstream_stage_ids) if downstream_stage_ids else 1,
-                    "label": str(classification.get("label") or "Pipeline Input"),
+                    "label": block_label,
                     "status": "finished" if matching_inputs else "waiting",
                     "raw_status": "available" if matching_inputs else "missing",
                     "formats": list(classification.get("formats") or []),
@@ -1069,21 +1155,9 @@ class KubernetesPipelineRunner:
         stage_specs: List[Dict[str, Any]],
         initial_inputs: List[Dict[str, Any]],
     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-        input_blocks: Dict[str, Dict[str, Any]] = {}
-        input_consumers: Dict[str, List[int]] = {}
-        input_stage_ids: Dict[str, List[str]] = {}
         stage_spec_by_id = {str(spec.get("stage_id") or ""): spec for spec in stage_specs}
-        fastq_stage_ids: List[str] = []
-        fastq_consumer_rows: List[int] = []
-
-        def is_fastq_requirement(requirement: Dict[str, Any]) -> bool:
-            requirement_type = str(requirement.get("type") or "").strip().lower()
-            formats = {
-                str(format_name).lower().strip().lstrip(".")
-                for format_name in (requirement.get("formats") or [])
-                if str(format_name).strip()
-            }
-            return requirement_type in {"reads", "forward_reads", "reverse_reads"} or "fastq" in formats
+        blocks: List[Dict[str, Any]] = []
+        connections: List[Dict[str, Any]] = []
 
         for spec in stage_specs:
             if str(spec.get("stage_kind") or "tool") != "tool":
@@ -1091,8 +1165,9 @@ class KubernetesPipelineRunner:
 
             stage_id = str(spec.get("stage_id") or "")
             tool = spec.get("tool") or {}
+            normalized_tool_id = str(tool.get("id") or "").strip().upper()
             dependency_ids = list(spec.get("dependency_ids") or [])
-            for requirement in tool.get("input_requirements", []) or []:
+            for requirement_index, requirement in enumerate(tool.get("input_requirements", []) or []):
                 requirement_type = str(requirement.get("type") or "").strip().lower()
                 if not requirement_type:
                     continue
@@ -1104,114 +1179,47 @@ class KubernetesPipelineRunner:
                 if satisfied_by_dependency:
                     continue
 
-                if is_fastq_requirement(requirement):
-                    if stage_id and stage_id not in fastq_stage_ids:
-                        fastq_stage_ids.append(stage_id)
-                    fastq_consumer_rows.append(int(spec.get("stage_number") or 0))
-                    continue
+                binding_id = f"{stage_id}:{normalized_tool_id or 'tool'}:{requirement_type}:{requirement_index}"
+                matching_inputs = self._select_preview_inputs(
+                    initial_inputs,
+                    binding_ids=[binding_id],
+                    tool_id=normalized_tool_id or None,
+                    requirement_type=requirement_type,
+                    requirement=requirement,
+                )
+                block_label = self._resolve_preview_input_label(
+                    str(requirement.get("label") or self._humanize_token(requirement_type)),
+                    matching_inputs,
+                )
+                input_block_id = f"input:{stage_id}:{requirement_type}:{requirement_index}"
 
-                input_block_id = f"input:{requirement_type}"
-                matching_inputs = [
-                    artifact for artifact in initial_inputs
-                    if self._artifact_matches_requirement(artifact, requirement)
-                ]
-                input_blocks[input_block_id] = {
-                    "id": input_block_id,
-                    "kind": "input",
-                    "column": "input",
-                    "row": 0,
-                    "label": str(requirement.get("label") or self._humanize_token(requirement_type)),
-                    "status": "finished" if matching_inputs else "waiting",
-                    "raw_status": "available" if matching_inputs else "missing",
-                    "formats": list(requirement.get("formats") or []),
-                    "filenames": [str(item.get("filename") or "") for item in matching_inputs if str(item.get("filename") or "").strip()],
-                    "description": (
-                        ", ".join(str(item.get("filename") or "") for item in matching_inputs if str(item.get("filename") or "").strip())
-                        if matching_inputs else
-                        "Waiting for a matching job input"
-                    ),
-                }
-                input_consumers.setdefault(input_block_id, []).append(int(spec.get("stage_number") or 0))
-                input_stage_ids.setdefault(input_block_id, [])
-                if stage_id and stage_id not in input_stage_ids[input_block_id]:
-                    input_stage_ids[input_block_id].append(stage_id)
-
-        blocks: List[Dict[str, Any]] = []
-        connections: List[Dict[str, Any]] = []
-        for input_block_id, block in input_blocks.items():
-            consumer_rows = input_consumers.get(input_block_id) or [1]
-            block["row"] = min(consumer_rows)
-            blocks.append(block)
-            for stage_id in input_stage_ids.get(input_block_id, []):
+                blocks.append(
+                    {
+                        "id": input_block_id,
+                        "kind": "input",
+                        "column": "input",
+                        "row": int(spec.get("stage_number") or 1),
+                        "label": block_label,
+                        "status": "finished" if matching_inputs else "waiting",
+                        "raw_status": "available" if matching_inputs else "missing",
+                        "formats": list(requirement.get("formats") or []),
+                        "filenames": [str(item.get("filename") or "") for item in matching_inputs if str(item.get("filename") or "").strip()],
+                        "description": (
+                            ", ".join(str(item.get("filename") or "") for item in matching_inputs if str(item.get("filename") or "").strip())
+                            if matching_inputs else
+                            "Waiting for a matching job input"
+                        ),
+                    }
+                )
                 connections.append(
                     {
                         "id": f"edge:{input_block_id}:stage:{stage_id}",
                         "source": input_block_id,
                         "target": f"stage:{stage_id}",
                         "kind": "input",
-                        "label": block["label"],
+                        "label": block_label,
                     }
                 )
-
-        fastq_inputs = [
-            artifact for artifact in initial_inputs
-            if "fastq" in self._infer_artifact_formats(artifact)
-        ]
-        if fastq_stage_ids:
-            if fastq_inputs:
-                target_row = min(fastq_consumer_rows or [1])
-                for index, artifact in enumerate(fastq_inputs, start=1):
-                    block_id = f"input:fastq:{index}"
-                    blocks.append(
-                        {
-                            "id": block_id,
-                            "kind": "input",
-                            "column": "input",
-                            "row": target_row,
-                            "label": "FASTQ Input",
-                            "status": "finished",
-                            "raw_status": "available",
-                            "formats": ["fastq"],
-                            "filenames": [str(artifact.get("filename") or "")] if str(artifact.get("filename") or "").strip() else [],
-                            "description": str(artifact.get("filename") or "") or None,
-                        }
-                    )
-                    for stage_id in fastq_stage_ids:
-                        connections.append(
-                            {
-                                "id": f"edge:{block_id}:stage:{stage_id}",
-                                "source": block_id,
-                                "target": f"stage:{stage_id}",
-                                "kind": "input",
-                                "label": None,
-                            }
-                        )
-            else:
-                block_id = "input:fastq:missing"
-                blocks.append(
-                    {
-                        "id": block_id,
-                        "kind": "input",
-                        "column": "input",
-                        "row": min(fastq_consumer_rows or [1]),
-                        "label": "FASTQ Input",
-                        "status": "waiting",
-                        "raw_status": "missing",
-                        "formats": ["fastq"],
-                        "filenames": [],
-                        "description": "Waiting for matching FASTQ job inputs",
-                    }
-                )
-                for stage_id in fastq_stage_ids:
-                    connections.append(
-                        {
-                            "id": f"edge:{block_id}:stage:{stage_id}",
-                            "source": block_id,
-                            "target": f"stage:{stage_id}",
-                            "kind": "input",
-                            "label": None,
-                        }
-                    )
 
         return blocks, connections
 
@@ -1261,6 +1269,20 @@ class KubernetesPipelineRunner:
         stage_status_map: Dict[str, Dict[str, Any]],
         output_files: List[Any],
     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        def sanitize_output_token(value: str, fallback: str) -> str:
+            cleaned = "".join(char.lower() if char.isalnum() else "_" for char in str(value or "").strip())
+            collapsed = "_".join(part for part in cleaned.split("_") if part)
+            return collapsed or fallback
+
+        def format_output_label(result_label: str, tool_payload: Dict[str, Any], produced_type: str) -> str:
+            result_token = sanitize_output_token(result_label, "result")
+            tool_token = sanitize_output_token(
+                str(tool_payload.get("id") or tool_payload.get("name") or "tool"),
+                "tool",
+            )
+            format_token = sanitize_output_token(produced_type, "output")
+            return f"{result_token}_{tool_token}.{format_token}"
+
         dependents_by_stage: Dict[str, List[Dict[str, Any]]] = {}
         for spec in stage_specs:
             for dependency_id in spec.get("dependency_ids", []) or []:
@@ -1277,6 +1299,7 @@ class KubernetesPipelineRunner:
             stage_id = str(spec.get("stage_id") or "")
             raw_stage_status = str((stage_status_map.get(stage_id) or {}).get("status") or "pending")
             tool = spec.get("tool") or {}
+            result_labels = list(spec.get("result_labels") or [])
             downstream_specs = dependents_by_stage.get(stage_id) or []
 
             for produced_type in list(tool.get("produces") or []):
@@ -1302,7 +1325,7 @@ class KubernetesPipelineRunner:
                         "kind": "output",
                         "column": "output",
                         "row": int(spec.get("stage_number") or 0),
-                        "label": self._humanize_token(str(produced_type or "output")),
+                        "label": format_output_label(result_labels[0] if result_labels else "result", tool, str(produced_type or "output")),
                         "status": self._derive_output_status(raw_stage_status, matching_outputs),
                         "raw_status": raw_stage_status,
                         "related_stage_id": stage_id,
@@ -1315,7 +1338,10 @@ class KubernetesPipelineRunner:
                         ) if matching_outputs else (
                             f"{int(stage_entry.get('output_count') or 0)} output file{'s' if int(stage_entry.get('output_count') or 0) != 1 else ''} recorded"
                             if isinstance(stage_entry, dict) and stage_entry.get("output_count") is not None else
-                            f"Produced by {tool.get('name') or tool.get('id')}"
+                            (
+                                f"Produced by {tool.get('name') or tool.get('id')}"
+                                + (f" for result block {result_labels[0]}" if result_labels else "")
+                            )
                         )
                     }
                 )
@@ -1375,6 +1401,10 @@ class KubernetesPipelineRunner:
                         "filename": filename,
                         "s3_key": str(item.get("s3_key") or ""),
                         "size_bytes": int(item.get("size_bytes") or 0),
+                        "binding_id": str(item.get("binding_id") or ""),
+                        "tool_id": str(item.get("tool_id") or ""),
+                        "requirement_type": str(item.get("requirement_type") or ""),
+                        "label": str(item.get("label") or ""),
                         "file_format": item.get("file_format"),
                         "source": str(item.get("source") or "planned-input"),
                         "producer_tool_id": None,
@@ -1431,7 +1461,7 @@ class KubernetesPipelineRunner:
                     "row": int(spec.get("stage_number") or 0),
                     "stage_id": stage_id,
                     "stage_number": int(spec.get("stage_number") or 0),
-                    "label": str(tool.get("name") or tool.get("id") or stage_id),
+                    "label": str(spec.get("stage_label") or tool.get("name") or tool.get("id") or stage_id),
                     "tool_id": str(tool.get("id") or "") or None,
                     "status": "waiting",
                     "raw_status": "planned",
@@ -1520,7 +1550,7 @@ class KubernetesPipelineRunner:
                     "row": int(spec.get("stage_number") or 0),
                     "stage_id": stage_id,
                     "stage_number": int(spec.get("stage_number") or 0),
-                    "label": str(tool.get("name") or tool.get("id") or stage_id),
+                    "label": str(spec.get("stage_label") or tool.get("name") or tool.get("id") or stage_id),
                     "tool_id": str(tool.get("id") or "") or None,
                     "status": self._normalize_visual_status(raw_stage_status),
                     "raw_status": raw_stage_status,
@@ -1567,12 +1597,15 @@ class KubernetesPipelineRunner:
             stage_kind = str(item.get("stage_kind") or "tool")
             tool_id = str(item.get("tool_id") or "")
             tool_name = str(item.get("tool_name") or tool_id or stage_id)
+            stage_label = str(item.get("stage_label") or tool_name)
             specs.append(
                 {
                     "stage_id": stage_id,
                     "stage_number": int(item.get("stage_number") or len(specs) + 1),
                     "stage_kind": stage_kind,
                     "dependency_ids": [str(dep).strip() for dep in (item.get("dependency_stage_ids") or []) if str(dep).strip()],
+                    "stage_label": stage_label,
+                    "result_labels": list(item.get("result_labels") or []),
                     "tool": {
                         "id": tool_id,
                         "name": tool_name,

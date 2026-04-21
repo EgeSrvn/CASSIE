@@ -25,6 +25,8 @@ const emptyForm: ProfileUpdateRequest = {
   website_url: '',
   current_password: '',
   new_password: '',
+  login_two_factor_enabled: false,
+  job_notifications_enabled: false,
 }
 
 export default function Profile() {
@@ -89,6 +91,8 @@ export default function Profile() {
               website_url: loadedUser.website_url || '',
               current_password: '',
               new_password: '',
+              login_two_factor_enabled: loadedUser.login_two_factor_enabled || false,
+              job_notifications_enabled: loadedUser.job_notifications_enabled || false,
             }
       )
       setAvatarFile(null)
@@ -103,6 +107,10 @@ export default function Profile() {
 
   const handleChange = (field: keyof ProfileUpdateRequest, value: string) => {
     setFormData((current) => ({ ...current, [field]: value }))
+  }
+
+  const handleToggle = (field: 'login_two_factor_enabled' | 'job_notifications_enabled', checked: boolean) => {
+    setFormData((current) => ({ ...current, [field]: checked }))
   }
 
   const handleAvatarChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -153,6 +161,7 @@ export default function Profile() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    const emailChanged = (formData.email || '').trim() !== (profile?.email || '').trim()
     const isPasswordChangeRequested = Boolean((formData.new_password || '').trim() || (confirmNewPassword || '').trim())
     if (isPasswordChangeRequested) {
       if (!confirmNewPassword.trim()) {
@@ -173,7 +182,11 @@ export default function Profile() {
         updated = await uploadProfileAvatar(avatarFile)
       }
       setProfile(updated)
-      setSuccess('Profile updated successfully.')
+      setSuccess(
+        emailChanged
+          ? 'Profile updated. Your new email must be verified again, so login 2FA and job notification emails were turned off for now.'
+          : 'Profile updated successfully.'
+      )
       setIsEditing(false)
       setAvatarFile(null)
       setFormData((current) => ({
@@ -435,6 +448,42 @@ export default function Profile() {
                         )}
                     </div>
                   </div>
+                </div>
+
+                <div className="profile-settings-block profile-form-wide">
+                  <h3>Security & Notifications</h3>
+                  <p className="profile-settings-copy">
+                    These options use your verified email address to protect sign-in and keep you updated on long-running jobs.
+                  </p>
+                  <div className="profile-settings-list">
+                    <label className="profile-setting-toggle">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(formData.login_two_factor_enabled)}
+                        onChange={(e) => handleToggle('login_two_factor_enabled', e.target.checked)}
+                      />
+                      <span>
+                        <strong>Require a code every time I log in</strong>
+                        <small>Email a one-time sign-in code after your password is accepted.</small>
+                      </span>
+                    </label>
+                    <label className="profile-setting-toggle">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(formData.job_notifications_enabled)}
+                        onChange={(e) => handleToggle('job_notifications_enabled', e.target.checked)}
+                      />
+                      <span>
+                        <strong>Send me job emails</strong>
+                        <small>Notify me when a job finishes successfully or pauses at a checkpoint.</small>
+                      </span>
+                    </label>
+                  </div>
+                  {!profile?.email_verified && (
+                    <small className="profile-settings-warning">
+                      Verify your email before enabling login 2FA or job notification emails.
+                    </small>
+                  )}
                 </div>
               </div>
 

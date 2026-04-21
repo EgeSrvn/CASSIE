@@ -2,6 +2,7 @@ import { FormEvent, useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 
 import Navigation from '../components/Navigation'
+import ReportDialog from '../components/ReportDialog'
 import { getCurrentUser, getToken } from '../services/authService'
 import { extractApiErrorMessage } from '../services/apiClient'
 import {
@@ -11,7 +12,11 @@ import {
   deleteForumComment,
   deleteForumThread,
   getForumThread,
+  reportForumComment,
+  reportForumThread,
   uploadForumCommentImages,
+  voteForumComment,
+  voteForumThread,
 } from '../services/forumService'
 import '../styles/globals.css'
 
@@ -24,9 +29,40 @@ interface LightboxState {
   label: string
 }
 
+type ReportTargetState =
+  | { type: 'thread'; id: number }
+  | { type: 'comment'; id: number }
+
 const formatDateTime = (value: string) => new Date(value).toLocaleString()
 const MAX_FORUM_IMAGES = 4
 const COMMENTS_PER_PAGE = 10
+
+const sortCommentsRecursively = (
+  comments: ForumComment[],
+  sortBy: 'recent' | 'popular'
+): ForumComment[] => {
+  const compareComments = (left: ForumComment, right: ForumComment) => {
+    if (sortBy === 'popular') {
+      const scoreDelta = right.score - left.score
+      if (scoreDelta !== 0) {
+        return scoreDelta
+      }
+      const upvoteDelta = right.upvote_count - left.upvote_count
+      if (upvoteDelta !== 0) {
+        return upvoteDelta
+      }
+    }
+
+    return new Date(right.created_at).getTime() - new Date(left.created_at).getTime()
+  }
+
+  return [...comments]
+    .map((comment) => ({
+      ...comment,
+      replies: sortCommentsRecursively(comment.replies || [], sortBy),
+    }))
+    .sort(compareComments)
+}
 
 export default function ForumThread() {
   const navigate = useNavigate()
@@ -46,7 +82,10 @@ export default function ForumThread() {
   const [submittingComment, setSubmittingComment] = useState(false)
   const [submittingReply, setSubmittingReply] = useState(false)
   const [currentCommentPage, setCurrentCommentPage] = useState(1)
+  const [commentSortBy, setCommentSortBy] = useState<'recent' | 'popular'>('recent')
   const [lightbox, setLightbox] = useState<LightboxState | null>(null)
+  const [reportTarget, setReportTarget] = useState<ReportTargetState | null>(null)
+  const [submittingReport, setSubmittingReport] = useState(false)
 
   const commentImagePreviews = useMemo(
     () => commentImages.map((file) => ({ file, url: URL.createObjectURL(file) })),
@@ -116,6 +155,10 @@ export default function ForumThread() {
         .catch(() => setCurrentUserId(null))
     }
   }, [numericThreadId, isAuthenticated])
+
+  useEffect(() => {
+    setCurrentCommentPage(1)
+  }, [commentSortBy, thread?.thread_comments.length])
 
   const loadThread = async () => {
     try {
@@ -329,6 +372,102 @@ export default function ForumThread() {
     }
   }
 
+  const updateCommentTree = (
+    comments: ForumComment[],
+    commentId: number,
+    updater: (comment: ForumComment) => ForumComment
+  ): ForumComment[] =>
+    comments.map((comment) => {
+      if (comment.id === commentId) {
+        return updater(comment)
+      }
+      if (comment.replies && comment.replies.length > 0) {
+        return {
+          ...comment,
+          replies: updateCommentTree(comment.replies, commentId, updater),
+        }
+      }
+      return comment
+    })
+
+  const handleVoteThread = async (voteType: 'upvote' | 'downvote') => {
+    if (!isAuthenticated) {
+      navigate('/login')
+      return
+    }
+    if (!thread) {
+      return
+    }
+    try {
+      const summary = await voteForumThread(thread.id, voteType)
+      setThread((current) => current ? { ...current, ...summary } : current)
+    } catch (err: any) {
+      setError(extractApiErrorMessage(err, 'Failed to vote on forum post'))
+    }
+  }
+
+  const handleVoteComment = async (commentId: number, voteType: 'upvote' | 'downvote') => {
+    if (!isAuthenticated) {
+      navigate('/login')
+      return
+    }
+    try {
+      const summary = await voteForumComment(commentId, voteType)
+      setThread((current) =>
+        current
+          ? {
+              ...current,
+              thread_comments: updateCommentTree(current.thread_comments, commentId, (comment) => ({
+                ...comment,
+                ...summary,
+              })),
+            }
+          : current
+      )
+    } catch (err: any) {
+      setError(extractApiErrorMessage(err, 'Failed to vote on forum comment'))
+    }
+  }
+
+  const openReportThread = () => {
+    if (!isAuthenticated) {
+      navigate('/login')
+      return
+    }
+    if (!thread) {
+      return
+    }
+    setReportTarget({ type: 'thread', id: thread.id })
+  }
+
+  const openReportComment = (commentId: number) => {
+    if (!isAuthenticated) {
+      navigate('/login')
+      return
+    }
+    setReportTarget({ type: 'comment', id: commentId })
+  }
+
+  const handleSubmitReport = async (payload: { reason: string; details?: string }) => {
+    if (!reportTarget) {
+      return
+    }
+    try {
+      setSubmittingReport(true)
+      if (reportTarget.type === 'thread') {
+        await reportForumThread(reportTarget.id, payload)
+      } else {
+        await reportForumComment(reportTarget.id, payload)
+      }
+      setReportTarget(null)
+      alert('Report sent to the admin team.')
+    } catch (err: any) {
+      setError(extractApiErrorMessage(err, 'Failed to submit report'))
+    } finally {
+      setSubmittingReport(false)
+    }
+  }
+
   const renderAuthorCard = (author: ForumThreadDetail['author']) => (
     <button
       type="button"
@@ -349,8 +488,43 @@ export default function ForumThread() {
     </button>
   )
 
-  const renderActionMenu = (menuKey: string, onDelete?: () => void, onReply?: () => void) => {
-    if (!onDelete && !onReply) {
+  const renderVoteSymbols = (
+    userVote: 'upvote' | 'downvote' | null | undefined,
+    onVote: (voteType: 'upvote' | 'downvote') => void,
+    targetLabel: string,
+    counts: { upvotes: number; downvotes: number },
+  ) => (
+    <div className="engagement-vote-cluster engagement-vote-cluster-compact">
+      <button
+        type="button"
+        className={`engagement-symbol-button engagement-vote-button engagement-symbol-upvote ${userVote === 'upvote' ? 'active' : ''}`}
+        onClick={() => onVote('upvote')}
+        aria-label={`Upvote ${targetLabel}`}
+        title={userVote === 'upvote' ? 'Take back upvote' : 'Upvote'}
+      >
+        <span className="engagement-vote-icon" aria-hidden="true">▲</span>
+        <span className="engagement-vote-label">Upvote</span>
+        <span className="engagement-vote-count">{counts.upvotes}</span>
+      </button>
+      <button
+        type="button"
+        className={`engagement-symbol-button engagement-vote-button engagement-symbol-downvote ${userVote === 'downvote' ? 'active' : ''}`}
+        onClick={() => onVote('downvote')}
+        aria-label={`Downvote ${targetLabel}`}
+        title={userVote === 'downvote' ? 'Take back downvote' : 'Downvote'}
+      >
+        <span className="engagement-vote-icon" aria-hidden="true">▼</span>
+        <span className="engagement-vote-label">Downvote</span>
+        <span className="engagement-vote-count">{counts.downvotes}</span>
+      </button>
+    </div>
+  )
+
+  const renderActionMenu = (
+    menuKey: string,
+    items: Array<{ label: string; onClick: () => void; danger?: boolean }>
+  ) => {
+    if (items.length === 0) {
       return null
     }
 
@@ -366,20 +540,16 @@ export default function ForumThread() {
       </button>
       {openMenuKey === menuKey && (
         <div className="forum-post-menu">
-          {onReply && (
-            <button type="button" className="forum-post-menu-item" onClick={onReply}>
-              Reply
-            </button>
-          )}
-          {onDelete && (
+          {items.map((item) => (
             <button
+              key={`${menuKey}-${item.label}`}
               type="button"
-              className="forum-post-menu-item forum-post-menu-item-danger"
-              onClick={onDelete}
+              className={`forum-post-menu-item ${item.danger ? 'forum-post-menu-item-danger' : ''}`}
+              onClick={item.onClick}
             >
-              Delete
+              {item.label}
             </button>
-          )}
+          ))}
         </div>
       )}
       </div>
@@ -434,15 +604,40 @@ export default function ForumThread() {
           <div className="forum-post-header">
             <div className="forum-post-author-block">
               {renderAuthorCard(comment.author)}
-              <span className="forum-meta-inline">{formatDateTime(comment.created_at)}</span>
+              <div className="forum-thread-stats forum-engagement-stats">
+                <span>{formatDateTime(comment.created_at)}</span>
+                {renderVoteSymbols(
+                  comment.user_vote,
+                  (voteType) => handleVoteComment(comment.id, voteType),
+                  'comment',
+                  { upvotes: comment.upvote_count, downvotes: comment.downvote_count }
+                )}
+              </div>
             </div>
-            {renderActionMenu(commentKey, comment.user_id === currentUserId ? () => handleDeleteComment(comment.id) : undefined, () =>
-              beginReply({
-                key: commentKey,
-                parentCommentId: comment.id,
-                label: comment.author.display_name || comment.author.username,
-              })
-            )}
+            <div className="forum-post-header-actions">
+              <button
+                type="button"
+                className="engagement-symbol-button engagement-symbol-report"
+                onClick={() => openReportComment(comment.id)}
+                aria-label="Report comment"
+                title="Report"
+              >
+                ⚑
+              </button>
+              {renderActionMenu(commentKey, [
+                {
+                  label: 'Reply',
+                  onClick: () => beginReply({
+                    key: commentKey,
+                    parentCommentId: comment.id,
+                    label: comment.author.display_name || comment.author.username,
+                  }),
+                },
+                ...(comment.user_id === currentUserId
+                  ? [{ label: 'Delete', onClick: () => void handleDeleteComment(comment.id), danger: true }]
+                  : []),
+              ])}
+            </div>
           </div>
           {comment.parent_comment_preview && (
             <div className="forum-quote-preview">
@@ -484,6 +679,11 @@ export default function ForumThread() {
     )
   }
 
+  const sortedThreadComments = useMemo(
+    () => sortCommentsRecursively(thread?.thread_comments || [], commentSortBy),
+    [thread?.thread_comments, commentSortBy]
+  )
+
   if (loading) {
     return (
       <div className="page-container">
@@ -505,9 +705,8 @@ export default function ForumThread() {
       </div>
     )
   }
-
-  const totalCommentPages = Math.max(1, Math.ceil(thread.thread_comments.length / COMMENTS_PER_PAGE))
-  const visibleComments = thread.thread_comments.slice(
+  const totalCommentPages = Math.max(1, Math.ceil(sortedThreadComments.length / COMMENTS_PER_PAGE))
+  const visibleComments = sortedThreadComments.slice(
     (currentCommentPage - 1) * COMMENTS_PER_PAGE,
     currentCommentPage * COMMENTS_PER_PAGE
   )
@@ -534,11 +733,32 @@ export default function ForumThread() {
               <div className="forum-post-author-block">
                 {renderAuthorCard(thread.author)}
                 <div className="forum-thread-stats">
+                  {renderVoteSymbols(
+                    thread.user_vote,
+                    (voteType) => void handleVoteThread(voteType),
+                    'forum post',
+                    { upvotes: thread.upvote_count, downvotes: thread.downvote_count }
+                  )}
                   <span>{thread.comment_count} comment{thread.comment_count === 1 ? '' : 's'}</span>
                   <span>{thread.view_count} view{thread.view_count === 1 ? '' : 's'}</span>
                 </div>
               </div>
-              {renderActionMenu('thread-main', thread.user_id === currentUserId ? handleDeleteThread : undefined)}
+              <div className="forum-post-header-actions">
+                <button
+                  type="button"
+                  className="engagement-symbol-button engagement-symbol-report"
+                  onClick={openReportThread}
+                  aria-label="Report forum post"
+                  title="Report"
+                >
+                  ⚑
+                </button>
+                {renderActionMenu('thread-main', [
+                  ...(thread.user_id === currentUserId
+                    ? [{ label: 'Delete', onClick: () => void handleDeleteThread(), danger: true }]
+                    : []),
+                ])}
+              </div>
             </div>
             {thread.image_urls.length > 0 && (
               <div className="forum-post-image-grid">
@@ -602,7 +822,22 @@ export default function ForumThread() {
           </section>
 
           <section className="forum-answer-list">
-            {thread.thread_comments.length === 0 ? (
+            <div className="section-heading forum-comment-list-heading">
+              <h2>Discussion</h2>
+              <div className="community-sort-controls">
+                <label htmlFor="thread-comment-sort">Sort comments</label>
+                <select
+                  id="thread-comment-sort"
+                  className="community-sort-select"
+                  value={commentSortBy}
+                  onChange={(e) => setCommentSortBy(e.target.value as 'recent' | 'popular')}
+                >
+                  <option value="recent">Most Recent</option>
+                  <option value="popular">Most Popular</option>
+                </select>
+              </div>
+            </div>
+            {sortedThreadComments.length === 0 ? (
               <div className="empty-state compact-empty">
                 <p>No comments yet. You can be the first person to join this discussion.</p>
               </div>
@@ -699,6 +934,18 @@ export default function ForumThread() {
           )}
         </div>
       )}
+      <ReportDialog
+        isOpen={Boolean(reportTarget)}
+        title={reportTarget?.type === 'comment' ? 'Report Comment' : 'Report Forum Post'}
+        targetLabel={reportTarget?.type === 'comment' ? 'comment' : 'forum post'}
+        submitting={submittingReport}
+        onClose={() => {
+          if (!submittingReport) {
+            setReportTarget(null)
+          }
+        }}
+        onSubmit={handleSubmitReport}
+      />
     </div>
   )
 }

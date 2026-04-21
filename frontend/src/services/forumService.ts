@@ -27,6 +27,10 @@ export interface ForumComment {
   author: ForumAuthor
   parent_comment_preview?: ForumCommentPreview | null
   replies: ForumComment[]
+  upvote_count: number
+  downvote_count: number
+  score: number
+  user_vote?: 'upvote' | 'downvote' | null
 }
 
 export interface ForumThreadSummary {
@@ -42,6 +46,10 @@ export interface ForumThreadSummary {
   updated_at: string
   last_activity_at: string
   author: ForumAuthor
+  upvote_count: number
+  downvote_count: number
+  score: number
+  user_vote?: 'upvote' | 'downvote' | null
 }
 
 export interface ForumThreadDetail extends ForumThreadSummary {
@@ -62,11 +70,24 @@ interface ForumApiResponse<T> {
   message?: string
 }
 
-export const listForumThreads = async (query = '', page = 1, perPage = 10): Promise<ForumThreadList> => {
+export interface ForumEngagementSummary {
+  upvote_count: number
+  downvote_count: number
+  score: number
+  user_vote?: 'upvote' | 'downvote' | null
+}
+
+export const listForumThreads = async (
+  query = '',
+  page = 1,
+  perPage = 10,
+  sort: 'recent' | 'popular' = 'recent'
+): Promise<ForumThreadList> => {
   const response = await apiClient.get<ForumApiResponse<ForumThreadList>>('/api/forum', {
     params: {
       page,
       per_page: perPage,
+      sort,
       ...(query.trim() ? { q: query.trim() } : {}),
     },
   })
@@ -142,5 +163,39 @@ export const deleteForumComment = async (commentId: number): Promise<void> => {
   const response = await apiClient.delete<ForumApiResponse<null>>(`/api/forum/comments/${commentId}`)
   if (!response.data.success) {
     throw new Error(response.data.message || 'Failed to delete forum comment')
+  }
+}
+
+export const voteForumThread = async (threadId: number, voteType: 'upvote' | 'downvote'): Promise<ForumEngagementSummary> => {
+  const response = await apiClient.post<ForumApiResponse<ForumEngagementSummary>>(`/api/forum/${threadId}/vote`, {
+    vote_type: voteType,
+  })
+  if (response.data.success) {
+    return response.data.data
+  }
+  throw new Error(response.data.message || 'Failed to vote on forum post')
+}
+
+export const voteForumComment = async (commentId: number, voteType: 'upvote' | 'downvote'): Promise<ForumEngagementSummary> => {
+  const response = await apiClient.post<ForumApiResponse<ForumEngagementSummary>>(`/api/forum/comments/${commentId}/vote`, {
+    vote_type: voteType,
+  })
+  if (response.data.success) {
+    return response.data.data
+  }
+  throw new Error(response.data.message || 'Failed to vote on forum comment')
+}
+
+export const reportForumThread = async (threadId: number, payload: { reason: string; details?: string }): Promise<void> => {
+  const response = await apiClient.post<ForumApiResponse<unknown>>(`/api/forum/${threadId}/report`, payload)
+  if (!response.data.success) {
+    throw new Error(response.data.message || 'Failed to report forum post')
+  }
+}
+
+export const reportForumComment = async (commentId: number, payload: { reason: string; details?: string }): Promise<void> => {
+  const response = await apiClient.post<ForumApiResponse<unknown>>(`/api/forum/comments/${commentId}/report`, payload)
+  if (!response.data.success) {
+    throw new Error(response.data.message || 'Failed to report forum comment')
   }
 }
