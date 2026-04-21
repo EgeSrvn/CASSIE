@@ -25,6 +25,11 @@ export interface Job {
   cloud_provider?: string
   execution_preferences?: Record<string, unknown>
   vm_name?: string
+  estimated_price_usd?: number
+  max_charge_usd?: number
+  actual_price_charged_usd?: number | null
+  balance_reserved_at?: string | null
+  balance_charged_at?: string | null
   interactive_outputs_enabled?: boolean
   upload_session_token?: string
   pending_upload_count?: number
@@ -150,6 +155,7 @@ export interface JobCreate {
   input_file_ids?: number[] // Pre-uploaded file IDs to associate with this job
   pending_upload_count?: number
   expected_total_input_files?: number
+  estimated_price_usd?: number
 }
 
 export interface JobListResponse {

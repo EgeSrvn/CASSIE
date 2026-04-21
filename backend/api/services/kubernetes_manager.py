@@ -36,6 +36,7 @@ from backend.api.models.pipeline_model import FileCreate, FileType
 from backend.api.services.job_execution_service import create_job_execution, get_running_executions, update_job_execution
 from backend.api.services.job_archive_service import prewarm_job_outputs_zip
 from backend.api.services.job_service import update_job, get_job_by_id
+from backend.api.services.billing_service import settle_job_charge
 from backend.api.services.minio_client import get_minio_client
 from backend.api.services.runtime_training_logger import append_successful_tool_training_rows
 from backend.api.services.storage_service import create_file_record, get_file_by_id, get_files_by_user
@@ -426,6 +427,7 @@ class KubernetesPipelineRunner:
             from backend.api.models.job_model import JobUpdate
 
             update_job(job_id, user_id, JobUpdate(status=JobStatus.COMPLETED))
+            settle_job_charge(job_id, user_id, execution_id)
             prewarm_job_outputs_zip(job_id, user_id)
         except Exception as exc:
             public_error = self._public_failure_message(str(exc))
@@ -445,6 +447,7 @@ class KubernetesPipelineRunner:
             from backend.api.models.job_model import JobUpdate
 
             update_job(job_id, user_id, JobUpdate(status=JobStatus.FAILED))
+            settle_job_charge(job_id, user_id, execution_id)
         finally:
             self._checkpoint_events.pop(execution_id, None)
             self._checkpoint_releases.pop(execution_id, None)
@@ -2161,10 +2164,11 @@ exit "$CASSIE_STATUS"
                 raise ValueError("metaSPAdes requires paired-end reads (at least two FASTQ files)")
             r1 = os.path.basename(fastq_reads[0]["filename"])
             r2 = os.path.basename(fastq_reads[1]["filename"])
-            only_assembler_flag = " --only-assembler" if bool(tool_config.get("only_assembler")) else ""
+            low_resource = bool(tool_plan["low_resource"])
+            only_assembler_flag = " --only-assembler" if (low_resource or bool(tool_config.get("only_assembler"))) else ""
             phred_offset = str(tool_config.get("phred_offset") or "auto").strip()
             phred_offset_flag = f" --phred-offset {phred_offset}" if phred_offset in {"33", "64"} else ""
-            kmers = str(tool_config.get("kmers") or "").strip()
+            kmers = str(tool_config.get("kmers") or ("21" if low_resource else "")).strip()
             kmers_flag = f" -k {kmers}" if kmers and re.fullmatch(r"\d+(,\d+)*", kmers) else ""
             return self._wrap_tool_script(
                 [
@@ -2255,14 +2259,15 @@ exit "$CASSIE_STATUS"
             hifiasm_out = f"{output_dir}/hifiasm_out"
             prefix = f"{hifiasm_out}/assembly"
             hifiasm_flags: List[str] = []
+            low_resource = bool(tool_plan.get("low_resource"))
             if str(tool_config.get("mode") or "hifi").strip().lower() == "ont":
                 hifiasm_flags.append("--ont")
-            if tool_config.get("disable_dup_purging"):
+            if low_resource or tool_config.get("disable_dup_purging"):
                 hifiasm_flags.append("-l0")
             trim_bp = int(tool_config.get("trim_bp") or 0)
             if trim_bp > 0:
                 hifiasm_flags.append(f"-z{trim_bp}")
-            if tool_config.get("small_genome_no_bloom"):
+            if low_resource or tool_config.get("small_genome_no_bloom"):
                 hifiasm_flags.append("-f0")
             if tool_config.get("write_paf"):
                 hifiasm_flags.append("--write-paf")
@@ -4063,6 +4068,7 @@ exit "$CASSIE_STATUS"
                 ),
             )
             update_job(execution.job_id, job.user_id, JobUpdate(status=JobStatus.FAILED))
+            settle_job_charge(execution.job_id, job.user_id, execution.id)
             recovered.append(execution.id)
 
         return {

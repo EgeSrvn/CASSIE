@@ -13,6 +13,7 @@ import os
 import time
 import tempfile
 import hashlib
+from pydantic import BaseModel, Field
 from fastapi.concurrency import run_in_threadpool
 from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, status, Query
 from fastapi.responses import JSONResponse, StreamingResponse, RedirectResponse
@@ -57,6 +58,7 @@ from backend.api.utils.validators import (
     validate_file_format
 )
 from backend.api.utils.logger import get_logger
+from backend.api.routes.data_files import _download_google_drive_file
 
 logger = get_logger(__name__)
 
@@ -65,6 +67,30 @@ router = APIRouter(prefix="/storage", tags=["storage"])
 # Initialize MinIO client
 minio_client = get_minio_client()
 ZIP_DOWNLOAD_EXPIRATION_SECONDS = 3600
+
+
+def _write_upload_chunk(temp_file, hash_md5, chunk: bytes) -> None:
+    hash_md5.update(chunk)
+    temp_file.write(chunk)
+
+
+class GoogleDriveStorageImportRequest(BaseModel):
+    file_id: str = Field(..., min_length=5, max_length=512)
+    access_token: str = Field(..., min_length=20, max_length=8192)
+    filename: str = Field(..., min_length=1, max_length=255)
+    mime_type: Optional[str] = Field(None, max_length=255)
+    file_format: Optional[str] = Field(None, max_length=50)
+
+
+def _hash_local_file_md5(local_path: str) -> str:
+    hash_md5 = hashlib.md5()
+    with open(local_path, "rb") as source:
+        while True:
+            chunk = source.read(1024 * 1024)
+            if not chunk:
+                break
+            hash_md5.update(chunk)
+    return hash_md5.hexdigest()
 
 @router.post("/upload", status_code=status.HTTP_201_CREATED)
 async def upload_file(
@@ -134,7 +160,7 @@ async def upload_file(
     try:
         hash_md5 = hashlib.md5()
         file_size = 0
-        chunk_size = 8 * 1024 * 1024
+        chunk_size = 1024 * 1024
 
         with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as temp_file:
             temp_path = temp_file.name
@@ -144,8 +170,7 @@ async def upload_file(
                 if not chunk:
                     break
                 file_size += len(chunk)
-                hash_md5.update(chunk)
-                await run_in_threadpool(temp_file.write, chunk)
+                await run_in_threadpool(_write_upload_chunk, temp_file, hash_md5, chunk)
 
             await run_in_threadpool(temp_file.flush)
 
@@ -255,6 +280,149 @@ async def upload_file(
         return JSONResponse(content=error_data, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
     finally:
         await file.close()
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.unlink(temp_path)
+            except Exception as e:
+                logger.warning(f"Failed to delete temp file {temp_path}: {e}")
+
+
+@router.post("/import-google-drive", status_code=status.HTTP_201_CREATED)
+async def import_google_drive_file_to_job(
+    payload: GoogleDriveStorageImportRequest,
+    job_id: int = Query(..., description="Job ID to associate file with"),
+    auth_context: AuthContext = Depends(get_auth_context),
+):
+    """
+    Import a user-selected Google Drive file directly into a pending job input area.
+    """
+    current_user = auth_context.user
+
+    if auth_context.token_type == "job_upload_session" and job_id != auth_context.job_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Upload session token can only import files for its job",
+        )
+
+    job = get_job_by_id(job_id, user_id=current_user.id)
+    if job is None:
+        return JSONResponse(content=not_found_response("Job", job_id), status_code=status.HTTP_404_NOT_FOUND)
+
+    if payload.file_format:
+        is_valid, error_msg = validate_file_format(payload.file_format)
+        if not is_valid:
+            return JSONResponse(
+                content=error_response(
+                    error_code=ErrorCode.VALIDATION_ERROR,
+                    message=error_msg,
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                ),
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+
+    temp_path: Optional[str] = None
+    try:
+        temp_path, filename = await run_in_threadpool(
+            _download_google_drive_file,
+            payload.file_id,
+            payload.access_token,
+            payload.filename,
+            payload.mime_type,
+        )
+        file_size = await run_in_threadpool(os.path.getsize, temp_path)
+        checksum = await run_in_threadpool(_hash_local_file_md5, temp_path)
+        s3_key = f"jobs/{job_id}/input/{filename}"
+
+        existing_file = await run_in_threadpool(
+            get_existing_file_record_by_fingerprint,
+            job_id=job_id,
+            filename=filename,
+            file_type=FileType.INPUT,
+            size_bytes=file_size,
+            checksum=checksum,
+        )
+        if existing_file:
+            response_data = success_response(
+                data=FileResponse(
+                    id=existing_file.id,
+                    job_id=existing_file.job_id,
+                    filename=existing_file.filename,
+                    s3_key=existing_file.s3_key,
+                    file_type=existing_file.file_type,
+                    file_format=existing_file.file_format,
+                    size_bytes=existing_file.size_bytes,
+                    checksum=existing_file.checksum,
+                    uploaded_at=existing_file.uploaded_at,
+                    created_at=existing_file.created_at,
+                ).model_dump(mode="json"),
+                message="File already imported",
+                status_code=status.HTTP_201_CREATED,
+            )
+            return JSONResponse(content=response_data, status_code=status.HTTP_201_CREATED)
+
+        await run_in_threadpool(
+            minio_client.ensure_user_bucket,
+            current_user.id,
+            current_user.username,
+        )
+        await run_in_threadpool(
+            minio_client.upload_file,
+            current_user.id,
+            temp_path,
+            s3_key,
+            current_user.username,
+        )
+
+        file_record = await run_in_threadpool(
+            create_file_record,
+            FileCreate(
+                job_id=job_id,
+                filename=filename,
+                s3_key=s3_key,
+                file_type=FileType.INPUT,
+                file_format=payload.file_format,
+                size_bytes=file_size,
+                checksum=checksum,
+            ),
+        )
+
+        response_data = success_response(
+            data=FileResponse(
+                id=file_record.id,
+                job_id=file_record.job_id,
+                filename=file_record.filename,
+                s3_key=file_record.s3_key,
+                file_type=file_record.file_type,
+                file_format=file_record.file_format,
+                size_bytes=file_record.size_bytes,
+                checksum=file_record.checksum,
+                uploaded_at=file_record.uploaded_at,
+                created_at=file_record.created_at,
+            ).model_dump(mode="json"),
+            message="Google Drive file imported successfully",
+            status_code=status.HTTP_201_CREATED,
+        )
+        return JSONResponse(content=response_data, status_code=status.HTTP_201_CREATED)
+    except ValueError as e:
+        return JSONResponse(
+            content=error_response(
+                error_code=ErrorCode.VALIDATION_ERROR,
+                message=str(e),
+                status_code=status.HTTP_400_BAD_REQUEST,
+            ),
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    except Exception as e:
+        logger.error(f"Error importing Google Drive file to job {job_id}: {e}", exc_info=True)
+        return JSONResponse(
+            content=error_response(
+                error_code=ErrorCode.INTERNAL_ERROR,
+                message="Failed to import Google Drive file",
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            ),
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+    finally:
         if temp_path and os.path.exists(temp_path):
             try:
                 os.unlink(temp_path)

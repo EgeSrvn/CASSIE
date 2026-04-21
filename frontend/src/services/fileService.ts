@@ -89,6 +89,35 @@ export const uploadFile = async (
   }
 }
 
+export interface GoogleDriveJobImportPayload {
+  file_id: string
+  access_token: string
+  filename: string
+  mime_type?: string
+  file_format?: string | null
+}
+
+export const importGoogleDriveFileToJob = async (
+  jobId: number,
+  payload: GoogleDriveJobImportPayload,
+  authToken?: string
+): Promise<File> => {
+  const response = await apiClient.post<{ success: boolean; data: File; message?: string }>(
+    '/api/storage/import-google-drive',
+    payload,
+    {
+      params: { job_id: jobId },
+      headers: authToken ? { Authorization: `Bearer ${authToken}` } : undefined,
+    }
+  )
+
+  if (response.data.success) {
+    return response.data.data
+  }
+
+  throw new Error(response.data.message || 'Failed to import Google Drive file')
+}
+
 export const getFiles = async (jobId?: number, fileType?: string, page: number = 1, perPage: number = 100): Promise<FileListResponse> => {
   const params: any = { page, per_page: perPage }
   if (jobId) params.job_id = jobId

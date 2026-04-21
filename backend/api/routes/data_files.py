@@ -5,13 +5,20 @@ This module provides endpoints for managing files in folders.
 """
 
 import os
+import re
+import tempfile
+from urllib.parse import parse_qs, unquote, urlparse
 from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, status, Query, Form
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel, Field
+import requests
 from typing import Optional
 from backend.api.routes.auth import get_current_user
 from backend.api.models.user_model import UserResponse
 from backend.api.services.data_file_service import (
     upload_data_file,
+    upload_data_file_from_path,
     get_data_files_by_folder,
     get_data_file_by_id,
     rename_data_file,
@@ -34,6 +41,215 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/data-files", tags=["data-files"])
 
 minio_client = get_minio_client()
+
+
+class CloudImportRequest(BaseModel):
+    source_url: str = Field(..., min_length=8, max_length=4096)
+    filename: Optional[str] = Field(None, max_length=255)
+    folder_id: Optional[int] = None
+    file_format: Optional[str] = Field(None, max_length=50)
+
+
+class GoogleDriveImportRequest(BaseModel):
+    file_id: str = Field(..., min_length=5, max_length=512)
+    access_token: str = Field(..., min_length=20, max_length=8192)
+    filename: Optional[str] = Field(None, max_length=255)
+    mime_type: Optional[str] = Field(None, max_length=255)
+    folder_id: Optional[int] = None
+    file_format: Optional[str] = Field(None, max_length=50)
+
+
+def _safe_cloud_filename(value: Optional[str]) -> str:
+    raw_name = (value or "").strip()
+    if raw_name:
+        raw_name = unquote(raw_name.split("?")[0].split("#")[0])
+    filename = os.path.basename(raw_name) if raw_name else ""
+    filename = re.sub(r'[\\/:*?"<>|]+', "_", filename).strip(" .")
+    if not filename:
+        filename = "cloud_import.dat"
+    return filename[:180]
+
+
+def _extract_google_drive_file_id(source_url: str) -> Optional[str]:
+    parsed = urlparse(source_url)
+    if "drive.google.com" not in parsed.netloc.lower():
+        return None
+
+    query_id = parse_qs(parsed.query).get("id", [None])[0]
+    if query_id:
+        return query_id
+
+    match = re.search(r"/file/d/([^/]+)", parsed.path)
+    if match:
+        return match.group(1)
+
+    return None
+
+
+def _normalize_cloud_download_url(source_url: str) -> tuple[str, Optional[str]]:
+    parsed = urlparse(source_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("Cloud import URL must be a valid http or https link")
+
+    google_file_id = _extract_google_drive_file_id(source_url)
+    if google_file_id:
+        return f"https://drive.google.com/uc?export=download&id={google_file_id}", google_file_id
+
+    return source_url, None
+
+
+def _filename_from_content_disposition(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+
+    utf8_match = re.search(r"filename\*=UTF-8''([^;]+)", value, flags=re.IGNORECASE)
+    if utf8_match:
+        return unquote(utf8_match.group(1).strip().strip('"'))
+
+    regular_match = re.search(r'filename="?([^";]+)"?', value, flags=re.IGNORECASE)
+    if regular_match:
+        return regular_match.group(1).strip()
+
+    return None
+
+
+def _google_confirm_token(cookies: requests.cookies.RequestsCookieJar) -> Optional[str]:
+    for key, value in cookies.items():
+        if key.startswith("download_warning"):
+            return value
+    return None
+
+
+def _download_cloud_file(source_url: str, requested_filename: Optional[str]) -> tuple[str, str]:
+    download_url, google_file_id = _normalize_cloud_download_url(source_url)
+    session = requests.Session()
+    response: Optional[requests.Response] = None
+    temp_path: Optional[str] = None
+
+    try:
+        response = session.get(download_url, stream=True, timeout=(15, 120), allow_redirects=True)
+        response.raise_for_status()
+
+        confirm_token = _google_confirm_token(response.cookies)
+        content_disposition = response.headers.get("content-disposition")
+        content_type = response.headers.get("content-type", "").lower()
+        if google_file_id and not confirm_token and not content_disposition and "text/html" in content_type:
+            html = response.text
+            token_match = re.search(r"confirm=([0-9A-Za-z_%-]+)", html)
+            confirm_token = unquote(token_match.group(1)) if token_match else None
+            response.close()
+            if not confirm_token:
+                raise ValueError("Google Drive did not return a downloadable file. Make sure link sharing is enabled for the file.")
+
+        if google_file_id and confirm_token:
+            response.close()
+            response = session.get(
+                "https://drive.google.com/uc",
+                params={"export": "download", "id": google_file_id, "confirm": confirm_token},
+                stream=True,
+                timeout=(15, 120),
+                allow_redirects=True,
+            )
+            response.raise_for_status()
+
+        fallback_name = os.path.basename(urlparse(response.url).path)
+        detected_name = (
+            requested_filename
+            or _filename_from_content_disposition(response.headers.get("content-disposition"))
+            or fallback_name
+        )
+        filename = _safe_cloud_filename(detected_name)
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(filename)[1]) as temp_file:
+            temp_path = temp_file.name
+            downloaded_size = 0
+            for chunk in response.iter_content(chunk_size=1024 * 1024):
+                if not chunk:
+                    continue
+                downloaded_size += len(chunk)
+                temp_file.write(chunk)
+
+        if downloaded_size <= 0:
+            raise ValueError("The cloud link did not return any file content")
+
+        return temp_path, filename
+    except Exception:
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+        raise
+    finally:
+        if response is not None:
+            response.close()
+
+
+def _download_google_drive_file(
+    file_id: str,
+    access_token: str,
+    requested_filename: Optional[str],
+    selected_mime_type: Optional[str],
+) -> tuple[str, str]:
+    headers = {"Authorization": f"Bearer {access_token}"}
+    metadata_response: Optional[requests.Response] = None
+    download_response: Optional[requests.Response] = None
+    temp_path: Optional[str] = None
+
+    try:
+        metadata_response = requests.get(
+            f"https://www.googleapis.com/drive/v3/files/{file_id}",
+            params={
+                "fields": "id,name,mimeType,size,capabilities/canDownload",
+                "supportsAllDrives": "true",
+            },
+            headers=headers,
+            timeout=(15, 60),
+        )
+        metadata_response.raise_for_status()
+        metadata = metadata_response.json()
+        drive_mime_type = metadata.get("mimeType") or selected_mime_type or ""
+        if str(drive_mime_type).startswith("application/vnd.google-apps."):
+            raise ValueError("Google Workspace documents must be exported from Drive before importing into CASSIE.")
+        if metadata.get("capabilities") and metadata["capabilities"].get("canDownload") is False:
+            raise ValueError("Google Drive says this file cannot be downloaded by the current account.")
+
+        filename = _safe_cloud_filename(requested_filename or metadata.get("name") or file_id)
+
+        download_response = requests.get(
+            f"https://www.googleapis.com/drive/v3/files/{file_id}",
+            params={"alt": "media", "supportsAllDrives": "true"},
+            headers=headers,
+            stream=True,
+            timeout=(15, 120),
+        )
+        download_response.raise_for_status()
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(filename)[1]) as temp_file:
+            temp_path = temp_file.name
+            downloaded_size = 0
+            for chunk in download_response.iter_content(chunk_size=1024 * 1024):
+                if not chunk:
+                    continue
+                downloaded_size += len(chunk)
+                temp_file.write(chunk)
+
+        if downloaded_size <= 0:
+            raise ValueError("Google Drive did not return any file content")
+
+        return temp_path, filename
+    except Exception:
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+        raise
+    finally:
+        if metadata_response is not None:
+            metadata_response.close()
+        if download_response is not None:
+            download_response.close()
 
 
 @router.post("/upload", status_code=status.HTTP_201_CREATED)
@@ -106,6 +322,152 @@ async def upload_data_file_endpoint(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
         return JSONResponse(content=error_data, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@router.post("/import-cloud", status_code=status.HTTP_201_CREATED)
+async def import_cloud_data_file_endpoint(
+    payload: CloudImportRequest,
+    current_user: UserResponse = Depends(get_current_user)
+):
+    """
+    Import a public cloud-hosted file into the user's data library.
+
+    Google Drive share links and direct HTTP(S) file URLs are supported.
+    """
+    temp_path: Optional[str] = None
+    try:
+        temp_path, filename = await run_in_threadpool(
+            _download_cloud_file,
+            payload.source_url,
+            payload.filename,
+        )
+
+        file_record = await run_in_threadpool(
+            upload_data_file_from_path,
+            user_id=current_user.id,
+            local_path=temp_path,
+            filename=filename,
+            folder_id=payload.folder_id,
+            file_format=payload.file_format,
+        )
+
+        return success_response(
+            data={
+                "id": file_record.id,
+                "filename": file_record.filename,
+                "s3_key": file_record.s3_key,
+                "file_type": file_record.file_type.value,
+                "file_format": file_record.file_format,
+                "size_bytes": file_record.size_bytes,
+                "checksum": file_record.checksum,
+                "uploaded_at": file_record.uploaded_at.isoformat() if file_record.uploaded_at else None,
+                "created_at": file_record.created_at.isoformat() if file_record.created_at else None
+            },
+            message="Cloud file imported successfully",
+            status_code=status.HTTP_201_CREATED
+        )
+    except ValueError as e:
+        error_data = error_response(
+            error_code=ErrorCode.VALIDATION_ERROR,
+            message=str(e),
+            status_code=status.HTTP_400_BAD_REQUEST
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+    except requests.RequestException as e:
+        logger.error(f"Error importing cloud data file: {e}", exc_info=True)
+        error_data = error_response(
+            error_code=ErrorCode.VALIDATION_ERROR,
+            message="Could not download the cloud file. Make sure the link is public or directly downloadable.",
+            status_code=status.HTTP_400_BAD_REQUEST
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+    except Exception as e:
+        logger.error(f"Error importing cloud data file: {e}", exc_info=True)
+        error_data = error_response(
+            error_code=ErrorCode.INTERNAL_ERROR,
+            message="Failed to import cloud file",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.unlink(temp_path)
+            except OSError as cleanup_error:
+                logger.warning(f"Failed to delete cloud import temp file {temp_path}: {cleanup_error}")
+
+
+@router.post("/import-google-drive", status_code=status.HTTP_201_CREATED)
+async def import_google_drive_data_file_endpoint(
+    payload: GoogleDriveImportRequest,
+    current_user: UserResponse = Depends(get_current_user)
+):
+    """
+    Import a file selected through Google Drive Picker into the user's data library.
+    """
+    temp_path: Optional[str] = None
+    try:
+        temp_path, filename = await run_in_threadpool(
+            _download_google_drive_file,
+            payload.file_id,
+            payload.access_token,
+            payload.filename,
+            payload.mime_type,
+        )
+
+        file_record = await run_in_threadpool(
+            upload_data_file_from_path,
+            user_id=current_user.id,
+            local_path=temp_path,
+            filename=filename,
+            folder_id=payload.folder_id,
+            file_format=payload.file_format,
+        )
+
+        return success_response(
+            data={
+                "id": file_record.id,
+                "filename": file_record.filename,
+                "s3_key": file_record.s3_key,
+                "file_type": file_record.file_type.value,
+                "file_format": file_record.file_format,
+                "size_bytes": file_record.size_bytes,
+                "checksum": file_record.checksum,
+                "uploaded_at": file_record.uploaded_at.isoformat() if file_record.uploaded_at else None,
+                "created_at": file_record.created_at.isoformat() if file_record.created_at else None
+            },
+            message="Google Drive file imported successfully",
+            status_code=status.HTTP_201_CREATED
+        )
+    except ValueError as e:
+        error_data = error_response(
+            error_code=ErrorCode.VALIDATION_ERROR,
+            message=str(e),
+            status_code=status.HTTP_400_BAD_REQUEST
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+    except requests.RequestException as e:
+        logger.error(f"Error importing Google Drive file: {e}", exc_info=True)
+        error_data = error_response(
+            error_code=ErrorCode.VALIDATION_ERROR,
+            message="Could not download the Google Drive file. Make sure your Google account can download it.",
+            status_code=status.HTTP_400_BAD_REQUEST
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+    except Exception as e:
+        logger.error(f"Error importing Google Drive file: {e}", exc_info=True)
+        error_data = error_response(
+            error_code=ErrorCode.INTERNAL_ERROR,
+            message="Failed to import Google Drive file",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.unlink(temp_path)
+            except OSError as cleanup_error:
+                logger.warning(f"Failed to delete Google Drive import temp file {temp_path}: {cleanup_error}")
 
 
 @router.get("", response_model=dict)
@@ -429,4 +791,3 @@ async def download_data_file(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
         return JSONResponse(content=error_data, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
-

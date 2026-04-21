@@ -4,6 +4,11 @@
   box-sizing: border-box;
 }
 
+html {
+  scrollbar-gutter: stable;
+  overflow-y: scroll;
+}
+
 :root {
   /* CASSIE Color Palette */
   --primary: #27548A;
@@ -66,6 +71,7 @@ body {
   background-color: var(--bg-secondary);
   color: var(--gray-900);
   line-height: 1.6;
+  min-height: 100vh;
 }
 
 /* Auth Pages */
@@ -744,6 +750,46 @@ body {
   border: 1px solid #e5e7eb;
   border-radius: 12px;
   background-color: var(--bg-secondary);
+}
+
+.job-file-source-controls {
+  display: grid;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.cloud-import-card {
+  display: grid;
+  gap: 0.85rem;
+  padding: 1rem;
+  border: 1px solid rgba(39, 84, 138, 0.16);
+  border-radius: 16px;
+  background: linear-gradient(135deg, rgba(245, 238, 220, 0.92), rgba(255, 248, 236, 0.98));
+}
+
+.cloud-import-card p {
+  margin: 0.25rem 0 0;
+  color: var(--gray-600);
+  font-size: 0.86rem;
+}
+
+.cloud-import-fields {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.2fr) minmax(180px, 0.7fr) repeat(2, auto);
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.cloud-import-fields input {
+  width: 100%;
+  border: 1px solid rgba(39, 84, 138, 0.18);
+  border-radius: 14px;
+  padding: 0.8rem 0.95rem;
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.cloud-import-fields .btn-secondary {
+  white-space: nowrap;
 }
 
 .builder-requirements-grid {
@@ -2041,7 +2087,7 @@ body {
 
 .community-search-row {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   gap: 1rem;
   flex-wrap: wrap;
   position: relative;
@@ -2070,6 +2116,12 @@ body {
   flex-direction: column;
   gap: 0.35rem;
   min-width: 180px;
+  position: relative;
+  z-index: 35;
+}
+
+.community-sort-controls.system-dropdown-open {
+  z-index: 200;
 }
 
 .community-sort-controls label {
@@ -2122,6 +2174,88 @@ body {
   outline: none;
   border-color: rgba(39, 84, 138, 0.45);
   box-shadow: 0 0 0 4px rgba(39, 84, 138, 0.12), 0 14px 28px rgba(24, 59, 78, 0.12);
+}
+
+.system-dropdown {
+  position: relative;
+  z-index: 1;
+}
+
+.system-dropdown-trigger {
+  min-width: 180px;
+  width: 100%;
+  border: 1px solid rgba(39, 84, 138, 0.18);
+  border-radius: 999px;
+  background:
+    linear-gradient(135deg, rgba(255, 248, 236, 0.98), rgba(241, 229, 207, 0.94));
+  color: var(--gray-900);
+  box-shadow: 0 10px 24px rgba(24, 59, 78, 0.09), inset 0 1px 0 rgba(255, 248, 236, 0.85);
+  cursor: pointer;
+  font-weight: 700;
+  font-size: 0.92rem;
+  padding: 0.8rem 1rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+}
+
+.system-dropdown-trigger:hover {
+  transform: translateY(-1px);
+  border-color: rgba(39, 84, 138, 0.35);
+  box-shadow: 0 14px 28px rgba(24, 59, 78, 0.12), inset 0 1px 0 rgba(255, 248, 236, 0.9);
+}
+
+.system-dropdown-trigger:focus {
+  outline: none;
+  border-color: rgba(39, 84, 138, 0.45);
+  box-shadow: 0 0 0 4px rgba(39, 84, 138, 0.12), 0 14px 28px rgba(24, 59, 78, 0.12);
+}
+
+.system-dropdown-caret {
+  color: var(--primary);
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.system-dropdown-menu {
+  position: absolute;
+  top: calc(100% + 0.5rem);
+  right: 0;
+  z-index: 220;
+  min-width: 100%;
+  padding: 0.45rem;
+  border: 1px solid rgba(39, 84, 138, 0.14);
+  border-radius: 18px;
+  background: rgba(245, 238, 220, 0.98);
+  box-shadow: 0 20px 42px rgba(24, 59, 78, 0.16);
+}
+
+.system-dropdown-option {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--gray-800);
+  cursor: pointer;
+  text-align: left;
+  border-radius: 14px;
+  padding: 0.7rem 0.8rem;
+  font-weight: 700;
+  transition: background-color 0.18s ease, color 0.18s ease, transform 0.18s ease;
+}
+
+.system-dropdown-option:hover,
+.system-dropdown-option:focus {
+  outline: none;
+  background: rgba(39, 84, 138, 0.1);
+  color: var(--primary);
+  transform: translateX(2px);
+}
+
+.system-dropdown-option.active {
+  background: var(--primary);
+  color: white;
 }
 
 .community-tool-dropdown {
@@ -2457,6 +2591,7 @@ body {
 }
 
 .profile-form-card,
+.profile-cash-card,
 .profile-community-card,
 .profile-summary-card {
   border-radius: 28px;
@@ -2589,6 +2724,25 @@ body {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 1rem 1.1rem;
+}
+
+.profile-cash-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1rem;
+  margin-bottom: 1.25rem;
+}
+
+.profile-cash-form {
+  display: flex;
+  align-items: flex-end;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.profile-cash-form .form-group {
+  flex: 1 1 240px;
+  margin-bottom: 0;
 }
 
 .profile-info-grid {
@@ -2744,6 +2898,9 @@ body {
 .forum-composer-page-card {
   border-radius: 28px;
   padding: 1.5rem;
+  position: relative;
+  z-index: 90;
+  overflow: visible;
 }
 
 .forum-page-heading {
@@ -2784,6 +2941,8 @@ body {
 .forum-answer-list {
   display: grid;
   gap: 1rem;
+  position: relative;
+  z-index: 1;
 }
 
 .forum-thread-card {
@@ -2848,6 +3007,19 @@ body {
   color: var(--gray-600);
   font-size: 0.92rem;
   align-items: center;
+}
+
+.forum-thread-engagement-stack {
+  display: grid;
+  justify-items: end;
+  gap: 0.35rem;
+}
+
+.forum-comment-count-under-votes {
+  color: var(--gray-600);
+  font-size: 0.9rem;
+  line-height: 1.2;
+  white-space: nowrap;
 }
 
 .forum-engagement-stats {
@@ -3068,8 +3240,8 @@ body {
   width: auto;
   height: auto;
   min-width: 0;
-  padding: 0.5rem 0.7rem;
-  gap: 0.45rem;
+  padding: 0.5rem 0.58rem;
+  gap: 0.35rem;
   font-size: 0.84rem;
   font-weight: 700;
   letter-spacing: 0.01em;
@@ -3081,7 +3253,7 @@ body {
 }
 
 .engagement-vote-label {
-  white-space: nowrap;
+  display: none;
 }
 
 .engagement-vote-count {
@@ -3741,9 +3913,19 @@ body {
     padding: 1.25rem 1rem 2.5rem;
   }
 
+  .cloud-import-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .system-dropdown-menu {
+    left: 0;
+    right: auto;
+  }
+
   .feature-hero-copy,
   .hero-info-card,
   .profile-form-card,
+  .profile-cash-card,
   .profile-community-card,
   .profile-summary-card,
   .auth-card {

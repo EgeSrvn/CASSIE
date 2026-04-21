@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 
 import Navigation from '../components/Navigation'
 import ReportDialog from '../components/ReportDialog'
+import SortDropdown from '../components/SortDropdown'
 import {
   ForumThreadSummary,
   listForumThreads,
@@ -127,7 +128,6 @@ export default function Forum() {
         title={isActive ? `Take back ${label.toLowerCase()}` : label}
       >
         <span className="engagement-vote-icon" aria-hidden="true">{icon}</span>
-        <span className="engagement-vote-label">{label}</span>
         <span className="engagement-vote-count">{count}</span>
       </button>
     )
@@ -140,7 +140,6 @@ export default function Forum() {
         <section className="card forum-page-header-card">
           <div className="section-heading forum-page-heading">
             <h2>Forum Discussions</h2>
-            <p>The latest 10 discussions appear here. Search works across titles and text, and you can sort by activity or popularity.</p>
           </div>
           <div className="community-search-row forum-search-row">
             <input
@@ -153,21 +152,19 @@ export default function Forum() {
               className="community-search-input"
               placeholder="Search forum discussions"
             />
-            <div className="community-sort-controls">
-              <label htmlFor="forum-sort">Sort by</label>
-              <select
-                id="forum-sort"
-                className="community-sort-select"
-                value={sortBy}
-                onChange={(e) => {
-                  setSortBy(e.target.value as 'recent' | 'popular')
-                  setPage(1)
-                }}
-              >
-                <option value="recent">Most Recent</option>
-                <option value="popular">Most Popular</option>
-              </select>
-            </div>
+            <SortDropdown
+              id="forum-sort"
+              label="Sort by"
+              value={sortBy}
+              options={[
+                { value: 'recent', label: 'Most Recent' },
+                { value: 'popular', label: 'Most Popular' },
+              ]}
+              onChange={(value) => {
+                setSortBy(value as 'recent' | 'popular')
+                setPage(1)
+              }}
+            />
             <button type="button" className="btn-primary" onClick={() => navigate('/forum/new')}>
               New Discussion
             </button>
@@ -234,12 +231,15 @@ export default function Forum() {
                     </span>
                   </button>
                   <div className="forum-thread-stats">
-                    <div className="engagement-vote-cluster engagement-vote-cluster-compact">
-                      {renderVoteButton(thread, 'upvote', thread.upvote_count)}
-                      {renderVoteButton(thread, 'downvote', thread.downvote_count)}
+                    <div className="forum-thread-engagement-stack">
+                      <div className="engagement-vote-cluster engagement-vote-cluster-compact">
+                        {renderVoteButton(thread, 'upvote', thread.upvote_count)}
+                        {renderVoteButton(thread, 'downvote', thread.downvote_count)}
+                      </div>
+                      <span className="forum-comment-count-under-votes">
+                        {thread.comment_count} comment{thread.comment_count === 1 ? '' : 's'}
+                      </span>
                     </div>
-                    <span>{thread.comment_count} comment{thread.comment_count === 1 ? '' : 's'}</span>
-                    <span>{thread.view_count} view{thread.view_count === 1 ? '' : 's'}</span>
                   </div>
                 </div>
               </article>

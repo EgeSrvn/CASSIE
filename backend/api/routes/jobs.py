@@ -45,6 +45,7 @@ from backend.api.services.job_launch_service import (
 from backend.api.services.user_limit_service import can_user_start_more_jobs, can_user_interact_with_job_outputs
 from backend.api.services.vm_queue_service import get_vm_slot_usage, queue_or_start_job, reserve_vm_slot_for_job
 from backend.api.services.job_execution_service import get_executions_by_job
+from backend.api.services.billing_service import reserve_job_charge, settle_job_charge
 from backend.api.services.kubernetes_manager import get_kubernetes_pipeline_runner, kubernetes_is_available
 from backend.api.services.vm_partition_service import get_vm_partitions, get_vm_partition
 from backend.api.utils.response_builder import (
@@ -112,6 +113,11 @@ def _job_response_for_user(job, username: Optional[str]) -> dict:
         cloud_provider=job.cloud_provider,
         execution_preferences=job.execution_preferences,
         vm_name=job.vm_name,
+        estimated_price_usd=getattr(job, "estimated_price_usd", 0.0),
+        max_charge_usd=getattr(job, "max_charge_usd", 0.0),
+        actual_price_charged_usd=getattr(job, "actual_price_charged_usd", None),
+        balance_reserved_at=getattr(job, "balance_reserved_at", None),
+        balance_charged_at=getattr(job, "balance_charged_at", None),
         created_at=job.created_at,
         updated_at=job.updated_at,
         interactive_outputs_enabled=interactive_outputs_enabled,
@@ -521,6 +527,12 @@ async def create_job_endpoint(
                     input_file_ids=list(job_data.input_file_ids or []),
                     vm_name=job.vm_name,
                 )
+                reserve_job_charge(
+                    job_id=job.id,
+                    user_id=current_user.id,
+                    estimated_price_usd=job_data.estimated_price_usd or 0,
+                )
+                job = get_job_by_id(job.id, current_user.id) or job
             except Exception:
                 delete_job(job.id, current_user.id)
                 raise
@@ -593,7 +605,13 @@ async def create_job_endpoint(
                     assembler=job.assembler,
                     data_types=job.data_types,
                     cloud_provider=job.cloud_provider,
+                    execution_preferences=job.execution_preferences,
                     vm_name=job.vm_name,
+                    estimated_price_usd=getattr(job, "estimated_price_usd", 0.0),
+                    max_charge_usd=getattr(job, "max_charge_usd", 0.0),
+                    actual_price_charged_usd=getattr(job, "actual_price_charged_usd", None),
+                    balance_reserved_at=getattr(job, "balance_reserved_at", None),
+                    balance_charged_at=getattr(job, "balance_charged_at", None),
                     created_at=job.created_at,
                     updated_at=job.updated_at,
                     upload_session_token=upload_session_token,
@@ -882,6 +900,13 @@ async def execute_job(
                 status_code=status.HTTP_400_BAD_REQUEST
             )
             return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+
+        if getattr(job, "balance_reserved_at", None) is None:
+            reserve_job_charge(
+                job_id=job.id,
+                user_id=current_user.id,
+                estimated_price_usd=getattr(job, "estimated_price_usd", 0) or 0,
+            )
 
         launch_result = await queue_or_start_job(
             job_id=job_id,
@@ -1249,6 +1274,11 @@ async def delete_job_endpoint(
             offset=0,
         )
         file_s3_keys = [file_record.s3_key for file_record in job_files if getattr(file_record, "s3_key", None)]
+
+        try:
+            settle_job_charge(job_id, current_user.id)
+        except Exception as billing_error:
+            logger.warning(f"Failed to settle billing before deleting job {job_id}: {billing_error}", exc_info=True)
 
         deleted = delete_job(job_id, current_user.id)
         

@@ -6,6 +6,7 @@ import {
   ProfileUpdateRequest,
   User,
   confirmAccountDeletion,
+  depositCashBalance,
   getProfile,
   getPublicProfile,
   requestAccountDeletionCode,
@@ -29,6 +30,8 @@ const emptyForm: ProfileUpdateRequest = {
   job_notifications_enabled: false,
 }
 
+const formatUsd = (value?: number | null): string => `$${Number(value || 0).toFixed(2)}`
+
 export default function Profile() {
   const navigate = useNavigate()
   const { userId } = useParams()
@@ -47,6 +50,8 @@ export default function Profile() {
   const [success, setSuccess] = useState('')
   const [avatarFile, setAvatarFile] = useState<File | null>(null)
   const [confirmNewPassword, setConfirmNewPassword] = useState('')
+  const [cashDepositAmount, setCashDepositAmount] = useState('')
+  const [depositingCash, setDepositingCash] = useState(false)
   const editSectionRef = useRef<HTMLElement | null>(null)
 
   const avatarPreviewUrl = useMemo(() => {
@@ -156,6 +161,30 @@ export default function Profile() {
       setError(message)
     } finally {
       setDeletingAccount(false)
+    }
+  }
+
+  const handleCashDeposit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    const amount = Number(cashDepositAmount)
+    if (!Number.isFinite(amount) || amount <= 0) {
+      setError('Enter a deposit amount greater than zero.')
+      return
+    }
+
+    try {
+      setDepositingCash(true)
+      setError('')
+      setSuccess('')
+      const updatedUser = await depositCashBalance(amount)
+      setProfile(updatedUser)
+      setCashDepositAmount('')
+      setSuccess('Cash balance updated successfully.')
+      window.dispatchEvent(new Event('auth-change'))
+    } catch (err: any) {
+      setError(extractApiErrorMessage(err, 'Failed to update cash balance'))
+    } finally {
+      setDepositingCash(false)
     }
   }
 
@@ -278,6 +307,46 @@ export default function Profile() {
 
         {error && <div className="error-message">{error}</div>}
         {success && <div className="success-message">{success}</div>}
+
+        {!isPublicProfile && (
+          <section className="card profile-cash-card">
+            <div className="section-heading">
+              <h2>Cash Balance</h2>
+              <p>Jobs reserve 1.5x the estimate before launch. When a job finishes, only the actual runtime cost is deducted up to that reserved cap.</p>
+            </div>
+            <div className="profile-cash-grid">
+              <div className="profile-summary-info-item">
+                <span className="profile-info-label">Total Balance</span>
+                <strong>{formatUsd(profile?.cash_balance_usd)}</strong>
+              </div>
+              <div className="profile-summary-info-item">
+                <span className="profile-info-label">Reserved for Jobs</span>
+                <strong>{formatUsd(profile?.cash_reserved_usd)}</strong>
+              </div>
+              <div className="profile-summary-info-item">
+                <span className="profile-info-label">Available</span>
+                <strong>{formatUsd(profile?.cash_available_usd)}</strong>
+              </div>
+            </div>
+            <form className="profile-cash-form" onSubmit={handleCashDeposit}>
+              <div className="form-group">
+                <label htmlFor="cash_deposit">Add Cash</label>
+                <input
+                  id="cash_deposit"
+                  type="number"
+                  min="0.01"
+                  step="0.01"
+                  value={cashDepositAmount}
+                  onChange={(e) => setCashDepositAmount(e.target.value)}
+                  placeholder="50.00"
+                />
+              </div>
+              <button className="btn-primary" type="submit" disabled={depositingCash}>
+                {depositingCash ? 'Adding Cash...' : 'Add Cash'}
+              </button>
+            </form>
+          </section>
+        )}
 
         <section className="card profile-community-card profile-community-main">
           <div className="section-heading">

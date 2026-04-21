@@ -14,6 +14,54 @@ from tool_registry import get_tool_by_index, tool_produces_requirement
 
 logger = get_logger(__name__)
 
+JOB_SELECT_COLUMNS = """
+    id, user_id, name, status, workflow_id, pipeline_config_id, pipeline_id,
+    assembler, data_types, cloud_provider, execution_preferences, vm_name,
+    created_at, updated_at,
+    estimated_price_usd, max_charge_usd, actual_price_charged_usd,
+    balance_reserved_at, balance_charged_at
+"""
+
+
+def _row_to_job(row) -> JobInDB:
+    data_types = row[8] if row[8] else None
+    if isinstance(data_types, str):
+        data_types = json.loads(data_types)
+
+    execution_preferences = row[10] if row[10] else None
+    if isinstance(execution_preferences, str):
+        execution_preferences = json.loads(execution_preferences)
+
+    cloud_provider_value = None
+    if row[9]:
+        try:
+            cloud_provider_value = CloudProvider(row[9])
+        except (ValueError, AttributeError):
+            logger.warning(f"Invalid cloud_provider value: {row[9]}")
+            cloud_provider_value = None
+
+    return JobInDB(
+        id=row[0],
+        user_id=row[1],
+        name=row[2],
+        status=JobStatus(row[3]),
+        workflow_id=row[4],
+        pipeline_config_id=row[5],
+        pipeline_id=row[6],
+        assembler=row[7] if row[7] else None,
+        data_types=data_types,
+        cloud_provider=cloud_provider_value,
+        execution_preferences=execution_preferences,
+        vm_name=row[11],
+        created_at=row[12],
+        updated_at=row[13],
+        estimated_price_usd=float(row[14] or 0),
+        max_charge_usd=float(row[15] or 0),
+        actual_price_charged_usd=float(row[16]) if row[16] is not None else None,
+        balance_reserved_at=row[17],
+        balance_charged_at=row[18],
+    )
+
 
 def _get_requirement_source_override(
     execution_preferences: Optional[Dict[str, Any]],
@@ -412,13 +460,18 @@ def create_job(user_id: int, job_data: JobCreate) -> JobInDB:
             # Convert JSON-capable fields to JSONB
             data_types_json = json.dumps(job_data.data_types) if job_data.data_types else None
             execution_preferences_json = json.dumps(job_data.execution_preferences) if job_data.execution_preferences else None
+            estimated_price_usd = max(float(job_data.estimated_price_usd or 0), 0.0)
+            max_charge_usd = round(estimated_price_usd * 1.5, 2)
             
             # Insert job
             logger.info(f"[JOB SERVICE] Inserting job with pipeline_id={job_data.pipeline_id}, workflow_id={workflow_id}")
-            cur.execute("""
-                INSERT INTO jobs (user_id, name, workflow_id, pipeline_config_id, pipeline_id, assembler, data_types, cloud_provider, execution_preferences, vm_name, status)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                RETURNING id, user_id, name, status, workflow_id, pipeline_config_id, pipeline_id, assembler, data_types, cloud_provider, execution_preferences, vm_name, created_at, updated_at
+            cur.execute(f"""
+                INSERT INTO jobs (
+                    user_id, name, workflow_id, pipeline_config_id, pipeline_id, assembler, data_types,
+                    cloud_provider, execution_preferences, vm_name, status, estimated_price_usd, max_charge_usd
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING {JOB_SELECT_COLUMNS}
             """, (
                 user_id,
                 job_data.name,
@@ -430,47 +483,14 @@ def create_job(user_id: int, job_data: JobCreate) -> JobInDB:
                 job_data.cloud_provider.value if job_data.cloud_provider else None,
                 execution_preferences_json,
                 job_data.vm_name,
-                JobStatus.PENDING.value
+                JobStatus.PENDING.value,
+                estimated_price_usd,
+                max_charge_usd,
             ))
             
             row = cur.fetchone()
             conn.commit()
-            
-            # Parse JSONB fields (psycopg2 already converts JSONB to Python objects)
-            # Column order: id, user_id, name, status, workflow_id, pipeline_config_id, pipeline_id, assembler, data_types, cloud_provider, execution_preferences, vm_name, created_at, updated_at
-            data_types = row[8] if row[8] else None
-            if isinstance(data_types, str):
-                data_types = json.loads(data_types)
-
-            execution_preferences = row[10] if row[10] else None
-            if isinstance(execution_preferences, str):
-                execution_preferences = json.loads(execution_preferences)
-            
-            # Handle cloud_provider - convert string to enum if present
-            cloud_provider_value = None
-            if row[9]:
-                try:
-                    cloud_provider_value = CloudProvider(row[9])
-                except (ValueError, AttributeError):
-                    logger.warning(f"Invalid cloud_provider value: {row[9]}")
-                    cloud_provider_value = None
-            
-            return JobInDB(
-                id=row[0],
-                user_id=row[1],
-                name=row[2],
-                status=JobStatus(row[3]),
-                workflow_id=row[4],
-                pipeline_config_id=row[5],
-                pipeline_id=row[6],
-                assembler=row[7] if row[7] else None,
-                data_types=data_types,
-                cloud_provider=cloud_provider_value,
-                execution_preferences=execution_preferences,
-                vm_name=row[11],
-                created_at=row[12],
-                updated_at=row[13]
-            )
+            return _row_to_job(row)
             
         except Exception as e:
             conn.rollback()
@@ -496,14 +516,14 @@ def get_job_by_id(job_id: int, user_id: Optional[int] = None) -> Optional[JobInD
         
         try:
             if user_id:
-                cur.execute("""
-                    SELECT id, user_id, name, status, workflow_id, pipeline_config_id, pipeline_id, assembler, data_types, cloud_provider, execution_preferences, vm_name, created_at, updated_at
+                cur.execute(f"""
+                    SELECT {JOB_SELECT_COLUMNS}
                     FROM jobs
                     WHERE id = %s AND user_id = %s
                 """, (job_id, user_id))
             else:
-                cur.execute("""
-                    SELECT id, user_id, name, status, workflow_id, pipeline_config_id, pipeline_id, assembler, data_types, cloud_provider, execution_preferences, vm_name, created_at, updated_at
+                cur.execute(f"""
+                    SELECT {JOB_SELECT_COLUMNS}
                     FROM jobs
                     WHERE id = %s
                 """, (job_id,))
@@ -512,41 +532,7 @@ def get_job_by_id(job_id: int, user_id: Optional[int] = None) -> Optional[JobInD
             if not row:
                 return None
             
-            # Parse JSONB fields (psycopg2 already converts JSONB to Python objects)
-            # Column order: id, user_id, name, status, workflow_id, pipeline_config_id, pipeline_id, assembler, data_types, cloud_provider, execution_preferences, vm_name, created_at, updated_at
-            data_types = row[8] if row[8] else None
-            if isinstance(data_types, str):
-                data_types = json.loads(data_types)
-
-            execution_preferences = row[10] if row[10] else None
-            if isinstance(execution_preferences, str):
-                execution_preferences = json.loads(execution_preferences)
-            
-            # Handle cloud_provider - convert string to enum if present
-            cloud_provider_value = None
-            if row[9]:
-                try:
-                    cloud_provider_value = CloudProvider(row[9])
-                except (ValueError, AttributeError):
-                    logger.warning(f"Invalid cloud_provider value: {row[9]}")
-                    cloud_provider_value = None
-            
-            return JobInDB(
-                id=row[0],
-                user_id=row[1],
-                name=row[2],
-                status=JobStatus(row[3]),
-                workflow_id=row[4],
-                pipeline_config_id=row[5],
-                pipeline_id=row[6],
-                assembler=row[7] if row[7] else None,
-                data_types=data_types,
-                cloud_provider=cloud_provider_value,
-                execution_preferences=execution_preferences,
-                vm_name=row[11],
-                created_at=row[12],
-                updated_at=row[13]
-            )
+            return _row_to_job(row)
         finally:
             cur.close()
 
@@ -569,16 +555,16 @@ def get_jobs_by_user(user_id: int, status: Optional[JobStatus] = None, limit: in
         
         try:
             if status:
-                cur.execute("""
-                    SELECT id, user_id, name, status, workflow_id, pipeline_config_id, pipeline_id, assembler, data_types, cloud_provider, execution_preferences, vm_name, created_at, updated_at
+                cur.execute(f"""
+                    SELECT {JOB_SELECT_COLUMNS}
                     FROM jobs
                     WHERE user_id = %s AND status = %s
                     ORDER BY created_at DESC
                     LIMIT %s OFFSET %s
                 """, (user_id, status.value, limit, offset))
             else:
-                cur.execute("""
-                    SELECT id, user_id, name, status, workflow_id, pipeline_config_id, pipeline_id, assembler, data_types, cloud_provider, execution_preferences, vm_name, created_at, updated_at
+                cur.execute(f"""
+                    SELECT {JOB_SELECT_COLUMNS}
                     FROM jobs
                     WHERE user_id = %s
                     ORDER BY created_at DESC
@@ -586,47 +572,7 @@ def get_jobs_by_user(user_id: int, status: Optional[JobStatus] = None, limit: in
                 """, (user_id, limit, offset))
             
             rows = cur.fetchall()
-            jobs = []
-            
-            for row in rows:
-                # Parse JSONB fields (psycopg2 already converts JSONB to Python objects)
-                # Column order: id, user_id, name, status, workflow_id, pipeline_config_id, pipeline_id, assembler, data_types, cloud_provider, execution_preferences, vm_name, created_at, updated_at
-                data_types = row[8] if row[8] else None
-                # If it's a string, parse it; otherwise it's already a Python object
-                if isinstance(data_types, str):
-                    data_types = json.loads(data_types)
-
-                execution_preferences = row[10] if row[10] else None
-                if isinstance(execution_preferences, str):
-                    execution_preferences = json.loads(execution_preferences)
-                
-                # Handle cloud_provider - convert string to enum if present
-                cloud_provider_value = None
-                if row[9]:
-                    try:
-                        cloud_provider_value = CloudProvider(row[9])
-                    except (ValueError, AttributeError):
-                        logger.warning(f"Invalid cloud_provider value: {row[9]}")
-                        cloud_provider_value = None
-                
-                jobs.append(JobInDB(
-                    id=row[0],
-                    user_id=row[1],
-                    name=row[2],
-                    status=JobStatus(row[3]),
-                    workflow_id=row[4],
-                    pipeline_config_id=row[5],
-                    pipeline_id=row[6],
-                    assembler=row[7] if row[7] else None,
-                    data_types=data_types,
-                    cloud_provider=cloud_provider_value,
-                    execution_preferences=execution_preferences,
-                    vm_name=row[11],
-                    created_at=row[12],
-                    updated_at=row[13]
-                ))
-            
-            return jobs
+            return [_row_to_job(row) for row in rows]
         finally:
             cur.close()
 
@@ -696,7 +642,7 @@ def update_job(job_id: int, user_id: int, job_update: JobUpdate) -> Optional[Job
                 UPDATE jobs
                 SET {', '.join(updates)}
                 WHERE id = %s AND user_id = %s
-                RETURNING id, user_id, name, status, workflow_id, pipeline_config_id, pipeline_id, assembler, data_types, cloud_provider, execution_preferences, vm_name, created_at, updated_at
+                RETURNING {JOB_SELECT_COLUMNS}
             """
             
             cur.execute(query, values)
@@ -707,41 +653,7 @@ def update_job(job_id: int, user_id: int, job_update: JobUpdate) -> Optional[Job
             
             conn.commit()
             
-            # Parse JSONB fields (psycopg2 already converts JSONB to Python objects)
-            # Column order: id, user_id, name, status, workflow_id, pipeline_config_id, pipeline_id, assembler, data_types, cloud_provider, execution_preferences, vm_name, created_at, updated_at
-            data_types = row[8] if row[8] else None
-            if isinstance(data_types, str):
-                data_types = json.loads(data_types)
-
-            execution_preferences = row[10] if row[10] else None
-            if isinstance(execution_preferences, str):
-                execution_preferences = json.loads(execution_preferences)
-            
-            # Handle cloud_provider - convert string to enum if present
-            cloud_provider_value = None
-            if row[9]:
-                try:
-                    cloud_provider_value = CloudProvider(row[9])
-                except (ValueError, AttributeError):
-                    logger.warning(f"Invalid cloud_provider value: {row[9]}")
-                    cloud_provider_value = None
-            
-            updated_job = JobInDB(
-                id=row[0],
-                user_id=row[1],
-                name=row[2],
-                status=JobStatus(row[3]),
-                workflow_id=row[4],
-                pipeline_config_id=row[5],
-                pipeline_id=row[6],
-                assembler=row[7] if row[7] else None,
-                data_types=data_types,
-                cloud_provider=cloud_provider_value,
-                execution_preferences=execution_preferences,
-                vm_name=row[11],
-                created_at=row[12],
-                updated_at=row[13]
-            )
+            updated_job = _row_to_job(row)
 
             if (
                 previous_status != JobStatus.COMPLETED

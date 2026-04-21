@@ -235,6 +235,11 @@ def _vm_price_per_minute(vm_name: Optional[str]) -> float:
     return DEFAULT_VM_PRICE_PER_MINUTE.get(normalized_name, 0.1)
 
 
+def get_vm_price_per_minute(vm_name: Optional[str]) -> float:
+    """Return the configured per-minute price for a VM profile."""
+    return _vm_price_per_minute(vm_name)
+
+
 def _size_factor(tool_id: str, input_size_mib: float) -> float:
     reference_input_mib = _tool_reference_input_mib(tool_id)
     exponent = _tool_size_exponent(tool_id)

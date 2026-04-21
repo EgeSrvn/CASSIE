@@ -50,6 +50,32 @@ export const uploadDataFile = async (
   return response.data.data
 }
 
+export interface CloudImportPayload {
+  source_url: string
+  filename?: string
+  folder_id?: number | null
+  file_format?: string | null
+}
+
+export const importCloudDataFile = async (payload: CloudImportPayload): Promise<DataFile> => {
+  const response = await apiClient.post('/api/data-files/import-cloud', payload)
+  return response.data.data
+}
+
+export interface GoogleDriveImportPayload {
+  file_id: string
+  access_token: string
+  filename?: string
+  mime_type?: string
+  folder_id?: number | null
+  file_format?: string | null
+}
+
+export const importGoogleDriveDataFile = async (payload: GoogleDriveImportPayload): Promise<DataFile> => {
+  const response = await apiClient.post('/api/data-files/import-google-drive', payload)
+  return response.data.data
+}
+
 export const renameDataFile = async (fileId: number, newName: string): Promise<DataFile> => {
   const response = await apiClient.put(`/api/data-files/${fileId}/rename`, null, {
     params: { new_name: newName }
@@ -94,4 +120,3 @@ export const downloadDataFile = async (fileId: number): Promise<void> => {
     throw new Error(response.data.message || 'Failed to get download URL')
   }
 }
-

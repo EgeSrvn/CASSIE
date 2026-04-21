@@ -140,6 +140,96 @@ def upload_data_file(
             cur.close()
 
 
+def upload_data_file_from_path(
+    user_id: int,
+    local_path: str,
+    filename: str,
+    folder_id: Optional[int],
+    file_format: Optional[str] = None
+) -> FileInDB:
+    """
+    Register an already-downloaded local file as a user data-library file.
+    """
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+
+        try:
+            if folder_id:
+                folder = get_folder_by_id(folder_id, user_id)
+                if not folder:
+                    raise ValueError(f"Folder with id {folder_id} not found")
+
+            file_size = os.path.getsize(local_path)
+            hash_md5 = hashlib.md5()
+            with open(local_path, "rb") as source:
+                while True:
+                    chunk = source.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    hash_md5.update(chunk)
+            checksum = hash_md5.hexdigest()
+
+            timestamp = int(time.time())
+            if folder_id:
+                folder_obj = get_folder_by_id(folder_id, user_id)
+                folder_path = folder_obj.path.replace('/', '_') if folder_obj else f"folder_{folder_id}"
+                s3_key = f"data/{user_id}/{folder_path}/{timestamp}_{filename}"
+            else:
+                s3_key = f"data/{user_id}/root/{timestamp}_{filename}"
+
+            from backend.api.services.user_service import get_user_by_id
+            user = get_user_by_id(user_id)
+            if not user:
+                raise ValueError(f"User with id {user_id} not found")
+
+            minio_client.ensure_user_bucket(user_id=user_id, username=user.username)
+            minio_client.upload_file(
+                user_id=user_id,
+                local_path=local_path,
+                s3_key=s3_key,
+                username=user.username
+            )
+
+            cur.execute("""
+                INSERT INTO files (folder_id, filename, s3_key, file_type, file_format, size_bytes, checksum, uploaded_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id, job_id, folder_id, filename, s3_key, file_type, file_format, size_bytes, checksum, uploaded_at, created_at
+            """, (
+                folder_id,
+                filename,
+                s3_key,
+                'input',
+                file_format,
+                file_size,
+                checksum,
+                datetime.utcnow()
+            ))
+
+            row = cur.fetchone()
+            conn.commit()
+
+            return FileInDB(
+                id=row[0],
+                job_id=row[1],
+                folder_id=row[2],
+                filename=row[3],
+                s3_key=row[4],
+                file_type=FileType(row[5]),
+                file_format=row[6],
+                size_bytes=row[7],
+                checksum=row[8],
+                uploaded_at=row[9],
+                created_at=row[10]
+            )
+
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Error uploading data file from path: {e}", exc_info=True)
+            raise
+        finally:
+            cur.close()
+
+
 def get_data_files_by_folder(folder_id: Optional[int], user_id: int) -> List[FileInDB]:
     """
     Get all files in a folder.
@@ -499,4 +589,3 @@ def copy_data_file_to_job(file_id: int, user_id: int, job_id: int) -> Optional[F
             raise
         finally:
             cur.close()
-

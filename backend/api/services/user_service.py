@@ -17,6 +17,7 @@ logger = get_logger(__name__)
 USER_SELECT_COLUMNS = """
     id, username, email, password_hash, bucket_name, email_verified,
     display_name, bio, affiliation, job_title, location, website_url, avatar_url, login_two_factor_enabled, job_notifications_enabled,
+    cash_balance_usd, cash_reserved_usd,
     email_verification_code, email_verification_expires_at,
     password_reset_code, password_reset_expires_at,
     login_two_factor_code, login_two_factor_expires_at,
@@ -50,6 +51,8 @@ def purge_expired_unverified_users() -> int:
 
 
 def _row_to_user(row) -> UserInDB:
+    cash_balance = float(row[15] or 0)
+    cash_reserved = float(row[16] or 0)
     return UserInDB(
         id=row[0],
         username=row[1],
@@ -66,16 +69,19 @@ def _row_to_user(row) -> UserInDB:
         avatar_url=row[12],
         login_two_factor_enabled=bool(row[13]),
         job_notifications_enabled=bool(row[14]),
-        email_verification_code=row[15],
-        email_verification_expires_at=row[16],
-        password_reset_code=row[17],
-        password_reset_expires_at=row[18],
-        login_two_factor_code=row[19],
-        login_two_factor_expires_at=row[20],
-        suspended_until=row[21],
-        suspension_reason=row[22],
-        created_at=row[23],
-        updated_at=row[24]
+        cash_balance_usd=cash_balance,
+        cash_reserved_usd=cash_reserved,
+        cash_available_usd=max(cash_balance - cash_reserved, 0.0),
+        email_verification_code=row[17],
+        email_verification_expires_at=row[18],
+        password_reset_code=row[19],
+        password_reset_expires_at=row[20],
+        login_two_factor_code=row[21],
+        login_two_factor_expires_at=row[22],
+        suspended_until=row[23],
+        suspension_reason=row[24],
+        created_at=row[25],
+        updated_at=row[26]
     )
 
 

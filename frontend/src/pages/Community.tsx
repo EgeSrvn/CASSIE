@@ -13,6 +13,7 @@ import { getToken } from '../services/authService'
 import { getAvailableTools } from '../services/toolService'
 import Navigation from '../components/Navigation'
 import ReportDialog from '../components/ReportDialog'
+import SortDropdown from '../components/SortDropdown'
 import '../styles/globals.css'
 
 export default function Community() {
@@ -252,7 +253,6 @@ export default function Community() {
         <section className="card profile-community-card profile-community-main">
           <div className="section-heading">
             <h2>Search Community Pipelines</h2>
-            <p>Search is applied instantly on the loaded catalog, and tool filtering lets you narrow the list without page flicker.</p>
           </div>
           <div className="community-search-row">
             <input
@@ -262,17 +262,16 @@ export default function Community() {
               className="community-search-input"
               placeholder="Search pipeline name or tool, for example: spades, quast, fastqc"
             />
-            <div className="community-sort-controls">
-              <label htmlFor="community-sort">Sort by</label>
-              <select
-                id="community-sort"
-                className="community-sort-select"
-                value={sortBy}
-                onChange={(e) => setSortBy(e.target.value as 'recent' | 'popular')}>
-                <option value="recent">Most Recent</option>
-                <option value="popular">Most Popular</option>
-              </select>
-            </div>
+            <SortDropdown
+              id="community-sort"
+              label="Sort by"
+              value={sortBy}
+              options={[
+                { value: 'recent', label: 'Most Recent' },
+                { value: 'popular', label: 'Most Popular' },
+              ]}
+              onChange={(value) => setSortBy(value as 'recent' | 'popular')}
+            />
             <div className="community-tool-dropdown">
               <button
                 type="button"
@@ -413,15 +412,6 @@ export default function Community() {
                               >
                                 {savingPipelineId === pipeline.id ? 'Saving...' : 'Save'}
                               </button>
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation()
-                                  handleViewPipeline(pipeline.id)
-                                }}
-                                className="btn-primary"
-                              >
-                                View
-                              </button>
                             </>
                           ) : (
                             <>
@@ -433,15 +423,6 @@ export default function Community() {
                                 className="btn-secondary"
                               >
                                 Login to Save
-                              </button>
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation()
-                                  handleViewPipeline(pipeline.id)
-                                }}
-                                className="btn-primary"
-                              >
-                                View
                               </button>
                             </>
                           )}

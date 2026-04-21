@@ -14,6 +14,8 @@ CREATE TABLE IF NOT EXISTS users (
     email VARCHAR(100) UNIQUE,
     password_hash VARCHAR(255) NOT NULL,
     bucket_name VARCHAR(100) UNIQUE NOT NULL,
+    cash_balance_usd NUMERIC(12, 2) NOT NULL DEFAULT 0,
+    cash_reserved_usd NUMERIC(12, 2) NOT NULL DEFAULT 0,
     email_verified BOOLEAN NOT NULL DEFAULT FALSE,
     login_two_factor_enabled BOOLEAN NOT NULL DEFAULT FALSE,
     job_notifications_enabled BOOLEAN NOT NULL DEFAULT FALSE,
@@ -79,6 +81,18 @@ BEGIN
         WHERE table_name = 'users' AND column_name = 'avatar_url'
     ) THEN
         ALTER TABLE users ADD COLUMN avatar_url VARCHAR(500);
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'users' AND column_name = 'cash_balance_usd'
+    ) THEN
+        ALTER TABLE users ADD COLUMN cash_balance_usd NUMERIC(12, 2) NOT NULL DEFAULT 0;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'users' AND column_name = 'cash_reserved_usd'
+    ) THEN
+        ALTER TABLE users ADD COLUMN cash_reserved_usd NUMERIC(12, 2) NOT NULL DEFAULT 0;
     END IF;
     IF NOT EXISTS (
         SELECT 1 FROM information_schema.columns
@@ -458,6 +472,11 @@ CREATE TABLE IF NOT EXISTS jobs (
     cloud_provider VARCHAR(20),
     execution_preferences JSONB,
     vm_name VARCHAR(50),
+    estimated_price_usd NUMERIC(12, 2) NOT NULL DEFAULT 0,
+    max_charge_usd NUMERIC(12, 2) NOT NULL DEFAULT 0,
+    actual_price_charged_usd NUMERIC(12, 2),
+    balance_reserved_at TIMESTAMP,
+    balance_charged_at TIMESTAMP,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -1004,6 +1023,36 @@ BEGIN
         WHERE table_name = 'jobs' AND column_name = 'execution_preferences'
     ) THEN
         ALTER TABLE jobs ADD COLUMN execution_preferences JSONB;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'jobs' AND column_name = 'estimated_price_usd'
+    ) THEN
+        ALTER TABLE jobs ADD COLUMN estimated_price_usd NUMERIC(12, 2) NOT NULL DEFAULT 0;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'jobs' AND column_name = 'max_charge_usd'
+    ) THEN
+        ALTER TABLE jobs ADD COLUMN max_charge_usd NUMERIC(12, 2) NOT NULL DEFAULT 0;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'jobs' AND column_name = 'actual_price_charged_usd'
+    ) THEN
+        ALTER TABLE jobs ADD COLUMN actual_price_charged_usd NUMERIC(12, 2);
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'jobs' AND column_name = 'balance_reserved_at'
+    ) THEN
+        ALTER TABLE jobs ADD COLUMN balance_reserved_at TIMESTAMP;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'jobs' AND column_name = 'balance_charged_at'
+    ) THEN
+        ALTER TABLE jobs ADD COLUMN balance_charged_at TIMESTAMP;
     END IF;
     
     -- Add foreign key constraint for pipeline_id after column is added (if pipeline_id was just added)

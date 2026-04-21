@@ -27,7 +27,11 @@ import { getPipelines, getPipeline, Pipeline, getPipelineRequirements, PipelineR
 import { getDataFileTree } from '../services/dataFileService'
 import { FolderTreeItem, FileItem } from '../services/folderService'
 import { getToken } from '../services/authService'
-import { PendingJobUploadFile, enqueuePendingJobUploads } from '../services/pendingJobUploadService'
+import {
+  PendingGoogleDriveJobImportFile,
+  PendingJobUploadFile,
+  enqueuePendingJobInputUploads,
+} from '../services/pendingJobUploadService'
 import Navigation from '../components/Navigation'
 import PipelineVisualization from '../components/PipelineVisualization'
 import {
@@ -83,6 +87,68 @@ const getManualInputBlockDefaultName = (block: ManualToolInputBlock): string => 
 
 const PIPELINE_STAGE_NODE_TYPES = new Set(['tool', 'checkpoint'])
 const CREATE_JOB_DRAFT_STORAGE_KEY = 'cassie:create-job-draft:v2'
+const GOOGLE_DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.readonly'
+const GOOGLE_API_SCRIPT_ID = 'cassie-google-api-script'
+const GOOGLE_GSI_SCRIPT_ID = 'cassie-google-gsi-script'
+
+const loadExternalScript = (id: string, src: string): Promise<void> => {
+  if (typeof document === 'undefined') {
+    return Promise.reject(new Error('Browser document is unavailable'))
+  }
+
+  const existing = document.getElementById(id) as HTMLScriptElement | null
+  if (existing) {
+    if (existing.dataset.loaded === 'true') {
+      return Promise.resolve()
+    }
+    return new Promise((resolve, reject) => {
+      existing.addEventListener('load', () => resolve(), { once: true })
+      existing.addEventListener('error', () => reject(new Error(`Failed to load ${src}`)), { once: true })
+    })
+  }
+
+  return new Promise((resolve, reject) => {
+    const script = document.createElement('script')
+    script.id = id
+    script.src = src
+    script.async = true
+    script.defer = true
+    script.onload = () => {
+      script.dataset.loaded = 'true'
+      resolve()
+    }
+    script.onerror = () => reject(new Error(`Failed to load ${src}`))
+    document.head.appendChild(script)
+  })
+}
+
+const loadGoogleDriveScripts = async () => {
+  await Promise.all([
+    loadExternalScript(GOOGLE_API_SCRIPT_ID, 'https://apis.google.com/js/api.js'),
+    loadExternalScript(GOOGLE_GSI_SCRIPT_ID, 'https://accounts.google.com/gsi/client'),
+  ])
+}
+
+const loadGooglePicker = (): Promise<void> => {
+  return new Promise((resolve, reject) => {
+    if (!window.gapi) {
+      reject(new Error('Google API script is not available'))
+      return
+    }
+    window.gapi.load('picker', {
+      callback: () => resolve(),
+      onerror: () => reject(new Error('Failed to load Google Picker')),
+      timeout: 10000,
+      ontimeout: () => reject(new Error('Timed out loading Google Picker')),
+    })
+  })
+}
+
+const deriveGoogleDriveAppId = (clientId: string): string => (
+  import.meta.env.VITE_GOOGLE_DRIVE_APP_ID ||
+  clientId.split('-')[0] ||
+  ''
+)
 
 interface CreateJobDraft {
   version: 2
@@ -234,6 +300,8 @@ export default function CreateJob() {
   const [dataFileTree, setDataFileTree] = useState<FolderTreeItem[]>([])
   const [loadingDataTree, setLoadingDataTree] = useState(false)
   const [pendingLocalFiles, setPendingLocalFiles] = useState<PendingJobUploadFile[]>([])
+  const [pendingGoogleDriveFiles, setPendingGoogleDriveFiles] = useState<PendingGoogleDriveJobImportFile[]>([])
+  const [importingGoogleDriveFile, setImportingGoogleDriveFile] = useState(false)
   const [submitStatus, setSubmitStatus] = useState<string>('')
   const [availableVMs, setAvailableVMs] = useState<VM[]>([])
   const [loadingVMs, setLoadingVMs] = useState(false)
@@ -408,7 +476,7 @@ export default function CreateJob() {
     return () => {
       cancelled = true
     }
-  }, [selectedVM, selectionMode, selectedPipelineId, selectedTools, toolFileMappings, pendingLocalFiles, dataFileTree])
+  }, [selectedVM, selectionMode, selectedPipelineId, selectedTools, toolFileMappings, pendingLocalFiles, pendingGoogleDriveFiles, dataFileTree])
 
   useEffect(() => {
     const fetchIntents = async () => {
@@ -810,7 +878,7 @@ export default function CreateJob() {
 
     setToolFileMappings(suggestedMappings)
     setAppliedRecommendationFileIds(null)
-  }, [selectionMode, appliedRecommendationFileIds, toolRequirements, pendingLocalFiles, dataFileTree])
+  }, [selectionMode, appliedRecommendationFileIds, toolRequirements, pendingLocalFiles, pendingGoogleDriveFiles, dataFileTree])
 
   useEffect(() => {
     if (selectionMode !== 'tools') {
@@ -1105,8 +1173,20 @@ export default function CreateJob() {
       created_at: file.created_at,
       folderPath: 'Selected Files',
     }))
+    const pendingGoogleDriveFilesAsItems: Array<FileItem & { folderPath?: string }> = pendingGoogleDriveFiles.map(file => ({
+      id: file.tempId,
+      filename: file.filename,
+      s3_key: `gdrive://${file.googleFileId}/${file.filename}`,
+      file_type: 'input',
+      file_format: file.file_format,
+      size_bytes: file.size_bytes,
+      checksum: '',
+      uploaded_at: null,
+      created_at: file.created_at,
+      folderPath: 'Selected Google Drive Files',
+    }))
 
-    return [...pendingFilesAsItems, ...libraryFiles]
+    return [...pendingGoogleDriveFilesAsItems, ...pendingFilesAsItems, ...libraryFiles]
   }
 
   const getRuntimeInputAssignments = (): RuntimeInputAssignment[] => {
@@ -1199,6 +1279,150 @@ export default function CreateJob() {
     }
   }
 
+  const addPickedGoogleDriveFiles = (
+    accessToken: string,
+    docs: Array<{ id: string; name?: string; mimeType?: string; sizeBytes?: string | number; size?: string | number }>
+  ) => {
+    const selectedAt = Date.now()
+    setPendingGoogleDriveFiles(prev => {
+      const existingIds = new Set(prev.map(file => file.googleFileId))
+      const additions = docs
+        .filter(doc => doc.id && !existingIds.has(doc.id))
+        .map((doc, index) => {
+          const filename = sanitizeSelectedFilename(doc.name || `google-drive-${doc.id}`)
+          const rawSize = doc.sizeBytes ?? doc.size
+          const parsedSize = rawSize !== undefined && rawSize !== null ? Number(rawSize) : 0
+
+          return {
+            tempId: -(selectedAt + index + Math.floor(Math.random() * 1000)),
+            googleFileId: doc.id,
+            accessToken,
+            filename,
+            original_filename: doc.name || filename,
+            size_bytes: Number.isFinite(parsedSize) && parsedSize > 0 ? parsedSize : null,
+            file_format: inferFileFormat(filename),
+            mime_type: doc.mimeType,
+            created_at: new Date().toISOString(),
+            folderPath: 'Selected Google Drive Files',
+          }
+        })
+
+      return [...additions, ...prev]
+    })
+  }
+
+  const openGoogleDrivePicker = async () => {
+    const clientId = import.meta.env.VITE_GOOGLE_DRIVE_CLIENT_ID
+    const apiKey = import.meta.env.VITE_GOOGLE_DRIVE_API_KEY
+    const appId = clientId ? deriveGoogleDriveAppId(clientId) : ''
+
+    if (!clientId || !apiKey || !appId) {
+      setError(
+        'Google Drive sign-in is not configured. CASSIE needs Google OAuth app credentials, but files still come from each user\'s own Drive account.'
+      )
+      return
+    }
+
+    try {
+      setError('')
+      setImportingGoogleDriveFile(true)
+      await loadGoogleDriveScripts()
+      await loadGooglePicker()
+
+      await new Promise<void>((resolve, reject) => {
+        const tokenClient = window.google?.accounts?.oauth2?.initTokenClient({
+          client_id: clientId,
+          scope: GOOGLE_DRIVE_SCOPE,
+          callback: async (tokenResponse: any) => {
+            if (tokenResponse?.error) {
+              reject(new Error(tokenResponse.error_description || tokenResponse.error))
+              return
+            }
+
+            const accessToken = tokenResponse?.access_token
+            if (!accessToken) {
+              reject(new Error('Google did not return an access token.'))
+              return
+            }
+
+            const picker = new window.google.picker.PickerBuilder()
+              .setDeveloperKey(apiKey)
+              .setAppId(appId)
+              .setOAuthToken(accessToken)
+              .addView(
+                new window.google.picker.DocsView(window.google.picker.ViewId.DOCS)
+                  .setIncludeFolders(false)
+                  .setSelectFolderEnabled(false)
+              )
+              .enableFeature(window.google.picker.Feature.SUPPORT_DRIVES)
+              .enableFeature(window.google.picker.Feature.MULTISELECT_ENABLED)
+              .setCallback((data: any) => {
+                if (data.action === window.google.picker.Action.CANCEL) {
+                  resolve()
+                  return
+                }
+                if (data.action !== window.google.picker.Action.PICKED) {
+                  return
+                }
+
+                const docs = (data.docs || []).filter((doc: any) => doc?.id)
+                if (docs.length === 0) {
+                  reject(new Error('No Google Drive file was selected.'))
+                  return
+                }
+
+                addPickedGoogleDriveFiles(accessToken, docs)
+                resolve()
+              })
+              .build()
+
+            picker.setVisible(true)
+          },
+        })
+
+        if (!tokenClient) {
+          reject(new Error('Google Identity Services could not be initialized.'))
+          return
+        }
+
+        tokenClient.requestAccessToken({ prompt: 'consent' })
+      })
+    } catch (err: any) {
+      setError(
+        err.response?.data?.error?.message ||
+        err.response?.data?.message ||
+        err.message ||
+        'Failed to import from Google Drive'
+      )
+    } finally {
+      setImportingGoogleDriveFile(false)
+    }
+  }
+
+  const renderFileSourceControls = () => (
+    <div className="job-file-source-controls">
+      <label className="btn-secondary" style={{ cursor: 'pointer', display: 'inline-block' }}>
+        Select New File(s)
+        <input
+          type="file"
+          onChange={handleFileUpload}
+          disabled={creating}
+          multiple
+          style={{ display: 'none' }}
+          accept=".fastq,.fastq.gz,.fq,.fq.gz,.fasta,.fasta.gz,.fa,.fa.gz,.fna,.fna.gz,.gff,.gff3,.gtf,.hal,.gfa,.meryl,.meryl.tar,.meryl.tar.gz,.meryl.tgz,.cfg,.conf,.ini,.json,.txt,.tsv,.csv,.gz"
+        />
+      </label>
+      <button
+        type="button"
+        className="btn-secondary"
+        onClick={() => void openGoogleDrivePicker()}
+        disabled={creating || importingGoogleDriveFile}
+      >
+        {importingGoogleDriveFile ? 'Opening Your Drive...' : 'Choose from Your Google Drive'}
+      </button>
+    </div>
+  )
+
   const sanitizeSelectedFilename = (value: string): string => (
     value.replace(/[\\/:*?"<>|]/g, '_').trim()
   )
@@ -1214,10 +1438,20 @@ export default function CreateJob() {
           }
         : file
     )))
+    setPendingGoogleDriveFiles(prev => prev.map(file => (
+      file.tempId === tempId
+        ? {
+            ...file,
+            filename: sanitizedName,
+            file_format: inferFileFormat(sanitizedName),
+          }
+        : file
+    )))
   }
 
   const renderSelectableFileChip = (file: FileItem & { folderPath?: string }, keyPrefix: string, selected = false) => {
     const pendingFile = pendingLocalFiles.find(item => item.tempId === file.id)
+    const pendingGoogleDriveFile = pendingGoogleDriveFiles.find(item => item.tempId === file.id)
     const title = file.folderPath ? `${file.folderPath}/${file.filename}` : file.filename
 
     return (
@@ -1242,6 +1476,23 @@ export default function CreateJob() {
               />
             </label>
             <span>From PC: {pendingFile.original_filename || pendingFile.file.name}</span>
+          </>
+        ) : pendingGoogleDriveFile ? (
+          <>
+            <label style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', width: '100%' }}>
+              <span style={{ fontSize: '0.7rem', color: '#64748b', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                File name
+              </span>
+              <input
+                type="text"
+                value={pendingGoogleDriveFile.filename}
+                onChange={(event) => handleSelectedFileRename(pendingGoogleDriveFile.tempId, event.target.value)}
+                disabled={creating}
+                style={{ minWidth: '220px', fontWeight: 700 }}
+                aria-label={`Rename selected Google Drive file ${pendingGoogleDriveFile.original_filename || pendingGoogleDriveFile.filename}`}
+              />
+            </label>
+            <span>From Google Drive: {pendingGoogleDriveFile.original_filename || pendingGoogleDriveFile.filename}</span>
           </>
         ) : (
           <>
@@ -1430,7 +1681,7 @@ export default function CreateJob() {
   const shouldShowRuntimeEstimateCard = Boolean(loadingRuntimeEstimate || runtimeEstimate || runtimeEstimateError)
   const combinedSelectableFiles = useMemo(
     () => getCombinedSelectableFiles(),
-    [dataFileTree, pendingLocalFiles]
+    [dataFileTree, pendingGoogleDriveFiles, pendingLocalFiles]
   )
   const selectedLibraryFiles = useMemo(() => combinedSelectableFiles.filter((file) => {
     if (selectionMode === 'pipeline') {
@@ -1783,6 +2034,16 @@ export default function CreateJob() {
       return
     }
 
+    if (loadingRuntimeEstimate) {
+      setError('Please wait for the job cost estimate before starting.')
+      return
+    }
+
+    if (!runtimeEstimate) {
+      setError(runtimeEstimateError || 'A job cost estimate is required before starting.')
+      return
+    }
+
     try {
       setCreating(true)
       setSubmitStatus('Creating job...')
@@ -1790,9 +2051,24 @@ export default function CreateJob() {
       // Create job with tool selection or pipeline and input files
       const jobData: JobCreate = {
         name: jobName,
-        vm_name: selectedVM || undefined
+        vm_name: selectedVM || undefined,
+        estimated_price_usd: runtimeEstimate.estimated_price_usd,
       }
       
+      const selectedPendingGoogleDriveFiles = pendingGoogleDriveFiles.filter(file => uploadedFileIds.includes(file.tempId))
+      const blankPendingGoogleDriveFile = selectedPendingGoogleDriveFiles.find(file => !file.filename.trim())
+      if (blankPendingGoogleDriveFile) {
+        setError(`Please give every selected Google Drive file a name before starting the job. Original file: ${blankPendingGoogleDriveFile.original_filename || blankPendingGoogleDriveFile.googleFileId}`)
+        return
+      }
+      const duplicatePendingGoogleDriveName = selectedPendingGoogleDriveFiles.find((file, index, allFiles) => (
+        allFiles.findIndex(candidate => candidate.filename.trim().toLowerCase() === file.filename.trim().toLowerCase()) !== index
+      ))
+      if (duplicatePendingGoogleDriveName) {
+        setError(`Selected Google Drive files must have unique names before import. Duplicate name: ${duplicatePendingGoogleDriveName.filename}`)
+        return
+      }
+
       const existingLibraryFileIds = uploadedFileIds.filter(id => id > 0)
       const pendingFileIds = Array.from(new Set(uploadedFileIds.filter(id => id < 0)))
       const expectedTotalInputFiles = existingLibraryFileIds.length + pendingFileIds.length
@@ -1864,9 +2140,14 @@ export default function CreateJob() {
 
       const job = await createJob(cleanJobData)
 
-      if (job && job.id && pendingFileIds.length > 0) {
+      if (job && job.id && (pendingFilesToUpload.length > 0 || selectedPendingGoogleDriveFiles.length > 0)) {
         setSubmitStatus('Queueing selected files...')
-        await enqueuePendingJobUploads(job.id, pendingFilesToUpload, job.upload_session_token)
+        await enqueuePendingJobInputUploads(
+          job.id,
+          pendingFilesToUpload,
+          selectedPendingGoogleDriveFiles,
+          job.upload_session_token
+        )
         shouldPersistDraftRef.current = false
         clearCreateJobDraft()
         navigate(`/jobs/${job.id}`)
@@ -2313,19 +2594,7 @@ export default function CreateJob() {
                     Choose the files you want available for this pipeline. In the next step you will assign them to the explicit tool blocks.
                   </p>
 
-                  <div style={{ marginBottom: '1rem' }}>
-                    <label className="btn-secondary" style={{ cursor: 'pointer', display: 'inline-block' }}>
-                      Select New File(s)
-                      <input
-                        type="file"
-                        onChange={handleFileUpload}
-                        disabled={creating}
-                        multiple
-                        style={{ display: 'none' }}
-                        accept=".fastq,.fastq.gz,.fq,.fq.gz,.fasta,.fasta.gz,.fa,.fa.gz,.fna,.fna.gz,.gff,.gff3,.gtf,.hal,.gfa,.meryl,.meryl.tar,.meryl.tar.gz,.meryl.tgz,.cfg,.conf,.ini,.json,.txt,.tsv,.csv,.gz"
-                      />
-                    </label>
-                  </div>
+                  {renderFileSourceControls()}
 
                   {loadingDataTree ? (
                     <p style={{ color: '#666', fontStyle: 'italic' }}>Loading data library...</p>
@@ -2350,19 +2619,7 @@ export default function CreateJob() {
                     Add or review the files you want available. In the next step, you will assign them into named tool blocks.
                   </p>
 
-                  <div style={{ marginBottom: '1rem' }}>
-                    <label className="btn-secondary" style={{ cursor: 'pointer', display: 'inline-block' }}>
-                      Select New File(s)
-                      <input
-                        type="file"
-                        onChange={handleFileUpload}
-                        disabled={creating}
-                        multiple
-                        style={{ display: 'none' }}
-                        accept=".fastq,.fastq.gz,.fq,.fq.gz,.fasta,.fasta.gz,.fa,.fa.gz,.fna,.fna.gz,.gff,.gff3,.gtf,.hal,.gfa,.meryl,.meryl.tar,.meryl.tar.gz,.meryl.tgz,.cfg,.conf,.ini,.json,.txt,.tsv,.csv,.gz"
-                      />
-                    </label>
-                  </div>
+                  {renderFileSourceControls()}
 
                   {loadingDataTree ? (
                     <p style={{ color: '#666', fontStyle: 'italic' }}>Loading data library...</p>
@@ -2727,6 +2984,13 @@ export default function CreateJob() {
                             <span className="runtime-estimate-value">{formatUsd(runtimeEstimate.estimated_price_usd)}</span>
                             <span className="runtime-estimate-subtle">
                               {formatUsd(runtimeEstimate.vm_price_per_minute)} per minute on {runtimeEstimate.vm_display_name}
+                            </span>
+                          </div>
+                          <div className="runtime-estimate-panel">
+                            <span className="runtime-estimate-label">Required Balance Hold</span>
+                            <span className="runtime-estimate-value">{formatUsd(runtimeEstimate.estimated_price_usd * 1.5)}</span>
+                            <span className="runtime-estimate-subtle">
+                              Final charge is actual runtime cost, capped at this hold.
                             </span>
                           </div>
                         </div>

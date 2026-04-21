@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 
 import Navigation from '../components/Navigation'
 import ReportDialog from '../components/ReportDialog'
+import SortDropdown from '../components/SortDropdown'
 import { getCurrentUser, getToken } from '../services/authService'
 import { extractApiErrorMessage } from '../services/apiClient'
 import {
@@ -37,7 +38,23 @@ const formatDateTime = (value: string) => new Date(value).toLocaleString()
 const MAX_FORUM_IMAGES = 4
 const COMMENTS_PER_PAGE = 10
 
-const sortCommentsRecursively = (
+const flattenComments = (comments: ForumComment[]): ForumComment[] => {
+  const flattened: ForumComment[] = []
+
+  const walk = (items: ForumComment[]) => {
+    items.forEach((comment) => {
+      flattened.push(comment)
+      if (comment.replies && comment.replies.length > 0) {
+        walk(comment.replies)
+      }
+    })
+  }
+
+  walk(comments)
+  return flattened
+}
+
+const sortComments = (
   comments: ForumComment[],
   sortBy: 'recent' | 'popular'
 ): ForumComment[] => {
@@ -56,12 +73,7 @@ const sortCommentsRecursively = (
     return new Date(right.created_at).getTime() - new Date(left.created_at).getTime()
   }
 
-  return [...comments]
-    .map((comment) => ({
-      ...comment,
-      replies: sortCommentsRecursively(comment.replies || [], sortBy),
-    }))
-    .sort(compareComments)
+  return [...comments].sort(compareComments)
 }
 
 export default function ForumThread() {
@@ -193,10 +205,19 @@ export default function ForumThread() {
     setOpenMenuKey(null)
   }
 
-  const handleImageSelection = (files: FileList | null, setFiles: (files: File[]) => void) => {
+  const handleImageSelection = (
+    files: FileList | null,
+    setFiles: (files: File[]) => void,
+    inputElement?: HTMLInputElement
+  ) => {
     const nextFiles = Array.from(files || [])
     if (nextFiles.length > MAX_FORUM_IMAGES) {
-      setError(`You can attach up to ${MAX_FORUM_IMAGES} images per post.`)
+      const message = `You can attach up to ${MAX_FORUM_IMAGES} images per post.`
+      setError(message)
+      alert(message)
+      if (inputElement) {
+        inputElement.value = ''
+      }
       return
     }
     setError('')
@@ -503,7 +524,6 @@ export default function ForumThread() {
         title={userVote === 'upvote' ? 'Take back upvote' : 'Upvote'}
       >
         <span className="engagement-vote-icon" aria-hidden="true">▲</span>
-        <span className="engagement-vote-label">Upvote</span>
         <span className="engagement-vote-count">{counts.upvotes}</span>
       </button>
       <button
@@ -514,7 +534,6 @@ export default function ForumThread() {
         title={userVote === 'downvote' ? 'Take back downvote' : 'Downvote'}
       >
         <span className="engagement-vote-icon" aria-hidden="true">▼</span>
-        <span className="engagement-vote-label">Downvote</span>
         <span className="engagement-vote-count">{counts.downvotes}</span>
       </button>
     </div>
@@ -575,7 +594,7 @@ export default function ForumThread() {
           type="file"
           accept="image/png,image/jpeg,image/jpg,image/webp,image/gif"
           multiple
-          onChange={(e) => handleImageSelection(e.target.files, setReplyImages)}
+          onChange={(e) => handleImageSelection(e.target.files, setReplyImages, e.currentTarget)}
         />
         {replyImagePreviews.length > 0 && (
           <div className="forum-image-preview-grid forum-inline-image-grid">
@@ -670,17 +689,12 @@ export default function ForumThread() {
           )}
           {renderReplyComposer(commentKey)}
         </article>
-        {comment.replies && comment.replies.length > 0 && (
-          <div className="forum-comment-children">
-            {comment.replies.map((reply) => renderComment(reply))}
-          </div>
-        )}
       </div>
     )
   }
 
   const sortedThreadComments = useMemo(
-    () => sortCommentsRecursively(thread?.thread_comments || [], commentSortBy),
+    () => sortComments(flattenComments(thread?.thread_comments || []), commentSortBy),
     [thread?.thread_comments, commentSortBy]
   )
 
@@ -739,8 +753,6 @@ export default function ForumThread() {
                     'forum post',
                     { upvotes: thread.upvote_count, downvotes: thread.downvote_count }
                   )}
-                  <span>{thread.comment_count} comment{thread.comment_count === 1 ? '' : 's'}</span>
-                  <span>{thread.view_count} view{thread.view_count === 1 ? '' : 's'}</span>
                 </div>
               </div>
               <div className="forum-post-header-actions">
@@ -801,7 +813,7 @@ export default function ForumThread() {
                 type="file"
                 accept="image/png,image/jpeg,image/jpg,image/webp,image/gif"
                 multiple
-                onChange={(e) => handleImageSelection(e.target.files, setCommentImages)}
+                onChange={(e) => handleImageSelection(e.target.files, setCommentImages, e.currentTarget)}
               />
               {commentImagePreviews.length > 0 && (
                 <div className="forum-image-preview-grid forum-inline-image-grid">
@@ -824,18 +836,16 @@ export default function ForumThread() {
           <section className="forum-answer-list">
             <div className="section-heading forum-comment-list-heading">
               <h2>Discussion</h2>
-              <div className="community-sort-controls">
-                <label htmlFor="thread-comment-sort">Sort comments</label>
-                <select
-                  id="thread-comment-sort"
-                  className="community-sort-select"
-                  value={commentSortBy}
-                  onChange={(e) => setCommentSortBy(e.target.value as 'recent' | 'popular')}
-                >
-                  <option value="recent">Most Recent</option>
-                  <option value="popular">Most Popular</option>
-                </select>
-              </div>
+              <SortDropdown
+                id="thread-comment-sort"
+                label="Sort comments"
+                value={commentSortBy}
+                options={[
+                  { value: 'recent', label: 'Most Recent' },
+                  { value: 'popular', label: 'Most Popular' },
+                ]}
+                onChange={(value) => setCommentSortBy(value as 'recent' | 'popular')}
+              />
             </div>
             {sortedThreadComments.length === 0 ? (
               <div className="empty-state compact-empty">

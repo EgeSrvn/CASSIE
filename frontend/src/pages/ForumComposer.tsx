@@ -27,10 +27,15 @@ export default function ForumComposer() {
     }
   }, [imagePreviews])
 
-  const handleImageChange = (nextFiles: FileList | null) => {
+  const handleImageChange = (nextFiles: FileList | null, inputElement?: HTMLInputElement) => {
     const selectedFiles = Array.from(nextFiles || [])
     if (selectedFiles.length > MAX_FORUM_IMAGES) {
-      setError(`You can attach up to ${MAX_FORUM_IMAGES} images per post.`)
+      const message = `You can attach up to ${MAX_FORUM_IMAGES} images per post.`
+      setError(message)
+      alert(message)
+      if (inputElement) {
+        inputElement.value = ''
+      }
       return
     }
     setError('')
@@ -93,7 +98,7 @@ export default function ForumComposer() {
                 type="file"
                 accept="image/png,image/jpeg,image/jpg,image/webp,image/gif"
                 multiple
-                onChange={(e) => handleImageChange(e.target.files)}
+                onChange={(e) => handleImageChange(e.target.files, e.currentTarget)}
               />
               <small>Up to 4 images per discussion.</small>
             </div>

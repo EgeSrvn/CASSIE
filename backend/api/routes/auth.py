@@ -47,6 +47,7 @@ from backend.api.services.auth_service import (
     create_access_token,
     decode_access_token,
 )
+from backend.api.services.billing_service import deposit_user_cash
 from backend.api.services.email_service import send_email
 from backend.api.services.user_notification_service import build_login_two_factor_email
 from backend.api.utils.response_builder import (
@@ -123,6 +124,10 @@ class AccountDeletionCodeRequest(BaseModel):
     code: str = Field(..., min_length=4, max_length=12)
 
 
+class CashDepositRequest(BaseModel):
+    amount_usd: float = Field(..., gt=0, le=1000000)
+
+
 class LoginTwoFactorConfirmRequest(BaseModel):
     username: str = Field(..., min_length=1)
     code: str = Field(..., min_length=4, max_length=12)
@@ -188,6 +193,8 @@ def _resolved_avatar_url(user) -> Optional[str]:
 
 
 def _user_response_from_model(user) -> UserResponse:
+    cash_balance = float(getattr(user, "cash_balance_usd", 0) or 0)
+    cash_reserved = float(getattr(user, "cash_reserved_usd", 0) or 0)
     return UserResponse(
         id=user.id,
         username=user.username,
@@ -200,6 +207,9 @@ def _user_response_from_model(user) -> UserResponse:
         location=getattr(user, "location", None),
         website_url=getattr(user, "website_url", None),
         avatar_url=_resolved_avatar_url(user),
+        cash_balance_usd=cash_balance,
+        cash_reserved_usd=cash_reserved,
+        cash_available_usd=max(cash_balance - cash_reserved, 0.0),
         email_verified=getattr(user, "email_verified", False),
         login_two_factor_enabled=getattr(user, "login_two_factor_enabled", False),
         job_notifications_enabled=getattr(user, "job_notifications_enabled", False),
@@ -1120,6 +1130,32 @@ async def update_profile(
         data=_user_response_from_model(updated_user).model_dump(),
         message="Profile updated successfully",
     )
+
+
+@router.post("/profile/balance/deposit")
+async def deposit_profile_balance(
+    payload: CashDepositRequest,
+    current_user: UserResponse = Depends(get_current_user),
+):
+    """Add cash to the current user's CASSIE job balance."""
+    try:
+        deposit_user_cash(current_user.id, payload.amount_usd)
+        updated_user = get_user_by_id(current_user.id)
+        if updated_user is None:
+            error_data = unauthorized_response("User not found")
+            return JSONResponse(content=error_data, status_code=status.HTTP_401_UNAUTHORIZED)
+
+        return success_response(
+            data=_user_response_from_model(updated_user).model_dump(),
+            message="Cash balance updated successfully",
+        )
+    except ValueError as exc:
+        error_data = error_response(
+            error_code=ErrorCode.VALIDATION_ERROR,
+            message=str(exc),
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
 
 
 @router.post("/profile/delete/request")

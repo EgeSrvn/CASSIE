@@ -56,6 +56,7 @@ class JobCreate(JobBase):
     """Model for creating a new job."""
     pending_upload_count: Optional[int] = Field(None, ge=0, description="Number of browser-side files queued for background upload")
     expected_total_input_files: Optional[int] = Field(None, ge=0, description="Expected total number of input files after queued uploads finish")
+    estimated_price_usd: Optional[float] = Field(None, ge=0, description="Estimated job price used for balance reservation")
 
 
 class JobUpdate(BaseModel):
@@ -74,6 +75,11 @@ class JobInDB(JobBase):
     id: int
     user_id: int
     status: JobStatus = JobStatus.PENDING
+    estimated_price_usd: float = 0.0
+    max_charge_usd: float = 0.0
+    actual_price_charged_usd: Optional[float] = None
+    balance_reserved_at: Optional[datetime] = None
+    balance_charged_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
 

@@ -29,6 +29,9 @@ export interface User {
   location?: string | null
   website_url?: string | null
   avatar_url?: string | null
+  cash_balance_usd?: number
+  cash_reserved_usd?: number
+  cash_available_usd?: number
   bucket_name?: string
   created_at?: string
   updated_at?: string
@@ -229,6 +232,18 @@ export const updateProfile = async (payload: ProfileUpdateRequest): Promise<User
     return response.data.data
   }
   throw new Error('Failed to update profile')
+}
+
+export const depositCashBalance = async (amountUsd: number): Promise<User> => {
+  const response = await apiClient.post<{ success: boolean; data: User }>(
+    '/api/auth/profile/balance/deposit',
+    { amount_usd: amountUsd }
+  )
+  if (response.data.success) {
+    setStoredUser(response.data.data)
+    return response.data.data
+  }
+  throw new Error('Failed to update cash balance')
 }
 
 export const requestAccountDeletionCode = async (): Promise<{ email: string; expires_in_minutes: number }> => {

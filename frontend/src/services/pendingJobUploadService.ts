@@ -1,5 +1,5 @@
 import { executeJob, getJob } from './jobService'
-import { uploadFile } from './fileService'
+import { importGoogleDriveFileToJob, uploadFile } from './fileService'
 
 export type PendingJobUploadFile = {
   tempId: number
@@ -9,6 +9,19 @@ export type PendingJobUploadFile = {
   size_bytes: number
   file_format: string | null
   uploaded_at: null
+  created_at: string
+  folderPath?: string
+}
+
+export type PendingGoogleDriveJobImportFile = {
+  tempId: number
+  googleFileId: string
+  accessToken: string
+  filename: string
+  original_filename?: string
+  size_bytes: number | null
+  file_format: string | null
+  mime_type?: string
   created_at: string
   folderPath?: string
 }
@@ -38,6 +51,7 @@ export type PendingQueuedJobFile = {
 type StoredUploadRecord = {
   id: string
   schemaVersion?: number
+  source?: 'pc' | 'google-drive'
   jobId: number
   tempId: number
   filename: string
@@ -47,7 +61,10 @@ type StoredUploadRecord = {
   file_format: string | null
   created_at: string
   queueOrder: number
-  fileBlob: Blob
+  fileBlob?: Blob
+  googleFileId?: string
+  googleAccessToken?: string
+  mime_type?: string
   uploadSessionToken?: string
 }
 
@@ -55,7 +72,7 @@ const DB_NAME = 'cassie-pending-job-uploads'
 const DB_VERSION = 1
 const STORE_NAME = 'upload_files'
 const STATUS_STORAGE_KEY = 'cassie-pending-job-upload-status'
-const UPLOAD_RECORD_SCHEMA_VERSION = 3
+const UPLOAD_RECORD_SCHEMA_VERSION = 4
 const TRANSIENT_UPLOAD_ATTEMPTS = 3
 const TRANSIENT_UPLOAD_RETRY_DELAY_MS = 10000
 
@@ -221,12 +238,20 @@ export const clearPendingJobUploads = async (jobId: number) => {
 }
 
 const getFileFingerprint = (file: PendingJobUploadFile): string => (
-  `${file.file.name}:${file.size_bytes}:${file.file.lastModified}`
+  `pc:${file.file.name}:${file.size_bytes}:${file.file.lastModified}`
 )
 
-const getRecordFingerprint = (record: StoredUploadRecord): string => (
-  `${record.original_filename || record.filename}:${record.size_bytes}:${record.lastModified || 0}`
+const getGoogleDriveFingerprint = (file: PendingGoogleDriveJobImportFile): string => (
+  `google-drive:${file.googleFileId}:${file.filename}:${file.size_bytes || 0}`
 )
+
+const getRecordFingerprint = (record: StoredUploadRecord): string => {
+  if (record.source === 'google-drive') {
+    return `google-drive:${record.googleFileId || record.original_filename || record.filename}:${record.filename}:${record.size_bytes}`
+  }
+
+  return `pc:${record.original_filename || record.filename}:${record.size_bytes}:${record.lastModified || 0}`
+}
 
 const removeDuplicateUploadRecords = async (records: StoredUploadRecord[]): Promise<StoredUploadRecord[]> => {
   const seen = new Set<string>()
@@ -407,12 +432,14 @@ const processUploadQueue = async () => {
 
       for (const record of jobRecords) {
         const filePosition = uploadedFiles + 1
+        const transferLabel = record.source === 'google-drive' ? 'Importing Google Drive files' : 'Uploading selected files'
+        const transferMessage = `${transferLabel} (${filePosition}/${totalFiles}): ${record.filename}`
         setJobUploadStatus(
           jobId,
           buildUploadStatus(
             jobId,
             'uploading',
-            `Uploading selected files (${filePosition}/${totalFiles}): ${record.filename}`,
+            transferMessage,
             totalFiles,
             uploadedFiles,
             {
@@ -427,35 +454,72 @@ const processUploadQueue = async () => {
 
         for (let attempt = 1; attempt <= TRANSIENT_UPLOAD_ATTEMPTS; attempt += 1) {
           try {
-            const restoredFile = new globalThis.File(
-              [record.fileBlob],
-              record.filename,
-              { type: record.fileBlob.type || 'application/octet-stream' }
-            )
+            if (record.source === 'google-drive') {
+              if (!record.googleFileId || !record.googleAccessToken) {
+                throw new Error(`Missing Google Drive import information for ${record.filename}`)
+              }
 
-            await uploadFile(
-              restoredFile,
-              jobId,
-              'input',
-              record.file_format || undefined,
-              (progress) => {
-                setJobUploadStatus(
+              await importGoogleDriveFileToJob(
+                jobId,
+                {
+                  file_id: record.googleFileId,
+                  access_token: record.googleAccessToken,
+                  filename: record.filename,
+                  mime_type: record.mime_type,
+                  file_format: record.file_format,
+                },
+                record.uploadSessionToken
+              )
+
+              setJobUploadStatus(
+                jobId,
+                buildUploadStatus(
                   jobId,
-                  buildUploadStatus(
-                    jobId,
-                    'uploading',
-                    `Uploading selected files (${filePosition}/${totalFiles}): ${record.filename}`,
-                    totalFiles,
-                    uploadedFiles,
-                    {
-                      currentFileName: record.filename,
-                      progress,
-                    }
-                  )
+                  'uploading',
+                  transferMessage,
+                  totalFiles,
+                  uploadedFiles,
+                  {
+                    currentFileName: record.filename,
+                    progress: 100,
+                  }
                 )
-              },
-              record.uploadSessionToken
-            )
+              )
+            } else {
+              if (!record.fileBlob) {
+                throw new Error(`Missing browser upload data for ${record.filename}`)
+              }
+
+              const restoredFile = new globalThis.File(
+                [record.fileBlob],
+                record.filename,
+                { type: record.fileBlob.type || 'application/octet-stream' }
+              )
+
+              await uploadFile(
+                restoredFile,
+                jobId,
+                'input',
+                record.file_format || undefined,
+                (progress) => {
+                  setJobUploadStatus(
+                    jobId,
+                    buildUploadStatus(
+                      jobId,
+                      'uploading',
+                      transferMessage,
+                      totalFiles,
+                      uploadedFiles,
+                      {
+                        currentFileName: record.filename,
+                        progress,
+                      }
+                    )
+                  )
+                },
+                record.uploadSessionToken
+              )
+            }
 
             uploadSucceeded = true
             break
@@ -636,15 +700,22 @@ export const startPendingJobUploadProcessor = async () => {
   void processUploadQueue()
 }
 
-export const enqueuePendingJobUploads = async (
+export const enqueuePendingJobInputUploads = async (
   jobId: number,
   files: PendingJobUploadFile[],
+  googleDriveFiles: PendingGoogleDriveJobImportFile[] = [],
   uploadSessionToken?: string
 ) => {
   const uniqueFiles = files.filter((file, index, allFiles) => {
     const key = getFileFingerprint(file)
     return allFiles.findIndex(candidate => (
       getFileFingerprint(candidate) === key
+    )) === index
+  })
+  const uniqueGoogleDriveFiles = googleDriveFiles.filter((file, index, allFiles) => {
+    const key = getGoogleDriveFingerprint(file)
+    return allFiles.findIndex(candidate => (
+      getGoogleDriveFingerprint(candidate) === key
     )) === index
   })
 
@@ -659,6 +730,7 @@ export const enqueuePendingJobUploads = async (
     await putUploadRecord({
       id: `${jobId}:${encodeURIComponent(getFileFingerprint(file))}`,
       schemaVersion: UPLOAD_RECORD_SCHEMA_VERSION,
+      source: 'pc',
       jobId,
       tempId: file.tempId,
       filename: file.filename,
@@ -673,16 +745,45 @@ export const enqueuePendingJobUploads = async (
     })
   }
 
+  for (let index = 0; index < uniqueGoogleDriveFiles.length; index++) {
+    const file = uniqueGoogleDriveFiles[index]
+    await putUploadRecord({
+      id: `${jobId}:${encodeURIComponent(getGoogleDriveFingerprint(file))}`,
+      schemaVersion: UPLOAD_RECORD_SCHEMA_VERSION,
+      source: 'google-drive',
+      jobId,
+      tempId: file.tempId,
+      filename: file.filename,
+      original_filename: file.original_filename || file.filename,
+      size_bytes: file.size_bytes || 0,
+      file_format: file.file_format,
+      created_at: file.created_at,
+      queueOrder: baseOrder + uniqueFiles.length + index,
+      googleFileId: file.googleFileId,
+      googleAccessToken: file.accessToken,
+      mime_type: file.mime_type,
+      uploadSessionToken,
+    })
+  }
+
+  const totalQueuedFiles = uniqueFiles.length + uniqueGoogleDriveFiles.length
+
   setJobUploadStatus(
     jobId,
     buildUploadStatus(
       jobId,
       'queued',
-      `Waiting to upload ${uniqueFiles.length} selected file${uniqueFiles.length !== 1 ? 's' : ''}...`,
-      uniqueFiles.length,
+      `Waiting to upload ${totalQueuedFiles} selected file${totalQueuedFiles !== 1 ? 's' : ''}...`,
+      totalQueuedFiles,
       0
     )
   )
+}
 
-  void startPendingJobUploadProcessor()
+export const enqueuePendingJobUploads = async (
+  jobId: number,
+  files: PendingJobUploadFile[],
+  uploadSessionToken?: string
+) => {
+  await enqueuePendingJobInputUploads(jobId, files, [], uploadSessionToken)
 }

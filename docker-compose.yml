@@ -120,6 +120,11 @@ services:
     build:
       context: .
       dockerfile: frontend/Dockerfile
+      args:
+        VITE_API_URL: ${VITE_API_URL:-}
+        VITE_GOOGLE_DRIVE_CLIENT_ID: ${VITE_GOOGLE_DRIVE_CLIENT_ID:-}
+        VITE_GOOGLE_DRIVE_API_KEY: ${VITE_GOOGLE_DRIVE_API_KEY:-}
+        VITE_GOOGLE_DRIVE_APP_ID: ${VITE_GOOGLE_DRIVE_APP_ID:-}
     container_name: cassie-frontend
     restart: unless-stopped
     depends_on:
