@@ -5,6 +5,7 @@ import { getToken } from '../services/authService'
 import { clearPendingJobUploads } from '../services/pendingJobUploadService'
 import { formatLocalDateTime } from '../utils/dateTime'
 import Navigation from '../components/Navigation'
+import VmCapacitySection from '../components/VmCapacitySection'
 import '../styles/globals.css'
 
 export default function Jobs() {
@@ -80,6 +81,8 @@ export default function Jobs() {
             </button>
           </div>
         </header>
+
+        {isAuthenticated && <VmCapacitySection />}
 
       <div className="jobs-page-content">
         <div className="filters">

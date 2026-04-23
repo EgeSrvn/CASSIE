@@ -163,8 +163,8 @@ class UserLimitsConfig:
             )
         )
         self.default_max_running_jobs = 3
-        self.default_downloadable_finished_jobs = 6
-        self.default_interactive_output_jobs = 6
+        self.default_downloadable_finished_jobs = 5
+        self.default_interactive_output_jobs = 5
         self.raw = self._load_json()
 
     def _load_json(self) -> dict:

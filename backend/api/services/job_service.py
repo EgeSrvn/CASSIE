@@ -5,10 +5,13 @@ This module provides database operations for job management.
 """
 
 import json
+from threading import Thread
 from typing import Optional, List, Dict, Any
 from contextlib import contextmanager
 from backend.api.database.db_init import get_db_connection
 from backend.api.models.job_model import JobInDB, JobCreate, JobUpdate, JobResponse, JobStatus, CloudProvider
+from backend.api.services.output_retention_service import purge_expired_finished_job_outputs_for_user
+from backend.api.services.user_limit_service import TERMINAL_JOB_STATUSES
 from backend.api.utils.logger import get_logger
 from tool_registry import get_tool_by_index, tool_produces_requirement
 
@@ -665,6 +668,16 @@ def update_job(job_id: int, user_id: int, job_update: JobUpdate) -> Optional[Job
                     send_job_completed_notification(user_id, job_id=updated_job.id, job_name=updated_job.name)
                 except Exception as notification_error:
                     logger.warning(f"Failed to send job completion notification for job {updated_job.id}: {notification_error}", exc_info=True)
+
+            if (
+                previous_status != updated_job.status
+                and updated_job.status.value in TERMINAL_JOB_STATUSES
+            ):
+                Thread(
+                    target=purge_expired_finished_job_outputs_for_user,
+                    args=(user_id,),
+                    daemon=True,
+                ).start()
 
             return updated_job
             

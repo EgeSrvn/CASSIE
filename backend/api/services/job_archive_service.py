@@ -253,3 +253,15 @@ def prewarm_job_outputs_zip(job_id: int, user_id: int, username: Optional[str] =
         logger.warning(f"Skipping ZIP prewarm for job {job_id}: username could not be resolved")
         return
     request_job_outputs_zip_generation(job_id, user_id, resolved_username)
+
+
+def clear_job_outputs_zip_artifacts(job_id: int, user_id: int, username: Optional[str] = None) -> int:
+    job_key = _get_zip_job_key(user_id, job_id)
+    with zip_download_jobs_lock:
+        zip_download_jobs.pop(job_key, None)
+
+    return minio_client.delete_prefix(
+        user_id=user_id,
+        prefix=f"generated-archives/jobs/{job_id}/",
+        username=username,
+    )

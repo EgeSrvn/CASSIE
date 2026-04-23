@@ -43,7 +43,7 @@ export default function Login({ onLogin }: LoginProps) {
         onLogin()
         setTimeout(() => {
           window.dispatchEvent(new Event('auth-change'))
-          navigate('/dashboard')
+          navigate('/')
         }, 50)
         return
       }
@@ -60,7 +60,7 @@ export default function Login({ onLogin }: LoginProps) {
         onLogin()
         setTimeout(() => {
           window.dispatchEvent(new Event('auth-change'))
-          navigate('/dashboard')
+          navigate('/')
         }, 50)
         return
       }

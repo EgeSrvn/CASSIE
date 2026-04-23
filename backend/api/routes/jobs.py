@@ -42,6 +42,7 @@ from backend.api.services.job_launch_service import (
     job_has_reserved_execution,
     start_job_execution_task,
 )
+from backend.api.services.output_retention_service import purge_expired_finished_job_outputs_for_user
 from backend.api.services.user_limit_service import can_user_start_more_jobs, can_user_interact_with_job_outputs
 from backend.api.services.vm_queue_service import get_vm_slot_usage, queue_or_start_job, reserve_vm_slot_for_job
 from backend.api.services.job_execution_service import get_executions_by_job
@@ -661,6 +662,14 @@ async def list_jobs(
         Paginated response with list of jobs
     """
     try:
+        try:
+            purge_expired_finished_job_outputs_for_user(current_user.id, current_user.username)
+        except Exception as cleanup_error:
+            logger.warning(
+                f"Failed to reconcile expired output retention for user {current_user.id}: {cleanup_error}",
+                exc_info=True,
+            )
+
         offset = (page - 1) * per_page
         jobs = get_jobs_by_user(
             user_id=current_user.id,

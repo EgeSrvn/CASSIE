@@ -392,6 +392,47 @@ def delete_file_record(file_id: int, user_id: int) -> bool:
             cur.close()
 
 
+def delete_file_records_for_job(user_id: int, job_id: int, file_type: Optional[FileType] = None) -> int:
+    """
+    Delete all file records for a job, optionally limited to a file type.
+
+    Args:
+        user_id: User ID to verify ownership through the job
+        job_id: Job whose file records should be deleted
+        file_type: Optional file type filter
+
+    Returns:
+        int: Number of deleted file records
+    """
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+
+        try:
+            query = """
+                DELETE FROM files
+                USING jobs j
+                WHERE files.job_id = j.id
+                  AND j.id = %s
+                  AND j.user_id = %s
+            """
+            params: List[object] = [job_id, user_id]
+
+            if file_type is not None:
+                query += " AND files.file_type = %s"
+                params.append(file_type.value)
+
+            cur.execute(query, params)
+            deleted_count = cur.rowcount
+            conn.commit()
+            return deleted_count
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Error deleting file records for job {job_id}: {e}", exc_info=True)
+            raise
+        finally:
+            cur.close()
+
+
 def count_files_by_user(user_id: int, job_id: Optional[int] = None, file_type: Optional[FileType] = None) -> int:
     """
     Count files for a user, optionally filtered by job_id and file_type.

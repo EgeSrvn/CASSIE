@@ -659,8 +659,8 @@ export default function JobDetails() {
         <Navigation />
         <div className="page-content">
           <div className="error-message">Job not found</div>
-          <button onClick={() => navigate('/dashboard')} className="btn-primary">
-            Back to Dashboard
+          <button onClick={() => navigate('/')} className="btn-primary">
+            Back to Home
           </button>
         </div>
       </div>
@@ -713,8 +713,8 @@ export default function JobDetails() {
             <button onClick={() => { loadJob(); loadFiles(); loadExecutions(); loadJobPipeline(); }} className="btn-secondary">
               Refresh
             </button>
-            <button onClick={() => navigate('/dashboard')} className="btn-secondary">
-              Back to Dashboard
+            <button onClick={() => navigate('/')} className="btn-secondary">
+              Back to Home
             </button>
           </div>
         </header>

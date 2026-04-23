@@ -570,8 +570,8 @@ export default function Profile() {
                 >
                   Cancel
                 </button>
-                <button className="btn-secondary" type="button" onClick={() => navigate('/dashboard')}>
-                  Back To Dashboard
+                <button className="btn-secondary" type="button" onClick={() => navigate('/')}>
+                  Back To Home
                 </button>
               </div>
             </form>

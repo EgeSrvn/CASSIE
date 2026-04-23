@@ -12,11 +12,17 @@ export default function Home() {
       <Navigation />
       <div className="page-content">
         <div className="dashboard-hero">
-          <h1 className="page-title" style={{ fontSize: '2.5rem', marginBottom: '1rem' }}>
-            CASSIE Genomics Platform
+          <h1 className="page-title" style={{ fontSize: '2.85rem', marginBottom: '1rem' }}>
+            CASSIE
           </h1>
-          <p className="dashboard-subtitle">
-            Comprehensive genomic data analysis with multi-cloud support
+          <p className="dashboard-subtitle dashboard-subtitle-main">
+            Cloud-based Genome Assembly Platform
+          </p>
+          <p className="dashboard-subtitle dashboard-subtitle-small">
+            a.k.a
+          </p>
+          <p className="dashboard-subtitle dashboard-subtitle-small">
+            <span className="dashboard-subtitle-rainbow">Cat, A Snuggly Sassy Irresistible Entity</span>
           </p>
         </div>
 

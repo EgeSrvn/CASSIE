@@ -98,7 +98,7 @@ body {
   color: var(--primary);
   margin-bottom: var(--spacing-sm);
   font-size: 2rem;
-  font-weight: 700;
+  font-weight: 900;
 }
 
 .auth-card h2 {
@@ -283,6 +283,29 @@ body {
   max-width: 42rem;
   margin: 0 auto;
   line-height: 1.6;
+}
+
+.dashboard-subtitle-small {
+  font-size: 0.95rem;
+  max-width: 46rem;
+}
+
+.dashboard-subtitle-main {
+  font-size: 3rem;
+  line-height: 1.15;
+  color: var(--gray-900);
+  max-width: 50rem;
+}
+
+.dashboard-subtitle-rainbow {
+  display: inline-block;
+  font-size: 3.2rem;
+  line-height: 1.1;
+  font-weight: 700;
+  background: linear-gradient(90deg, #e63946 0%, #f4a261 18%, #e9c46a 36%, #2a9d8f 54%, #457b9d 72%, #9d4edd 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
 }
 
 .dashboard-cards-grid {
@@ -621,7 +644,7 @@ body {
 .page-title {
   color: var(--gray-900);
   font-size: 1.75rem;
-  font-weight: 700;
+  font-weight: 900;
 }
 
 .page-title {
@@ -2948,9 +2971,8 @@ body {
 .forum-thread-card {
   text-align: left;
   padding: 1.2rem 1.25rem;
-  max-width: 1040px;
   width: 100%;
-  margin: 0.7rem auto 0;
+  margin: 0.7rem 0 0;
   border-radius: 28px;
   transition: transform 0.22s ease, box-shadow 0.22s ease, border-color 0.22s ease;
   position: relative;
@@ -3075,7 +3097,7 @@ body {
 }
 
 .forum-thread-layout {
-  max-width: 1040px;
+  width: 100%;
   margin: 0 auto;
   display: grid;
   gap: 1rem;
