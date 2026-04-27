@@ -622,6 +622,20 @@ export default function JobDetails() {
     return `Tool: ${toolName}`
   }
 
+  const getExecutionProgressPercent = (execution: JobExecution): number | null => {
+    const stages = execution.parameters_used?.stages || []
+    if (stages.length === 0) return null
+
+    const completedStages = stages.filter(stage => stage.status === 'completed').length
+    const activeStages = stages.filter(stage => (
+      stage.status === 'running' ||
+      stage.status === 'waiting_for_resources' ||
+      stage.status === 'waiting_for_checkpoint'
+    )).length
+    const progressUnits = Math.min(stages.length, completedStages + (activeStages > 0 ? 0.5 : 0))
+    return Math.round((progressUnits / stages.length) * 100)
+  }
+
   const getPipelineRequirementTools = (req: { type: string; used_by?: string[] }): string[] => {
     if (req.used_by && req.used_by.length > 0) return req.used_by
     if (req.type === 'forward_reads' || req.type === 'reverse_reads') return ['SPAdes']
@@ -775,7 +789,7 @@ export default function JobDetails() {
                     >
                       {jobUploadStatus.stage === 'starting'
                         ? 'Starting job'
-                        : `Uploading files (${jobUploadStatus.uploadedFiles}/${jobUploadStatus.totalFiles})`}
+                        : `Uploading files (${jobUploadStatus.uploadedFiles}/${jobUploadStatus.totalFiles}, ${jobUploadStatus.progress || 0}%)`}
                     </span>
                   )}
                 </div>
@@ -880,6 +894,7 @@ export default function JobDetails() {
                   const stages = execution.parameters_used?.stages || []
                   const elapsed = formatDurationClock(execution.started_at, execution.completed_at)
                   const currentStageLabel = getCurrentStageLabel(execution)
+                  const progressPercent = getExecutionProgressPercent(execution)
 
                   return (
                     <div key={execution.id} className="execution-card">
@@ -904,6 +919,17 @@ export default function JobDetails() {
                       {currentStageLabel && (
                         <div className="execution-progress-banner">
                           <strong>Current Progress:</strong> {currentStageLabel}
+                          {progressPercent !== null && (
+                            <div style={{ marginTop: '0.6rem' }}>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem', marginBottom: '0.35rem' }}>
+                                <span>{stages.filter(stage => stage.status === 'completed').length}/{stages.length} tool stages completed</span>
+                                <strong>{progressPercent}%</strong>
+                              </div>
+                              <div style={{ height: '10px', borderRadius: '999px', backgroundColor: '#dbe5f0', overflow: 'hidden' }}>
+                                <div style={{ width: `${progressPercent}%`, height: '100%', backgroundColor: '#2563eb' }} />
+                              </div>
+                            </div>
+                          )}
                         </div>
                       )}
 

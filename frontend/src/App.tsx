@@ -6,6 +6,7 @@ import Home from './pages/Home'
 import Jobs from './pages/Jobs'
 import CreateJob from './pages/CreateJob'
 import JobDetails from './pages/JobDetails'
+import Storage from './pages/Storage'
 import Pipelines from './pages/Pipelines'
 import StarterTemplates from './pages/StarterTemplates'
 import PipelineBuilder from './pages/PipelineBuilder'
@@ -20,6 +21,7 @@ import VerifyEmail from './pages/VerifyEmail'
 import ForgotPassword from './pages/ForgotPassword'
 import { getToken } from './services/authService'
 import { startPendingJobUploadProcessor } from './services/pendingJobUploadService'
+import { startStorageUploadProcessor } from './services/storageUploadService'
 
 function App() {
   const [isAuthenticated, setIsAuthenticated] = useState<boolean | null>(null)
@@ -52,6 +54,7 @@ function App() {
 
   useEffect(() => {
     void startPendingJobUploadProcessor()
+    void startStorageUploadProcessor()
   }, [])
 
   if (isAuthenticated === null) {
@@ -122,6 +125,10 @@ function App() {
           <Route
             path="/profile"
             element={isAuthenticated ? <Profile /> : <Navigate to="/login" />}
+          />
+          <Route
+            path="/storage"
+            element={isAuthenticated ? <Storage /> : <Navigate to="/login" />}
           />
           <Route
             path="/profile/:userId"

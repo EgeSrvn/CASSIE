@@ -8,12 +8,14 @@ import os
 import tempfile
 import hashlib
 import time
+import shutil
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 from backend.api.database.db_init import get_db_connection
 from backend.api.models.pipeline_model import FileInDB, FileType
 from backend.api.services.folder_service import get_folder_by_id
 from backend.api.services.minio_client import get_minio_client
+from backend.api.services.user_limit_service import validate_user_storage_capacity
 from backend.api.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -73,6 +75,15 @@ def upload_data_file(
             user = get_user_by_id(user_id)
             if not user:
                 raise ValueError(f"User with id {user_id} not found")
+
+            storage_ok, storage_error = validate_user_storage_capacity(
+                user_id=user_id,
+                username=user.username,
+                incoming_bytes=file_size,
+                available_bytes=shutil.disk_usage(tempfile.gettempdir()).free,
+            )
+            if not storage_ok:
+                raise ValueError(storage_error)
             
             minio_client.ensure_user_bucket(user_id=user_id, username=user.username)
             
@@ -182,6 +193,15 @@ def upload_data_file_from_path(
             if not user:
                 raise ValueError(f"User with id {user_id} not found")
 
+            storage_ok, storage_error = validate_user_storage_capacity(
+                user_id=user_id,
+                username=user.username,
+                incoming_bytes=file_size,
+                available_bytes=shutil.disk_usage(local_path).free,
+            )
+            if not storage_ok:
+                raise ValueError(storage_error)
+
             minio_client.ensure_user_bucket(user_id=user_id, username=user.username)
             minio_client.upload_file(
                 user_id=user_id,
@@ -225,6 +245,64 @@ def upload_data_file_from_path(
         except Exception as e:
             conn.rollback()
             logger.error(f"Error uploading data file from path: {e}", exc_info=True)
+            raise
+        finally:
+            cur.close()
+
+
+def create_data_file_record_for_existing_object(
+    user_id: int,
+    filename: str,
+    s3_key: str,
+    folder_id: Optional[int],
+    file_format: Optional[str],
+    size_bytes: int,
+    checksum: Optional[str] = None,
+) -> FileInDB:
+    """Create a data-library record after object storage confirms direct upload."""
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+
+        try:
+            if folder_id:
+                folder = get_folder_by_id(folder_id, user_id)
+                if not folder:
+                    raise ValueError(f"Folder with id {folder_id} not found")
+
+            cur.execute("""
+                INSERT INTO files (folder_id, filename, s3_key, file_type, file_format, size_bytes, checksum, uploaded_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id, job_id, folder_id, filename, s3_key, file_type, file_format, size_bytes, checksum, uploaded_at, created_at
+            """, (
+                folder_id,
+                filename,
+                s3_key,
+                'input',
+                file_format,
+                size_bytes,
+                checksum,
+                datetime.utcnow(),
+            ))
+
+            row = cur.fetchone()
+            conn.commit()
+
+            return FileInDB(
+                id=row[0],
+                job_id=row[1],
+                folder_id=row[2],
+                filename=row[3],
+                s3_key=row[4],
+                file_type=FileType(row[5]),
+                file_format=row[6],
+                size_bytes=row[7],
+                checksum=row[8],
+                uploaded_at=row[9],
+                created_at=row[10],
+            )
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Error creating direct-upload data file record: {e}", exc_info=True)
             raise
         finally:
             cur.close()

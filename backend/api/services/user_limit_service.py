@@ -7,6 +7,7 @@ from typing import Optional, Set
 from backend.api.database.db_init import get_db_connection
 from backend.api.models.job_model import ExecutionStatus, JobStatus
 from backend.api.models.pipeline_model import FileType
+from backend.api.services.storage_service import get_total_file_bytes_by_user
 from backend.api.utils.config_loader import get_config
 
 
@@ -117,6 +118,43 @@ def can_user_start_more_jobs(user_id: int, username: Optional[str]) -> tuple[boo
         return True, current_running_jobs, max_running_jobs
 
     return current_running_jobs < max_running_jobs, current_running_jobs, max_running_jobs
+
+
+def validate_user_storage_capacity(
+    user_id: int,
+    username: Optional[str],
+    incoming_bytes: int,
+    available_bytes: Optional[int] = None,
+) -> tuple[bool, str]:
+    limits = get_user_limits(username)
+    max_storage_bytes = max(int(limits.get("max_storage_bytes", 0)), 0)
+    min_free_storage_bytes = max(int(limits.get("min_free_storage_bytes", 0)), 0)
+
+    if available_bytes is not None and min_free_storage_bytes > 0:
+        if available_bytes - incoming_bytes < min_free_storage_bytes:
+            return (
+                False,
+                "Upload refused because the storage backend is almost full. "
+                "Delete old Docker/MinIO data or increase MIN_FREE_STORAGE_GB before uploading more files.",
+            )
+
+    if max_storage_bytes <= 0:
+        return True, ""
+
+    current_bytes = get_total_file_bytes_by_user(user_id)
+    if current_bytes + incoming_bytes <= max_storage_bytes:
+        return True, ""
+
+    limit_gb = max_storage_bytes / (1024 * 1024 * 1024)
+    used_gb = current_bytes / (1024 * 1024 * 1024)
+    incoming_gb = incoming_bytes / (1024 * 1024 * 1024)
+    return (
+        False,
+        (
+            f"Upload would exceed your storage quota of {limit_gb:.1f} GB "
+            f"(currently used {used_gb:.1f} GB, incoming file {incoming_gb:.1f} GB)."
+        ),
+    )
 
 
 def can_user_access_job_outputs(

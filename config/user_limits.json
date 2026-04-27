@@ -2,7 +2,9 @@
   "default": {
     "max_running_jobs": 3,
     "downloadable_finished_jobs": 5,
-    "interactive_output_jobs": 5
+    "interactive_output_jobs": 5,
+    "max_storage_gb": 35,
+    "min_free_storage_gb": 5
   },
   "users": {}
 }

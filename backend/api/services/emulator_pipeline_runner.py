@@ -1096,14 +1096,14 @@ class EmulatorPipelineRunner:
                     elif filename.endswith('.fasta') or filename.endswith('.fa'):
                         file_format = 'fasta'
                     
-                    # Upload to MinIO using the proper upload_file method
-                    # This ensures bucket exists, proper error handling, and checksum calculation
-                    # Files are uploaded to user-specific buckets (e.g., "cassie-user-1")
+                    # Upload to MinIO/S3 using the proper upload_file method.
+                    # This ensures the shared bucket exists, applies the per-user prefix,
+                    # and keeps the logical s3_key format used across the app.
                     s3_key = f"jobs/{job_id}/outputs/{safe_filename}"
-                    self._logger.info(f"Uploading {safe_filename} to user {user_id}'s MinIO bucket (s3_key: {s3_key})...")
+                    self._logger.info(f"Uploading {safe_filename} to shared storage for user {user_id} (s3_key: {s3_key})...")
                     
-                    # Use the MinIO client's upload_file method which handles everything properly
-                    # This automatically creates/uses the user-specific bucket via ensure_user_bucket()
+                    # Use the MinIO client's upload_file method which handles bucket creation
+                    # and storage prefixing automatically.
                     upload_result = minio_client.upload_file(
                         user_id=user_id,
                         local_path=local_file_path,
@@ -1112,7 +1112,7 @@ class EmulatorPipelineRunner:
                     )
                     
                     self._logger.info(
-                        f"✓ Uploaded {safe_filename} to user {user_id}'s bucket '{upload_result['bucket']}': "
+                        f"✓ Uploaded {safe_filename} to storage bucket '{upload_result['bucket']}': "
                         f"{upload_result['size']} bytes, checksum: {upload_result['checksum']}"
                     )
                     

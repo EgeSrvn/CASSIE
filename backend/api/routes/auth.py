@@ -511,8 +511,8 @@ async def register(request: RegisterRequest):
         )
         return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
     
-    # Generate bucket name
-    bucket_name = f"cassie-user-{request.username.lower()}"
+    # Keep a unique per-user storage namespace in the legacy column.
+    bucket_name = f"users/{request.username.lower()}"
     
     # Create user
     try:

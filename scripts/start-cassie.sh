@@ -31,6 +31,29 @@ test_docker_compose_v2() {
   docker compose version >/dev/null 2>&1
 }
 
+retry_command() {
+  local attempts="$1"
+  local delay_seconds="$2"
+  local description="$3"
+  shift 3
+
+  local attempt=1
+  while true; do
+    if "$@"; then
+      return 0
+    fi
+
+    if (( attempt >= attempts )); then
+      echo "Failed ${description} after ${attempts} attempt(s)."
+      return 1
+    fi
+
+    echo "Attempt ${attempt}/${attempts} failed while ${description}. Retrying in ${delay_seconds}s ..."
+    attempt=$((attempt + 1))
+    sleep "${delay_seconds}"
+  done
+}
+
 reset_minikube_cluster() {
   if ! command -v minikube >/dev/null 2>&1; then
     return
@@ -107,10 +130,16 @@ prepare_container_kubeconfig() {
 ensure_tool_image() {
   local image="$1"
   local context="$2"
+  local rebuild_images="${CASSIE_REBUILD_TOOL_IMAGES:-0}"
 
-  if ! docker image inspect "${image}" >/dev/null 2>&1; then
+  if [[ "${rebuild_images,,}" == "1" || "${rebuild_images,,}" == "true" || "${rebuild_images,,}" == "yes" ]]; then
+    echo "Rebuilding tool image ${image} because CASSIE_REBUILD_TOOL_IMAGES=${rebuild_images} ..."
+    retry_command "${CASSIE_DOCKER_RETRY_ATTEMPTS}" "${CASSIE_DOCKER_RETRY_DELAY_SECONDS}" \
+      "building tool image ${image}" docker build -t "${image}" "${context}"
+  elif ! docker image inspect "${image}" >/dev/null 2>&1; then
     echo "Building tool image ${image} ..."
-    docker build -t "${image}" "${context}"
+    retry_command "${CASSIE_DOCKER_RETRY_ATTEMPTS}" "${CASSIE_DOCKER_RETRY_DELAY_SECONDS}" \
+      "building tool image ${image}" docker build -t "${image}" "${context}"
   fi
 }
 
@@ -122,6 +151,45 @@ load_tool_images_into_minikube() {
     image_name="${tool_spec%% *}"
     echo "Loading ${image_name} into Minikube ..."
     minikube image load "${image_name}"
+  done
+}
+
+ensure_registry_image() {
+  local image="$1"
+
+  if docker image inspect "${image}" >/dev/null 2>&1; then
+    return
+  fi
+
+  echo "Pulling ${image} ..."
+  if ! retry_command "${CASSIE_DOCKER_RETRY_ATTEMPTS}" "${CASSIE_DOCKER_RETRY_DELAY_SECONDS}" \
+    "pulling ${image} from a registry" docker pull "${image}"; then
+    cat <<EOF
+Unable to pull ${image}.
+This usually means Docker could not reach the registry reliably (for example a Docker Hub TLS handshake timeout).
+You can retry the script, or point the base images at a mirror/private registry with:
+  CASSIE_BACKEND_BASE_IMAGE
+  CASSIE_FRONTEND_BUILD_BASE_IMAGE
+  CASSIE_FRONTEND_NGINX_BASE_IMAGE
+  CASSIE_POSTGRES_IMAGE
+  CASSIE_MINIO_IMAGE
+EOF
+    exit 1
+  fi
+}
+
+prepull_compose_images() {
+  local images=(
+    "${CASSIE_BACKEND_BASE_IMAGE}"
+    "${CASSIE_FRONTEND_BUILD_BASE_IMAGE}"
+    "${CASSIE_FRONTEND_NGINX_BASE_IMAGE}"
+    "${CASSIE_POSTGRES_IMAGE}"
+    "${CASSIE_MINIO_IMAGE}"
+  )
+  local image=""
+
+  for image in "${images[@]}"; do
+    ensure_registry_image "${image}"
   done
 }
 
@@ -137,6 +205,15 @@ fi
 export CASSIE_MINIKUBE_CPUS="$(get_env_value_or_default "CASSIE_MINIKUBE_CPUS" "4")"
 export CASSIE_MINIKUBE_MEMORY="$(get_env_value_or_default "CASSIE_MINIKUBE_MEMORY" "7800")"
 export CASSIE_MINIKUBE_DISK_SIZE="$(get_env_value_or_default "CASSIE_MINIKUBE_DISK_SIZE" "15g")"
+export CASSIE_REBUILD_TOOL_IMAGES="$(get_env_value_or_default "CASSIE_REBUILD_TOOL_IMAGES" "0")"
+export CASSIE_DOCKER_RETRY_ATTEMPTS="$(get_env_value_or_default "CASSIE_DOCKER_RETRY_ATTEMPTS" "3")"
+export CASSIE_DOCKER_RETRY_DELAY_SECONDS="$(get_env_value_or_default "CASSIE_DOCKER_RETRY_DELAY_SECONDS" "5")"
+export CASSIE_BACKEND_BASE_IMAGE="$(get_env_value_or_default "CASSIE_BACKEND_BASE_IMAGE" "python:3.12-slim")"
+export CASSIE_FRONTEND_BUILD_BASE_IMAGE="$(get_env_value_or_default "CASSIE_FRONTEND_BUILD_BASE_IMAGE" "node:20-alpine")"
+export CASSIE_FRONTEND_NGINX_BASE_IMAGE="$(get_env_value_or_default "CASSIE_FRONTEND_NGINX_BASE_IMAGE" "nginx:1.27-alpine")"
+export CASSIE_POSTGRES_IMAGE="$(get_env_value_or_default "CASSIE_POSTGRES_IMAGE" "postgres:15")"
+export CASSIE_MINIO_IMAGE="$(get_env_value_or_default "CASSIE_MINIO_IMAGE" "minio/minio:RELEASE.2025-02-28T09-55-16Z")"
+export CASSIE_KUBECTL_VERSION="$(get_env_value_or_default "CASSIE_KUBECTL_VERSION" "v1.35.1")"
 
 reset_minikube_cluster
 ensure_minikube_running "${CASSIE_MINIKUBE_CPUS}" "${CASSIE_MINIKUBE_MEMORY}" "${CASSIE_MINIKUBE_DISK_SIZE}"
@@ -198,6 +275,8 @@ for tool_spec in "${TOOL_IMAGES[@]}"; do
 done
 
 load_tool_images_into_minikube "${TOOL_IMAGES[@]}"
+
+prepull_compose_images
 
 "${COMPOSE_CMD[@]}" up --build -d --force-recreate --remove-orphans
 

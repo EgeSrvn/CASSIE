@@ -127,6 +127,36 @@ def get_existing_file_record_by_fingerprint(
             cur.close()
 
 
+def get_total_file_bytes_by_user(user_id: int) -> int:
+    """Return recorded storage usage for all files owned by a user."""
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+
+        try:
+            cur.execute(
+                """
+                SELECT COALESCE(SUM(COALESCE(f.size_bytes, 0)), 0)
+                FROM files f
+                LEFT JOIN jobs j ON f.job_id = j.id
+                LEFT JOIN folders fo ON f.folder_id = fo.id
+                WHERE j.user_id = %s
+                   OR fo.user_id = %s
+                   OR (
+                        f.job_id IS NULL
+                        AND f.folder_id IS NULL
+                        AND (
+                            f.s3_key LIKE %s
+                            OR f.s3_key LIKE %s
+                        )
+                   )
+                """,
+                (user_id, user_id, f"staging/{user_id}/%", f"data/{user_id}/%"),
+            )
+            return int(cur.fetchone()[0] or 0)
+        finally:
+            cur.close()
+
+
 def get_file_by_id(file_id: int, user_id: Optional[int] = None) -> Optional[FileInDB]:
     """
     Get a file by ID, optionally filtered by user_id (through job ownership).

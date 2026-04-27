@@ -358,9 +358,10 @@ def create_job(user_id: int, job_data: JobCreate) -> JobInDB:
         fastq_count = 0
         fasta_count = 0
         
-        if job_data.input_file_ids:
+        selected_input_file_ids = list(job_data.input_file_ids or []) + list(getattr(job_data, "staged_input_file_ids", None) or [])
+        if selected_input_file_ids:
             from backend.api.services.storage_service import get_file_by_id
-            for file_id in job_data.input_file_ids:
+            for file_id in selected_input_file_ids:
                 try:
                     file_record = get_file_by_id(file_id, user_id=user_id)
                     if file_record:

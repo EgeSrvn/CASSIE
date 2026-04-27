@@ -69,15 +69,24 @@ def get_vm_partitions() -> List[VMPartition]:
         return list(DEFAULT_VM_PARTITIONS)
 
     partitions: List[VMPartition] = []
+    seen_names = set()
     for raw_vm in raw_vms:
         vm_partition = _normalize_vm_partition(raw_vm)
         if vm_partition:
+            if vm_partition.name in seen_names:
+                logger.warning(
+                    "Ignoring duplicate VM partition name '%s' in %s",
+                    vm_partition.name,
+                    VM_PARTITION_CONFIG_PATH,
+                )
+                continue
+            seen_names.add(vm_partition.name)
             partitions.append(vm_partition)
 
-    if len(partitions) != 3:
+    if not partitions:
         logger.warning(
-            f"VM partition config {VM_PARTITION_CONFIG_PATH} must define exactly 3 valid VMs; "
-            f"found {len(partitions)}. Falling back to defaults."
+            f"VM partition config {VM_PARTITION_CONFIG_PATH} did not contain any valid VM definitions. "
+            "Falling back to defaults."
         )
         return list(DEFAULT_VM_PARTITIONS)
 

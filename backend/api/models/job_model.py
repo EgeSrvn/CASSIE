@@ -49,7 +49,8 @@ class JobBase(BaseModel):
     cloud_provider: Optional[CloudProvider] = Field(None, description="Cloud provider for execution")
     execution_preferences: Optional[Dict[str, Any]] = Field(None, description="Per-job execution ordering preferences")
     vm_name: Optional[str] = Field(None, max_length=50, description="Virtual machine name for execution (e.g., 'vm1', 'vm2')")
-    input_file_ids: Optional[List[int]] = Field(None, description="List of pre-uploaded file IDs to associate with this job")
+    input_file_ids: Optional[List[int]] = Field(None, description="List of data library file IDs to associate with this job")
+    staged_input_file_ids: Optional[List[int]] = Field(None, description="List of staged storage file IDs to associate with this job")
 
 
 class JobCreate(JobBase):

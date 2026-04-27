@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import {
   createJob,
+  executeJob,
   JobCreate,
   JobPipelineVisualization,
   PipelinePlanPreviewRequest,
@@ -30,8 +31,8 @@ import { getToken } from '../services/authService'
 import {
   PendingGoogleDriveJobImportFile,
   PendingJobUploadFile,
-  enqueuePendingJobInputUploads,
 } from '../services/pendingJobUploadService'
+import { deleteFile, importGoogleDriveFileToJob, uploadFile } from '../services/fileService'
 import Navigation from '../components/Navigation'
 import PipelineVisualization from '../components/PipelineVisualization'
 import {
@@ -301,6 +302,10 @@ export default function CreateJob() {
   const [loadingDataTree, setLoadingDataTree] = useState(false)
   const [pendingLocalFiles, setPendingLocalFiles] = useState<PendingJobUploadFile[]>([])
   const [pendingGoogleDriveFiles, setPendingGoogleDriveFiles] = useState<PendingGoogleDriveJobImportFile[]>([])
+  const uploadAbortControllersRef = useRef<Map<number, AbortController>>(new Map())
+  const uploadProgressTimersRef = useRef<Map<number, number>>(new Map())
+  const pendingLocalFilesRef = useRef<PendingJobUploadFile[]>([])
+  const pendingGoogleDriveFilesRef = useRef<PendingGoogleDriveJobImportFile[]>([])
   const [importingGoogleDriveFile, setImportingGoogleDriveFile] = useState(false)
   const [submitStatus, setSubmitStatus] = useState<string>('')
   const [availableVMs, setAvailableVMs] = useState<VM[]>([])
@@ -360,6 +365,14 @@ export default function CreateJob() {
   }, [])
 
   useEffect(() => {
+    pendingLocalFilesRef.current = pendingLocalFiles
+  }, [pendingLocalFiles])
+
+  useEffect(() => {
+    pendingGoogleDriveFilesRef.current = pendingGoogleDriveFiles
+  }, [pendingGoogleDriveFiles])
+
+  useEffect(() => {
     const markDocumentUnloading = () => {
       isDocumentUnloadingRef.current = true
     }
@@ -378,6 +391,7 @@ export default function CreateJob() {
       if (!shouldPersistDraftRef.current || isDocumentUnloadingRef.current) {
         return
       }
+      cancelSelectedUploads({ clearState: false })
       clearCreateJobDraft()
     }
   ), [])
@@ -1249,31 +1263,133 @@ export default function CreateJob() {
     return compatibleFiles.map(file => file.id)
   }
 
+  const isCanceledUploadError = (err: any): boolean => (
+    err?.code === 'ERR_CANCELED' ||
+    err?.name === 'CanceledError' ||
+    String(err?.message || '').toLowerCase().includes('canceled')
+  )
+
+  const stopUploadProgressTimer = (tempId: number) => {
+    const timerId = uploadProgressTimersRef.current.get(tempId)
+    if (timerId !== undefined) {
+      window.clearInterval(timerId)
+      uploadProgressTimersRef.current.delete(tempId)
+    }
+  }
+
+  const startUploadProgressTimer = (
+    tempId: number,
+    updateProgress: (updater: (progress: number) => number) => void
+  ) => {
+    stopUploadProgressTimer(tempId)
+    updateProgress(progress => Math.max(progress, 1))
+    const timerId = window.setInterval(() => {
+      updateProgress(progress => {
+        if (progress >= 95) {
+          return progress
+        }
+        if (progress < 30) {
+          return progress + 3
+        }
+        if (progress < 70) {
+          return progress + 2
+        }
+        return progress + 1
+      })
+    }, 700)
+    uploadProgressTimersRef.current.set(tempId, timerId)
+  }
+
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFiles = Array.from(e.target.files || [])
     if (selectedFiles.length === 0) return
 
     try {
       setError('')
-      setPendingLocalFiles(prev => {
-        const existingKeys = new Set(prev.map(file => `${file.file.name}:${file.size_bytes}:${file.file.lastModified}`))
-        const additions = selectedFiles
-          .filter(file => !existingKeys.has(`${file.name}:${file.size}:${file.lastModified}`))
-          .map((file, index) => ({
-            tempId: -(Date.now() + index + Math.floor(Math.random() * 1000)),
-            file,
-            filename: file.name,
-            original_filename: file.name,
-            size_bytes: file.size,
-            file_format: inferFileFormat(file.name),
-            uploaded_at: null,
-            created_at: new Date().toISOString(),
-            folderPath: 'Selected Files',
-          }))
+      const existingKeys = new Set(pendingLocalFilesRef.current.map(file => `${file.file.name}:${file.size_bytes}:${file.file.lastModified}`))
+      const uploadCandidates = selectedFiles
+        .filter(file => !existingKeys.has(`${file.name}:${file.size}:${file.lastModified}`))
+        .map((file, index) => ({
+          tempId: -(Date.now() + index + Math.floor(Math.random() * 1000)),
+          file,
+          filename: file.name,
+          original_filename: file.name,
+          size_bytes: file.size,
+          file_format: inferFileFormat(file.name),
+          uploaded_at: null,
+          created_at: new Date().toISOString(),
+          folderPath: 'Selected Files',
+          upload_status: 'uploading' as const,
+          upload_progress: 1,
+        }))
 
-        return [...additions, ...prev]
-      })
+      if (uploadCandidates.length === 0) {
+        e.target.value = ''
+        return
+      }
+
+      setPendingLocalFiles(prev => [...uploadCandidates, ...prev])
       e.target.value = '' // Reset input
+
+      uploadCandidates.forEach((pendingFile) => {
+        void (async () => {
+          const abortController = new AbortController()
+          uploadAbortControllersRef.current.set(pendingFile.tempId, abortController)
+          const updateProgress = (updater: (progress: number) => number) => {
+            setPendingLocalFiles(prev => prev.map(file => (
+              file.tempId === pendingFile.tempId
+                ? { ...file, upload_status: 'uploading', upload_progress: Math.min(99, updater(file.upload_progress || 0)) }
+                : file
+            )))
+          }
+          startUploadProgressTimer(pendingFile.tempId, updateProgress)
+          try {
+            const uploadedFile = await uploadFile(
+              pendingFile.file,
+              null,
+              'input',
+              pendingFile.file_format || undefined,
+              (progress) => {
+                updateProgress(current => Math.max(current, progress))
+              },
+              undefined,
+              abortController.signal
+            )
+
+            stopUploadProgressTimer(pendingFile.tempId)
+            setPendingLocalFiles(prev => prev.map(file => (
+              file.tempId === pendingFile.tempId
+                ? {
+                    ...file,
+                    staged_file_id: uploadedFile.id,
+                    upload_status: 'uploaded',
+                    upload_progress: 100,
+                    uploaded_at: null,
+                    size_bytes: uploadedFile.size_bytes,
+                    file_format: uploadedFile.file_format || file.file_format,
+                  }
+                : file
+            )))
+          } catch (err: any) {
+            stopUploadProgressTimer(pendingFile.tempId)
+            if (isCanceledUploadError(err)) {
+              return
+            }
+            setPendingLocalFiles(prev => prev.map(file => (
+              file.tempId === pendingFile.tempId
+                ? {
+                    ...file,
+                    upload_status: 'failed',
+                    upload_error: err?.message || 'Failed to upload file',
+                  }
+                : file
+            )))
+          } finally {
+            stopUploadProgressTimer(pendingFile.tempId)
+            uploadAbortControllersRef.current.delete(pendingFile.tempId)
+          }
+        })()
+      })
     } catch (err: any) {
       setError(err.response?.data?.message || err.message || 'Failed to select file')
     }
@@ -1284,30 +1400,94 @@ export default function CreateJob() {
     docs: Array<{ id: string; name?: string; mimeType?: string; sizeBytes?: string | number; size?: string | number }>
   ) => {
     const selectedAt = Date.now()
-    setPendingGoogleDriveFiles(prev => {
-      const existingIds = new Set(prev.map(file => file.googleFileId))
-      const additions = docs
-        .filter(doc => doc.id && !existingIds.has(doc.id))
-        .map((doc, index) => {
-          const filename = sanitizeSelectedFilename(doc.name || `google-drive-${doc.id}`)
-          const rawSize = doc.sizeBytes ?? doc.size
-          const parsedSize = rawSize !== undefined && rawSize !== null ? Number(rawSize) : 0
+    const existingIds = new Set(pendingGoogleDriveFilesRef.current.map(file => file.googleFileId))
+    const importCandidates = docs
+      .filter(doc => doc.id && !existingIds.has(doc.id))
+      .map((doc, index) => {
+        const filename = sanitizeSelectedFilename(doc.name || `google-drive-${doc.id}`)
+        const rawSize = doc.sizeBytes ?? doc.size
+        const parsedSize = rawSize !== undefined && rawSize !== null ? Number(rawSize) : 0
 
-          return {
-            tempId: -(selectedAt + index + Math.floor(Math.random() * 1000)),
-            googleFileId: doc.id,
-            accessToken,
-            filename,
-            original_filename: doc.name || filename,
-            size_bytes: Number.isFinite(parsedSize) && parsedSize > 0 ? parsedSize : null,
-            file_format: inferFileFormat(filename),
-            mime_type: doc.mimeType,
-            created_at: new Date().toISOString(),
-            folderPath: 'Selected Google Drive Files',
+        return {
+          tempId: -(selectedAt + index + Math.floor(Math.random() * 1000)),
+          googleFileId: doc.id,
+          accessToken,
+          filename,
+          original_filename: doc.name || filename,
+          size_bytes: Number.isFinite(parsedSize) && parsedSize > 0 ? parsedSize : null,
+          file_format: inferFileFormat(filename),
+          mime_type: doc.mimeType,
+          created_at: new Date().toISOString(),
+          folderPath: 'Selected Google Drive Files',
+          upload_status: 'uploading' as const,
+          upload_progress: 1,
+        }
+      })
+
+    if (importCandidates.length === 0) {
+      return
+    }
+
+    setPendingGoogleDriveFiles(prev => [...importCandidates, ...prev])
+
+    importCandidates.forEach((pendingFile) => {
+      void (async () => {
+        const abortController = new AbortController()
+        uploadAbortControllersRef.current.set(pendingFile.tempId, abortController)
+        const updateProgress = (updater: (progress: number) => number) => {
+          setPendingGoogleDriveFiles(prev => prev.map(file => (
+            file.tempId === pendingFile.tempId
+              ? { ...file, upload_status: 'uploading', upload_progress: Math.min(99, updater(file.upload_progress || 0)) }
+              : file
+          )))
+        }
+        startUploadProgressTimer(pendingFile.tempId, updateProgress)
+        try {
+          const importedFile = await importGoogleDriveFileToJob(
+            null,
+            {
+              file_id: pendingFile.googleFileId,
+              access_token: pendingFile.accessToken,
+              filename: pendingFile.filename,
+              mime_type: pendingFile.mime_type,
+              file_format: pendingFile.file_format,
+            },
+            undefined,
+            abortController.signal
+          )
+
+          stopUploadProgressTimer(pendingFile.tempId)
+          setPendingGoogleDriveFiles(prev => prev.map(file => (
+            file.tempId === pendingFile.tempId
+              ? {
+                  ...file,
+                  staged_file_id: importedFile.id,
+                  upload_status: 'uploaded',
+                  upload_progress: 100,
+                  size_bytes: importedFile.size_bytes,
+                  file_format: importedFile.file_format || file.file_format,
+                }
+              : file
+          )))
+        } catch (err: any) {
+          stopUploadProgressTimer(pendingFile.tempId)
+          if (isCanceledUploadError(err)) {
+            return
           }
-        })
-
-      return [...additions, ...prev]
+          setPendingGoogleDriveFiles(prev => prev.map(file => (
+            file.tempId === pendingFile.tempId
+              ? {
+                  ...file,
+                  upload_status: 'failed',
+                  upload_error: err?.message || 'Failed to import Google Drive file',
+                }
+              : file
+          )))
+        } finally {
+          stopUploadProgressTimer(pendingFile.tempId)
+          uploadAbortControllersRef.current.delete(pendingFile.tempId)
+        }
+      })()
     })
   }
 
@@ -1420,6 +1600,20 @@ export default function CreateJob() {
       >
         {importingGoogleDriveFile ? 'Opening Your Drive...' : 'Choose from Your Google Drive'}
       </button>
+      {pendingLocalFiles.length > 0 && (
+        <div style={{ width: '100%', marginTop: '0.85rem', color: '#475569', fontSize: '0.9rem' }}>
+          {pendingLocalFiles.filter(file => file.upload_status === 'uploaded').length}/{pendingLocalFiles.length} PC file{pendingLocalFiles.length !== 1 ? 's' : ''} uploaded for this job.
+          {pendingLocalUploadCount > 0 && ` ${pendingLocalUploadCount} still uploading.`}
+          {failedLocalUploadCount > 0 && ` ${failedLocalUploadCount} failed.`}
+        </div>
+      )}
+      {pendingGoogleDriveFiles.length > 0 && (
+        <div style={{ width: '100%', color: '#475569', fontSize: '0.9rem' }}>
+          {pendingGoogleDriveFiles.filter(file => file.upload_status === 'uploaded').length}/{pendingGoogleDriveFiles.length} Google Drive file{pendingGoogleDriveFiles.length !== 1 ? 's' : ''} imported for this job.
+          {pendingGoogleDriveUploadCount > 0 && ` ${pendingGoogleDriveUploadCount} still importing.`}
+          {failedGoogleDriveUploadCount > 0 && ` ${failedGoogleDriveUploadCount} failed.`}
+        </div>
+      )}
     </div>
   )
 
@@ -1470,12 +1664,24 @@ export default function CreateJob() {
                 type="text"
                 value={pendingFile.filename}
                 onChange={(event) => handleSelectedFileRename(pendingFile.tempId, event.target.value)}
-                disabled={creating}
+                disabled={creating || pendingFile.upload_status === 'uploading' || pendingFile.upload_status === 'uploaded'}
                 style={{ minWidth: '220px', fontWeight: 700 }}
                 aria-label={`Rename selected file ${pendingFile.original_filename || pendingFile.file.name}`}
               />
             </label>
             <span>From PC: {pendingFile.original_filename || pendingFile.file.name}</span>
+            {pendingFile.upload_status === 'uploaded' ? (
+              <span>Uploaded and ready</span>
+            ) : pendingFile.upload_status === 'failed' ? (
+              <span style={{ color: '#b91c1c' }}>{pendingFile.upload_error || 'Upload failed'}</span>
+            ) : (
+              <span style={{ width: '100%' }}>
+                <span>Uploading... {pendingFile.upload_progress || 0}%</span>
+                <span style={{ display: 'block', height: '6px', marginTop: '0.35rem', borderRadius: '999px', backgroundColor: '#e5e7eb', overflow: 'hidden' }}>
+                  <span style={{ display: 'block', width: `${pendingFile.upload_progress || 0}%`, height: '100%', backgroundColor: '#2563eb' }} />
+                </span>
+              </span>
+            )}
           </>
         ) : pendingGoogleDriveFile ? (
           <>
@@ -1487,12 +1693,24 @@ export default function CreateJob() {
                 type="text"
                 value={pendingGoogleDriveFile.filename}
                 onChange={(event) => handleSelectedFileRename(pendingGoogleDriveFile.tempId, event.target.value)}
-                disabled={creating}
+                disabled={creating || pendingGoogleDriveFile.upload_status === 'uploading' || pendingGoogleDriveFile.upload_status === 'uploaded'}
                 style={{ minWidth: '220px', fontWeight: 700 }}
                 aria-label={`Rename selected Google Drive file ${pendingGoogleDriveFile.original_filename || pendingGoogleDriveFile.filename}`}
               />
             </label>
             <span>From Google Drive: {pendingGoogleDriveFile.original_filename || pendingGoogleDriveFile.filename}</span>
+            {pendingGoogleDriveFile.upload_status === 'uploaded' ? (
+              <span>Imported and ready</span>
+            ) : pendingGoogleDriveFile.upload_status === 'failed' ? (
+              <span style={{ color: '#b91c1c' }}>{pendingGoogleDriveFile.upload_error || 'Import failed'}</span>
+            ) : (
+              <span style={{ width: '100%' }}>
+                <span>Importing... {pendingGoogleDriveFile.upload_progress || 0}%</span>
+                <span style={{ display: 'block', height: '6px', marginTop: '0.35rem', borderRadius: '999px', backgroundColor: '#e5e7eb', overflow: 'hidden' }}>
+                  <span style={{ display: 'block', width: `${pendingGoogleDriveFile.upload_progress || 0}%`, height: '100%', backgroundColor: '#2563eb' }} />
+                </span>
+              </span>
+            )}
           </>
         ) : (
           <>
@@ -1652,8 +1870,6 @@ export default function CreateJob() {
     )
   )
 
-  const canAdvanceFromLevelTwo = true
-
   const canAdvanceFromLevelThree = selectionMode === 'pipeline'
     ? (pipelineInputRequirements.length === 0 || missingPipelineInputCount === 0)
     : (manualToolInputBlocks.length === 0 || missingManualInputBlockCount === 0)
@@ -1673,9 +1889,68 @@ export default function CreateJob() {
     setCurrentLevel((current) => Math.min(5, current + 1) as BuilderLevel)
   }
 
+  const cancelSelectedUploads = ({ clearState = true }: { clearState?: boolean } = {}) => {
+    uploadAbortControllersRef.current.forEach(controller => controller.abort())
+    uploadAbortControllersRef.current.clear()
+    uploadProgressTimersRef.current.forEach(timerId => window.clearInterval(timerId))
+    uploadProgressTimersRef.current.clear()
+
+    const currentPendingLocalFiles = pendingLocalFilesRef.current
+    const currentPendingGoogleDriveFiles = pendingGoogleDriveFilesRef.current
+    const pendingTempIds = new Set<number>([
+      ...currentPendingLocalFiles.map(file => file.tempId),
+      ...currentPendingGoogleDriveFiles.map(file => file.tempId),
+    ])
+    const stagedFileIds = [
+      ...currentPendingLocalFiles.map(file => file.staged_file_id),
+      ...currentPendingGoogleDriveFiles.map(file => file.staged_file_id),
+    ].filter((fileId): fileId is number => typeof fileId === 'number' && fileId > 0)
+
+    stagedFileIds.forEach(fileId => {
+      void deleteFile(fileId).catch(() => {
+        // Best effort cleanup. The staged file may already have been removed or never committed.
+      })
+    })
+
+    if (!clearState) {
+      return
+    }
+
+    setPendingLocalFiles([])
+    setPendingGoogleDriveFiles([])
+    setRecommendationFileIds(prev => prev.filter(fileId => !pendingTempIds.has(fileId)))
+    setToolFileMappings(prev => Object.fromEntries(
+      Object.entries(prev).map(([toolKey, requirementMap]) => [
+        toolKey,
+        Object.fromEntries(
+          Object.entries(requirementMap).map(([requirementType, fileIds]) => [
+            requirementType,
+            fileIds.filter(fileId => !pendingTempIds.has(fileId)),
+          ])
+        ),
+      ])
+    ))
+    setPipelineInputMappings(prev => Object.fromEntries(
+      Object.entries(prev).map(([inputKey, fileIds]) => [
+        inputKey,
+        fileIds.filter(fileId => !pendingTempIds.has(fileId)),
+      ])
+    ))
+  }
+
   const goToPreviousLevel = () => {
+    if (currentLevel === 2 && (pendingLocalFilesRef.current.length > 0 || pendingGoogleDriveFilesRef.current.length > 0)) {
+      cancelSelectedUploads()
+    }
     setSlideDirection('backward')
     setCurrentLevel((current) => Math.max(1, current - 1) as BuilderLevel)
+  }
+
+  const handleCancelCreateJob = () => {
+    cancelSelectedUploads()
+    shouldPersistDraftRef.current = false
+    clearCreateJobDraft()
+    navigate('/')
   }
 
   const shouldShowRuntimeEstimateCard = Boolean(loadingRuntimeEstimate || runtimeEstimate || runtimeEstimateError)
@@ -1683,6 +1958,16 @@ export default function CreateJob() {
     () => getCombinedSelectableFiles(),
     [dataFileTree, pendingGoogleDriveFiles, pendingLocalFiles]
   )
+  const pendingLocalUploadCount = pendingLocalFiles.filter(file => file.upload_status === 'queued' || file.upload_status === 'uploading').length
+  const failedLocalUploadCount = pendingLocalFiles.filter(file => file.upload_status === 'failed').length
+  const pendingGoogleDriveUploadCount = pendingGoogleDriveFiles.filter(file => file.upload_status === 'queued' || file.upload_status === 'uploading').length
+  const failedGoogleDriveUploadCount = pendingGoogleDriveFiles.filter(file => file.upload_status === 'failed').length
+  const pendingFileUploadCount = pendingLocalUploadCount + pendingGoogleDriveUploadCount
+  const failedFileUploadCount = failedLocalUploadCount + failedGoogleDriveUploadCount
+  const hasSelectableInputFiles = combinedSelectableFiles.length > 0
+
+  const canAdvanceFromLevelTwo = hasSelectableInputFiles && pendingFileUploadCount === 0 && failedFileUploadCount === 0
+
   const selectedLibraryFiles = useMemo(() => combinedSelectableFiles.filter((file) => {
     if (selectionMode === 'pipeline') {
       return Object.values(pipelineInputMappings).some((fileIds) => fileIds.includes(file.id))
@@ -2068,17 +2353,34 @@ export default function CreateJob() {
         setError(`Selected Google Drive files must have unique names before import. Duplicate name: ${duplicatePendingGoogleDriveName.filename}`)
         return
       }
+      const unimportedGoogleDriveFile = selectedPendingGoogleDriveFiles.find(file => file.upload_status !== 'uploaded' || !file.staged_file_id)
+      if (unimportedGoogleDriveFile) {
+        setError(`Please wait for every selected Google Drive file to finish importing before submitting. Still waiting on: ${unimportedGoogleDriveFile.filename}`)
+        return
+      }
+      const selectedGoogleDriveStagedFileIds = selectedPendingGoogleDriveFiles
+        .map(file => file.staged_file_id)
+        .filter((fileId): fileId is number => typeof fileId === 'number' && fileId > 0)
 
-      const existingLibraryFileIds = uploadedFileIds.filter(id => id > 0)
-      const pendingFileIds = Array.from(new Set(uploadedFileIds.filter(id => id < 0)))
-      const expectedTotalInputFiles = existingLibraryFileIds.length + pendingFileIds.length
-      const pendingFilesToUpload = pendingLocalFiles.filter(file => pendingFileIds.includes(file.tempId))
-      const blankPendingFile = pendingFilesToUpload.find(file => !file.filename.trim())
+      const selectedPendingLocalFiles = pendingLocalFiles.filter(file => uploadedFileIds.includes(file.tempId))
+      const unuploadedPendingFile = selectedPendingLocalFiles.find(file => file.upload_status !== 'uploaded' || !file.staged_file_id)
+      if (unuploadedPendingFile) {
+        setError(`Please wait for every selected PC file to finish uploading before submitting. Still waiting on: ${unuploadedPendingFile.filename}`)
+        return
+      }
+      const selectedStagedFileIds = selectedPendingLocalFiles
+        .map(file => file.staged_file_id)
+        .filter((fileId): fileId is number => typeof fileId === 'number' && fileId > 0)
+      const selectedNewStagedFileIds = [...selectedStagedFileIds, ...selectedGoogleDriveStagedFileIds]
+      const pendingLocalTempIds = new Set(selectedPendingLocalFiles.map(file => file.tempId))
+      const pendingGoogleDriveTempIds = new Set(selectedPendingGoogleDriveFiles.map(file => file.tempId))
+      const existingLibraryFileIds = uploadedFileIds.filter(id => id > 0 && !pendingLocalTempIds.has(id) && !pendingGoogleDriveTempIds.has(id))
+      const blankPendingFile = selectedPendingLocalFiles.find(file => !file.filename.trim())
       if (blankPendingFile) {
         setError(`Please give every selected PC file a name before starting the job. Original file: ${blankPendingFile.original_filename || blankPendingFile.file.name}`)
         return
       }
-      const duplicatePendingName = pendingFilesToUpload.find((file, index, allFiles) => (
+      const duplicatePendingName = selectedPendingLocalFiles.find((file, index, allFiles) => (
         allFiles.findIndex(candidate => candidate.filename.trim().toLowerCase() === file.filename.trim().toLowerCase()) !== index
       ))
       if (duplicatePendingName) {
@@ -2090,9 +2392,8 @@ export default function CreateJob() {
       if (existingLibraryFileIds.length > 0) {
         jobData.input_file_ids = existingLibraryFileIds
       }
-      if (pendingFileIds.length > 0) {
-        jobData.pending_upload_count = pendingFileIds.length
-        jobData.expected_total_input_files = expectedTotalInputFiles
+      if (selectedNewStagedFileIds.length > 0) {
+        jobData.staged_input_file_ids = selectedNewStagedFileIds
       }
 
       const inputSourceOverrides = selectionMode === 'tools'
@@ -2140,21 +2441,9 @@ export default function CreateJob() {
 
       const job = await createJob(cleanJobData)
 
-      if (job && job.id && (pendingFilesToUpload.length > 0 || selectedPendingGoogleDriveFiles.length > 0)) {
-        setSubmitStatus('Queueing selected files...')
-        await enqueuePendingJobInputUploads(
-          job.id,
-          pendingFilesToUpload,
-          selectedPendingGoogleDriveFiles,
-          job.upload_session_token
-        )
-        shouldPersistDraftRef.current = false
-        clearCreateJobDraft()
-        navigate(`/jobs/${job.id}`)
-        return
-      }
-
       if (job && job.id) {
+        setSubmitStatus('Starting job...')
+        await executeJob(job.id)
         shouldPersistDraftRef.current = false
         clearCreateJobDraft()
         navigate(`/jobs/${job.id}`)
@@ -3160,7 +3449,7 @@ export default function CreateJob() {
           <div className="form-actions">
             <button
               type="button"
-              onClick={() => navigate('/')}
+              onClick={handleCancelCreateJob}
               className="btn-secondary"
               disabled={creating}
             >

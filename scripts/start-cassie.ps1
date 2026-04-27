@@ -148,6 +148,18 @@ function Ensure-ToolImage {
         [string]$Context
     )
 
+    $rebuildImages = ($env:CASSIE_REBUILD_TOOL_IMAGES | ForEach-Object { $_.ToLowerInvariant() })
+    $shouldRebuild = $rebuildImages -in @("1", "true", "yes")
+
+    if ($shouldRebuild) {
+        Write-Host "Rebuilding tool image $Image because CASSIE_REBUILD_TOOL_IMAGES=$env:CASSIE_REBUILD_TOOL_IMAGES ..."
+        docker build -t $Image $Context
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to build tool image $Image."
+        }
+        return
+    }
+
     cmd /c "docker image inspect $Image >nul 2>nul"
     if ($LASTEXITCODE -ne 0) {
         Write-Host "Building tool image $Image ..."
@@ -182,6 +194,7 @@ if (-not $useComposeV2) {
 $env:CASSIE_MINIKUBE_CPUS = Get-EnvValueOrDefault -Name "CASSIE_MINIKUBE_CPUS" -DefaultValue "4"
 $env:CASSIE_MINIKUBE_MEMORY = Get-EnvValueOrDefault -Name "CASSIE_MINIKUBE_MEMORY" -DefaultValue "7800"
 $env:CASSIE_MINIKUBE_DISK_SIZE = Get-EnvValueOrDefault -Name "CASSIE_MINIKUBE_DISK_SIZE" -DefaultValue "15g"
+$env:CASSIE_REBUILD_TOOL_IMAGES = Get-EnvValueOrDefault -Name "CASSIE_REBUILD_TOOL_IMAGES" -DefaultValue "0"
 
 $env:EXECUTION_BACKEND = Get-EnvValueOrDefault -Name "EXECUTION_BACKEND" -DefaultValue "kubernetes"
 $env:KUBERNETES_JOB_TIMEOUT_SECONDS = Get-EnvValueOrDefault -Name "KUBERNETES_JOB_TIMEOUT_SECONDS" -DefaultValue "0"

@@ -6,7 +6,7 @@
 -- Table 1: Users
 -- ============================================================================
 -- Purpose: Store user accounts and authentication information
--- Features: Per-user S3 buckets for complete data isolation
+-- Features: User accounts plus a legacy storage namespace column used by the app
 
 CREATE TABLE IF NOT EXISTS users (
     id SERIAL PRIMARY KEY,
@@ -173,6 +173,20 @@ BEGIN
         ALTER TABLE users ADD COLUMN suspension_reason VARCHAR(255);
     END IF;
 END $$;
+
+-- ============================================================================
+-- Trigger Helper: Automatic Timestamp Updates
+-- ============================================================================
+-- Defined before any trigger declarations so the schema can be replayed from a
+-- clean database as well as against an existing one.
+
+CREATE OR REPLACE FUNCTION update_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = CURRENT_TIMESTAMP;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
 
 -- ============================================================================
 -- Table 15: Forum Threads
@@ -854,14 +868,6 @@ CREATE INDEX IF NOT EXISTS idx_execution_datasets_execution_dataset ON execution
 -- Triggers: Automatic Timestamp Updates
 -- ============================================================================
 -- Purpose: Automatically update updated_at timestamp on row modification
-
-CREATE OR REPLACE FUNCTION update_updated_at_column()
-RETURNS TRIGGER AS $$
-BEGIN
-    NEW.updated_at = CURRENT_TIMESTAMP;
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
 
 -- Triggers (idempotent: drop then create)
 DROP TRIGGER IF EXISTS trigger_update_users_updated_at ON users;

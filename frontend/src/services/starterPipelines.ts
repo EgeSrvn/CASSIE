@@ -171,5 +171,84 @@ export const STARTER_PIPELINE_TEMPLATES: StarterPipelineTemplate[] = [
       { id: 'e5-8', source: '5', target: '8', type: 'smoothstep' },
       { id: 'e6-9', source: '6', target: '9', type: 'smoothstep' }
     ]
+  },
+  {
+    id: 'cat-hal-annotation',
+    name: 'CAT from HAL',
+    description: 'Run Comparative Annotation Toolkit from a HAL alignment, reference annotation, and reference genome name text file.',
+    nodes: [
+      {
+        id: '1',
+        type: 'input',
+        data: { label: 'HAL Alignment Input', description: ['Whole-genome HAL alignment', 'Used by CAT'] },
+        position: { x: 60, y: 120 }
+      },
+      {
+        id: '2',
+        type: 'input',
+        data: { label: 'Reference Annotation Input', description: ['Reference annotation in GFF3 or GTF', 'Used by CAT'] },
+        position: { x: 60, y: 240 }
+      },
+      {
+        id: '3',
+        type: 'input',
+        data: { label: 'Reference Genome Name Input', description: ['Plain text file containing the HAL reference genome name', 'Used by CAT'] },
+        position: { x: 60, y: 360 }
+      },
+      {
+        id: '4',
+        type: 'tool',
+        data: { label: 'Comparative Annotation Toolkit (CAT)', description: ['Input: HAL alignment + reference annotation + reference genome name', 'Output: comparative annotations'] },
+        position: { x: 370, y: 220 }
+      },
+      {
+        id: '5',
+        type: 'result',
+        data: { label: 'CAT Results' },
+        position: { x: 700, y: 220 }
+      }
+    ],
+    edges: [
+      { id: 'e1-4', source: '1', target: '4', type: 'smoothstep' },
+      { id: 'e2-4', source: '2', target: '4', type: 'smoothstep' },
+      { id: 'e3-4', source: '3', target: '4', type: 'smoothstep' },
+      { id: 'e4-5', source: '4', target: '5', type: 'smoothstep' }
+    ]
+  },
+  {
+    id: 'merqury-evaluation',
+    name: 'Merqury Evaluation',
+    description: 'Evaluate an assembly with Merqury using an assembly FASTA and a read-derived Meryl database archive.',
+    nodes: [
+      {
+        id: '1',
+        type: 'fastaInput',
+        data: { label: 'Assembly FASTA', description: ['Assembly or genome FASTA', 'Used by Merqury'] },
+        position: { x: 60, y: 160 }
+      },
+      {
+        id: '2',
+        type: 'input',
+        data: { label: 'Meryl Archive Input', description: ['Upload a .meryl.tar.gz or .meryl.tgz archive', 'Used by Merqury'] },
+        position: { x: 60, y: 300 }
+      },
+      {
+        id: '3',
+        type: 'tool',
+        data: { label: 'Assembly k-mer Evaluation (Merqury)', description: ['Input: assembly FASTA + Meryl archive', 'Output: k-mer completeness and QV reports'] },
+        position: { x: 360, y: 220 }
+      },
+      {
+        id: '4',
+        type: 'result',
+        data: { label: 'Merqury Results' },
+        position: { x: 700, y: 220 }
+      }
+    ],
+    edges: [
+      { id: 'e1-3', source: '1', target: '3', type: 'smoothstep' },
+      { id: 'e2-3', source: '2', target: '3', type: 'smoothstep' },
+      { id: 'e3-4', source: '3', target: '4', type: 'smoothstep' }
+    ]
   }
 ]

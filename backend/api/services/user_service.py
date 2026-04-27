@@ -436,7 +436,7 @@ def ensure_admin_user() -> UserInDB:
                     config.admin_panel.username,
                     admin_email,
                     password_hash,
-                    f"cassie-user-{config.admin_panel.username}",
+                    f"users/{config.admin_panel.username}",
                     True,
                 ),
             )

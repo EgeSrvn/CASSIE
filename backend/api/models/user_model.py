@@ -14,7 +14,7 @@ class UserBase(BaseModel):
     """Base user model with common fields."""
     username: str = Field(..., min_length=3, max_length=50, description="Unique username")
     email: Optional[EmailStr] = Field(None, max_length=100, description="User email address")
-    bucket_name: str = Field(..., max_length=100, description="Per-user S3 bucket name")
+    bucket_name: str = Field(..., max_length=100, description="Legacy per-user storage namespace")
     display_name: Optional[str] = Field(None, max_length=120, description="Public display name")
     bio: Optional[str] = Field(None, description="Short user biography")
     affiliation: Optional[str] = Field(None, max_length=255, description="Institution or team")

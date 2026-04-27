@@ -293,6 +293,10 @@ class KubernetesPipelineRunner:
                     spec["tool_plan"] = tool_plan
 
                     fits_budget = self._fits_job_budget(job_budget, reserved, tool_plan)
+                    if not fits_budget and not running_stages and not launched_any:
+                        tool_plan = self._single_stage_schedulable_plan(job_budget, reserved, tool_plan)
+                        spec["tool_plan"] = tool_plan
+
                     if fits_budget or (not running_stages and not launched_any):
                         stage_job_name = self._make_job_name(job_id, execution_id, spec["stage_number"], spec["tool"]["id"])
                         stage_info["status"] = "running"
@@ -1755,6 +1759,36 @@ class KubernetesPipelineRunner:
             )
         )
 
+    def _single_stage_schedulable_plan(
+        self,
+        job_budget: Dict[str, int],
+        reserved: Dict[str, int],
+        tool_plan: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        adjusted = dict(tool_plan)
+        resources = dict(tool_plan.get("resources") or {})
+        requests = dict(resources.get("requests") or {})
+        resources["requests"] = requests
+        adjusted["resources"] = resources
+
+        available_cpu_millis = max(50, job_budget["cpu_millis"] - reserved["cpu_millis"])
+        available_memory_mib = max(256, job_budget["memory_mib"] - reserved["memory_mib"])
+        available_storage_mib = max(0, job_budget.get("storage_mib", 0) - reserved["storage_mib"])
+
+        requested_cpu_millis = self._parse_cpu_quantity(str(requests.get("cpu") or "0"))
+        requested_memory_mib = self._parse_memory_quantity_mib(str(requests.get("memory") or "0"))
+        requested_storage_mib = self._parse_memory_quantity_mib(str(requests.get("ephemeral-storage") or "0"))
+
+        if requested_cpu_millis <= 0 or requested_cpu_millis > available_cpu_millis:
+            requests["cpu"] = self._format_cpu_quantity(available_cpu_millis)
+        if requested_memory_mib <= 0 or requested_memory_mib > available_memory_mib:
+            requests["memory"] = f"{available_memory_mib}Mi"
+        if available_storage_mib > 0 and (requested_storage_mib <= 0 or requested_storage_mib > available_storage_mib):
+            requests["ephemeral-storage"] = f"{available_storage_mib}Mi"
+
+        adjusted["scheduler_request_adjusted"] = True
+        return adjusted
+
     def _reserve_plan_resources(
         self,
         reserved: Dict[str, int],
@@ -1875,8 +1909,8 @@ class KubernetesPipelineRunner:
         config = self._config
         namespace = config.kubernetes.namespace
         minio_client = get_minio_client()
-        bucket_name = minio_client.ensure_user_bucket(user_id=user_id)
-        download_script = self._build_init_download_script(bucket_name, current_inputs)
+        minio_client.ensure_user_bucket(user_id=user_id)
+        download_script = self._build_init_download_script(minio_client, user_id, current_inputs)
         tool_plan = tool_plan or self._plan_tool_resources(tool["id"], current_inputs, vm_name=vm_name)
         raw_tool_script = self._build_tool_script(tool, current_inputs, tool_plan, tool_config=tool_config)
         tool_script = self._wrap_tool_script_with_resource_capture(raw_tool_script)
@@ -1978,16 +2012,45 @@ class KubernetesPipelineRunner:
             },
         }
 
-    def _build_init_download_script(self, bucket_name: str, current_inputs: List[Dict[str, Any]]) -> str:
+    def _build_init_download_script(
+        self,
+        minio_client,
+        user_id: int,
+        current_inputs: List[Dict[str, Any]],
+    ) -> str:
         lines = [
             "set -euo pipefail",
             "mkdir -p /workspace/input /workspace/output",
+            "cassie_s3_cp() {",
+            '  if [ -n "${S3_ENDPOINT:-}" ]; then',
+            '    aws --endpoint-url "$S3_ENDPOINT" s3 cp "$1" "$2"',
+            "  else",
+            '    aws s3 cp "$1" "$2"',
+            "  fi",
+            "}",
         ]
         for artifact in current_inputs:
-            s3_key = artifact["s3_key"].replace('"', '\\"')
             filename = os.path.basename(artifact["filename"]).replace('"', '\\"')
-            lines.append(
-                f'aws --endpoint-url "$S3_ENDPOINT" s3 cp "s3://{bucket_name}/{s3_key}" "/workspace/input/{filename}"'
+            destination = f'/workspace/input/{filename}'
+            lines.append("downloaded=0")
+            for location in minio_client.get_read_locations(user_id=user_id, s3_key=artifact["s3_key"]):
+                bucket_name = location["bucket"].replace('"', '\\"')
+                object_key = location["key"].replace('"', '\\"')
+                lines.extend(
+                    [
+                        f'if [ "$downloaded" -ne 1 ] && cassie_s3_cp "s3://{bucket_name}/{object_key}" "{destination}"; then',
+                        "  downloaded=1",
+                        "fi",
+                    ]
+                )
+            original_key = str(artifact["s3_key"]).replace('"', '\\"')
+            lines.extend(
+                [
+                    'if [ "$downloaded" -ne 1 ]; then',
+                    f'  echo "Failed to download input {original_key} for user {user_id}" >&2',
+                    "  exit 1",
+                    "fi",
+                ]
             )
         return "\n".join(lines)
 
@@ -2832,7 +2895,13 @@ exit "$CASSIE_STATUS"
             capacity["memory_mib"],
             max(768, memory_limit_mib, input_size_mib + 384),
         )
-        init_memory_request = f"{init_memory_limit_mib}Mi"
+        init_memory_request_mib = self._init_memory_request_mib(
+            tool_id=tool_id,
+            memory_limit_mib=memory_limit_mib,
+            init_memory_limit_mib=init_memory_limit_mib,
+            capacity=capacity,
+        )
+        init_memory_request = f"{init_memory_request_mib}Mi"
         cpu_limit = self._env_value_or_default(f"{prefix}_CPU_LIMIT", self._format_cpu_quantity(cpu_limit_millis))
         memory_limit = self._env_value_or_default(f"{prefix}_MEMORY_LIMIT", f"{memory_limit_mib}Mi")
         storage_limit = self._env_value_or_default(f"{prefix}_STORAGE_LIMIT", f"{storage_limit_mib}Mi")
@@ -2853,6 +2922,7 @@ exit "$CASSIE_STATUS"
             "storage_request_mib": storage_request_mib,
             "init_storage_request_mib": init_storage_request_mib,
             "init_memory_limit_mib": init_memory_limit_mib,
+            "init_memory_request_mib": init_memory_request_mib,
             "init_memory_request": init_memory_request,
             "storage_constrained": storage_limit_mib < self._estimated_required_storage_mib(
                 tool_id, input_size_mib, low_resource
@@ -2934,6 +3004,26 @@ exit "$CASSIE_STATUS"
         reserve_mib = self._env_int("CASSIE_CLUSTER_STORAGE_RESERVE_MIB") or 2048
         max_workspace_mib = max(1024, cluster_storage_mib - reserve_mib)
         return min(max_workspace_mib, max(required_mib, 1024))
+
+    def _init_memory_request_mib(
+        self,
+        tool_id: str,
+        memory_limit_mib: int,
+        init_memory_limit_mib: int,
+        capacity: Dict[str, int],
+    ) -> int:
+        prefix = tool_id.upper()
+        explicit_request = self._env_int(f"{prefix}_INIT_MEMORY_REQUEST_MIB") or self._env_int(
+            "CASSIE_INIT_MEMORY_REQUEST_MIB"
+        )
+        if explicit_request > 0:
+            requested_mib = explicit_request
+        else:
+            requested_mib = min(512, max(256, memory_limit_mib // 8))
+
+        reserve_mib = self._env_int("CASSIE_CLUSTER_MEMORY_RESERVE_MIB") or 256
+        schedulable_mib = max(128, capacity["memory_mib"] - reserve_mib)
+        return max(128, min(requested_mib, init_memory_limit_mib, schedulable_mib))
 
     def _genomescope_hash_size(self, memory_limit_mib: int) -> str:
         if memory_limit_mib >= 4096:

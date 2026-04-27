@@ -32,25 +32,20 @@ These points are based on the current codebase and matter for production:
 
    For EC2 + S3, do **not** use that file directly as your production compose manifest.
 
-4. CASSIE creates **per-user buckets** with this pattern:
+4. CASSIE now uses **one shared bucket** and stores each user's objects under a prefix:
 
-   - `${MINIO_BUCKET_PREFIX}-user-{user_id}`
+   - bucket: `${MINIO_BUCKET_PREFIX}`
+   - object prefix: `users/{user_id}/...`
 
    File: [backend/api/services/minio_client.py](/home/ege/Desktop/CS491/CASSIE/backend/api/services/minio_client.py:111)
 
-   On AWS S3, bucket names are globally unique, so choose a globally unique prefix such as:
+   On AWS S3, bucket names are globally unique, so choose a globally unique bucket name such as:
 
    - `cassie-prod-123456789012`
 
-5. The storage client currently expects explicit `MINIO_ACCESS_KEY` and `MINIO_SECRET_KEY` style credentials.
-   In practice, for AWS S3, these should be your AWS access key and secret key.
+5. The storage client supports explicit `MINIO_ACCESS_KEY` and `MINIO_SECRET_KEY` credentials, and also cleanly falls back to the AWS credential chain when they are left blank.
 
-6. The current AWS bucket-creation path is safest outside `us-east-1`.
-   The code creates AWS buckets with `CreateBucketConfiguration`, so use a region like:
-
-   - `us-east-2`
-   - `eu-west-1`
-   - `eu-central-1`
+6. The shared-bucket creation path now handles `us-east-1` correctly as well as other AWS regions.
 
 7. Do **not** use [scripts/start-cassie.sh](/home/ege/Desktop/CS491/CASSIE/scripts/start-cassie.sh:1) as your normal EC2 start command.
    It resets Minikube and is destructive for an existing cluster.
@@ -129,13 +124,13 @@ Do **not** expose these publicly:
 
 ## IAM Permissions For S3
 
-Because CASSIE creates per-user buckets dynamically, the IAM principal used by the backend must be able to:
+Because CASSIE uses one shared bucket with per-user prefixes, the IAM principal used by the backend must be able to:
 
 - list buckets
-- create buckets
+- create the shared bucket
 - read bucket location
-- list objects in user buckets
-- upload/download/delete objects in user buckets
+- list objects in the shared bucket
+- upload/download/delete objects in the shared bucket
 
 Example policy skeleton:
 
@@ -161,7 +156,7 @@ Example policy skeleton:
         "s3:HeadBucket"
       ],
       "Resource": [
-        "arn:aws:s3:::cassie-prod-123456789012-user-*"
+        "arn:aws:s3:::cassie-prod-123456789012"
       ]
     },
     {
@@ -173,14 +168,14 @@ Example policy skeleton:
         "s3:DeleteObject"
       ],
       "Resource": [
-        "arn:aws:s3:::cassie-prod-123456789012-user-*/*"
+        "arn:aws:s3:::cassie-prod-123456789012/users/*"
       ]
     }
   ]
 }
 ```
 
-Replace `cassie-prod-123456789012` with your real globally unique prefix.
+Replace `cassie-prod-123456789012` with your real globally unique bucket name.
 
 ## Step 1: Launch The EC2 Instance
 
@@ -643,13 +638,13 @@ Check:
 - `MINIO_ENDPOINT` is blank in `.env`
 - you are running `docker-compose.ec2-s3.yml`, not the stock `docker-compose.yml`
 
-### Problem: S3 buckets fail to create
+### Problem: The shared S3 bucket fails to create
 
 Check:
 
-- bucket prefix is globally unique
+- bucket name is globally unique
 - IAM policy allows `s3:CreateBucket`
-- region is not `us-east-1`
+- IAM policy includes the shared bucket ARN
 
 ### Problem: App works locally on EC2 but not publicly
 

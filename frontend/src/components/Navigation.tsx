@@ -128,6 +128,15 @@ export default function Navigation({ onLogout }: NavigationProps) {
           >
             Pipelines
           </button>
+          {isAuthenticated && (
+            <button
+              type="button"
+              className={`nav-link ${isActive('/storage') ? 'active' : ''}`}
+              onClick={() => navigate('/storage')}
+            >
+              Storage
+            </button>
+          )}
           <button
             type="button"
             className={`nav-link ${isActive('/community') ? 'active' : ''}`}
