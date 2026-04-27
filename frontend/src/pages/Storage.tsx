@@ -380,12 +380,19 @@ export default function Storage() {
                 const isPending = 'status' in file
                 const progressLabel = isPending
                   ? file.status === 'failed'
-                    ? 'Failed'
+                    ? 'Not uploaded'
                     : file.status === 'confirming'
-                      ? 'Confirming storage'
+                      ? 'Waiting for confirmation'
                       : file.progress !== null
                         ? `${Math.round(file.progress)}%`
                         : 'Preparing'
+                  : null
+                const availabilityLabel = isPending
+                  ? file.status === 'failed'
+                    ? 'Not available'
+                    : file.status === 'confirming'
+                      ? 'Bytes sent; not available until confirmed'
+                      : 'Not available yet'
                   : null
 
                 return (
@@ -397,6 +404,7 @@ export default function Storage() {
                       <div className="storage-row-progress">
                         <div className="storage-row-progress-header">
                           <span>{progressLabel}</span>
+                          <span>{availabilityLabel}</span>
                           {file.error && <span>{file.error}</span>}
                         </div>
                         {file.progress !== null && file.status !== 'confirming' && file.status !== 'failed' ? (

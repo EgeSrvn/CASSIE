@@ -69,6 +69,8 @@ interface DirectUploadPrepareResponse {
   expires_in: number
 }
 
+const delay = (ms: number): Promise<void> => new Promise((resolve) => window.setTimeout(resolve, ms))
+
 export const directUploadDataFile = async (
   file: File,
   folderId?: number | null,
@@ -105,22 +107,33 @@ export const directUploadDataFile = async (
     },
   })
 
-  const completeResponse = await apiClient.post<{ success: boolean; data: DataFile; message?: string }>(
-    '/api/data-files/direct-upload/complete',
-    {
-      filename: prepared.filename,
-      s3_key: prepared.s3_key,
-      size_bytes: file.size,
-      folder_id: folderId ?? null,
-      file_format: fileFormat || null,
-    }
-  )
+  let lastCompleteError: any = null
+  for (let attempt = 1; attempt <= 5; attempt += 1) {
+    try {
+      const completeResponse = await apiClient.post<{ success: boolean; data: DataFile; message?: string }>(
+        '/api/data-files/direct-upload/complete',
+        {
+          filename: prepared.filename,
+          s3_key: prepared.s3_key,
+          size_bytes: file.size,
+          folder_id: folderId ?? null,
+          file_format: fileFormat || null,
+        }
+      )
 
-  if (completeResponse.data.success) {
-    return completeResponse.data.data
+      if (completeResponse.data.success) {
+        return completeResponse.data.data
+      }
+
+      lastCompleteError = new Error(completeResponse.data.message || 'Failed to complete direct upload')
+    } catch (error) {
+      lastCompleteError = error
+    }
+
+    await delay(attempt * 1000)
   }
 
-  throw new Error(completeResponse.data.message || 'Failed to complete direct upload')
+  throw lastCompleteError || new Error('Failed to complete direct upload')
 }
 
 export interface CloudImportPayload {

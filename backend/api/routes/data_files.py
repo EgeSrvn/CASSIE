@@ -9,6 +9,7 @@ import re
 import shutil
 import tempfile
 import time
+import uuid
 from urllib.parse import parse_qs, unquote, urlparse
 from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, status, Query, Form, Request
 from fastapi.concurrency import run_in_threadpool
@@ -244,13 +245,13 @@ def _safe_cloud_filename(value: Optional[str]) -> str:
 
 
 def _build_data_s3_key(user_id: int, filename: str, folder_id: Optional[int]) -> str:
-    timestamp = int(time.time())
+    upload_id = f"{time.time_ns()}_{uuid.uuid4().hex[:10]}"
     if folder_id:
         from backend.api.services.folder_service import get_folder_by_id
         folder_obj = get_folder_by_id(folder_id, user_id)
         folder_path = folder_obj.path.replace('/', '_') if folder_obj else f"folder_{folder_id}"
-        return f"data/{user_id}/{folder_path}/{timestamp}_{filename}"
-    return f"data/{user_id}/root/{timestamp}_{filename}"
+        return f"data/{user_id}/{folder_path}/{upload_id}_{filename}"
+    return f"data/{user_id}/root/{upload_id}_{filename}"
 
 
 def _extract_google_drive_file_id(source_url: str) -> Optional[str]:

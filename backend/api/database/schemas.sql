@@ -629,6 +629,7 @@ CREATE INDEX IF NOT EXISTS idx_files_job_id ON files(job_id);
 CREATE INDEX IF NOT EXISTS idx_files_file_type ON files(file_type);
 CREATE INDEX IF NOT EXISTS idx_files_s3_key ON files(s3_key);
 CREATE INDEX IF NOT EXISTS idx_files_job_type ON files(job_id, file_type);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_files_unassigned_s3_key_unique ON files(s3_key) WHERE job_id IS NULL;
 
 -- Add folder_id column if it doesn't exist
 DO $$

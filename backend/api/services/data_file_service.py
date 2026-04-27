@@ -264,10 +264,43 @@ def create_data_file_record_for_existing_object(
         cur = conn.cursor()
 
         try:
+            cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (s3_key,))
+
             if folder_id:
                 folder = get_folder_by_id(folder_id, user_id)
                 if not folder:
                     raise ValueError(f"Folder with id {folder_id} not found")
+
+            cur.execute("""
+                SELECT f.id, f.job_id, f.folder_id, f.filename, f.s3_key, f.file_type, f.file_format,
+                       f.size_bytes, f.checksum, f.uploaded_at, f.created_at
+                FROM files f
+                LEFT JOIN folders fo ON f.folder_id = fo.id
+                WHERE f.s3_key = %s
+                  AND f.job_id IS NULL
+                  AND (
+                        fo.user_id = %s
+                        OR (f.folder_id IS NULL AND f.s3_key LIKE %s)
+                  )
+                ORDER BY f.created_at DESC, f.id DESC
+                LIMIT 1
+            """, (s3_key, user_id, f"data/{user_id}/%"))
+            existing_row = cur.fetchone()
+            if existing_row:
+                conn.commit()
+                return FileInDB(
+                    id=existing_row[0],
+                    job_id=existing_row[1],
+                    folder_id=existing_row[2],
+                    filename=existing_row[3],
+                    s3_key=existing_row[4],
+                    file_type=FileType(existing_row[5]),
+                    file_format=existing_row[6],
+                    size_bytes=existing_row[7],
+                    checksum=existing_row[8],
+                    uploaded_at=existing_row[9],
+                    created_at=existing_row[10],
+                )
 
             cur.execute("""
                 INSERT INTO files (folder_id, filename, s3_key, file_type, file_format, size_bytes, checksum, uploaded_at)
@@ -619,6 +652,19 @@ def copy_data_file_to_job(file_id: int, user_id: int, job_id: int) -> Optional[F
             source_file = get_data_file_by_id(file_id, user_id)
             if not source_file:
                 return None
+
+            from backend.api.services.user_service import get_user_by_id
+            user = get_user_by_id(user_id)
+            storage_info = minio_client.get_file_info(
+                user_id=user_id,
+                s3_key=source_file.s3_key,
+                username=user.username if user else None,
+            )
+            if not storage_info:
+                raise ValueError(
+                    f"Stored file '{source_file.filename}' is missing from object storage. "
+                    "Delete it from Storage and upload it again."
+                )
             
             # Verify job exists and belongs to user (if job_id provided)
             if job_id:
