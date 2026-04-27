@@ -305,6 +305,29 @@ def _sanitize_execution_parameters(parameters_used: Optional[Dict]) -> Optional[
     return sanitized
 
 
+def _merge_runtime_stage_details(runtime_details: Optional[Dict[str, Any]]) -> Dict[int, Dict[tuple[Any, Any], Dict[str, Any]]]:
+    if not isinstance(runtime_details, dict):
+        return {}
+
+    runtime_stages = runtime_details.get("stages")
+    if not isinstance(runtime_stages, list):
+        return {}
+
+    merged: Dict[int, Dict[tuple[Any, Any], Dict[str, Any]]] = {}
+    for runtime_stage in runtime_stages:
+        if not isinstance(runtime_stage, dict):
+            continue
+        execution_id = runtime_stage.get("execution_id")
+        if not isinstance(execution_id, int):
+            continue
+        key = (
+            runtime_stage.get("stage_number"),
+            str(runtime_stage.get("tool_id") or "").strip().upper(),
+        )
+        merged.setdefault(execution_id, {})[key] = runtime_stage
+    return merged
+
+
 @router.get("/vms")
 async def list_available_vms(
     current_user: UserResponse = Depends(get_current_user)
@@ -993,8 +1016,39 @@ async def list_job_executions(
         from backend.api.services.job_execution_service import get_executions_by_job
 
         executions = get_executions_by_job(job_id)
-        payload = [
-            JobExecutionResponse(
+        runtime_stage_lookup: Dict[int, Dict[tuple[Any, Any], Dict[str, Any]]] = {}
+        try:
+            runtime_stage_lookup = _merge_runtime_stage_details(
+                get_kubernetes_pipeline_runner().get_job_runtime_details(job_id, executions)
+            )
+        except Exception as runtime_error:
+            logger.warning("Failed to enrich runtime details for job %s: %s", job_id, runtime_error)
+
+        payload = []
+        for execution in executions:
+            parameters_used = _sanitize_execution_parameters(execution.parameters_used)
+            if isinstance(parameters_used, dict):
+                stages = parameters_used.get("stages")
+                if isinstance(stages, list):
+                    runtime_lookup = runtime_stage_lookup.get(execution.id, {})
+                    merged_stages = []
+                    for stage in stages:
+                        if not isinstance(stage, dict):
+                            merged_stages.append(stage)
+                            continue
+                        merged_stage = dict(stage)
+                        stage_key = (
+                            merged_stage.get("stage_number"),
+                            str(merged_stage.get("tool_id") or "").strip().upper(),
+                        )
+                        runtime_stage = runtime_lookup.get(stage_key) or {}
+                        merged_stage["live_tool_logs"] = runtime_stage.get("live_tool_logs")
+                        merged_stage["live_init_logs"] = runtime_stage.get("live_init_logs")
+                        merged_stage["pod_phase"] = runtime_stage.get("pod_phase")
+                        merged_stages.append(merged_stage)
+                    parameters_used["stages"] = merged_stages
+
+            payload.append(JobExecutionResponse(
                 id=execution.id,
                 job_id=execution.job_id,
                 execution_number=execution.execution_number,
@@ -1004,14 +1058,12 @@ async def list_job_executions(
                 output_dir=execution.output_dir,
                 process_id=execution.process_id,
                 tool_versions=execution.tool_versions,
-                parameters_used=_sanitize_execution_parameters(execution.parameters_used),
+                parameters_used=parameters_used,
                 error_message=_sanitize_execution_message(execution.error_message),
                 started_at=execution.started_at,
                 completed_at=execution.completed_at,
                 created_at=execution.created_at
-            ).model_dump(mode="json")
-            for execution in executions
-        ]
+            ).model_dump(mode="json"))
 
         return JSONResponse(
             content=success_response(

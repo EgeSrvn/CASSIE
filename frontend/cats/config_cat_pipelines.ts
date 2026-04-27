@@ -2,9 +2,9 @@ import firuzanImage from '../images/firuzan.png'
 import type { CatCornerConfig } from './types'
 
 export const configCatPipelines: CatCornerConfig = {
-  title: 'Cat 3',
-  description: 'CASSIE\'s snuggly, sassy mascot is keeping a calm eye on this page.',
-  detailText: 'Cat 3 specializes in pipelines and workflow planning, bringing fearless curiosity, graceful chaos, and a strong instinct for stepping exactly where the next stage should go.',
+  title: 'Pipeline Cat',
+  description: 'Use this page to browse your private workflows, open starter templates, or begin building a new pipeline.',
+  detailText: 'Open an existing pipeline when you want to inspect or edit it, use starter templates for a guided starting point, and create a new pipeline when you need a workflow tailored to your own analysis path.',
   mediaSrc: firuzanImage,
   mediaAlt: 'CASSIE cat mascot',
 }

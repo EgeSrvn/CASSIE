@@ -376,8 +376,10 @@ def get_data_files_by_folder(folder_id: Optional[int], user_id: int) -> List[Fil
                     SELECT f.id, f.job_id, f.folder_id, f.filename, f.s3_key, f.file_type, f.file_format, 
                            f.size_bytes, f.checksum, f.uploaded_at, f.created_at
                     FROM files f
-                    WHERE f.folder_id IS NULL AND f.s3_key LIKE %s
-                    ORDER BY f.filename
+                WHERE f.folder_id IS NULL
+                  AND f.job_id IS NULL
+                  AND f.s3_key LIKE %s
+                ORDER BY f.filename
                 """, (f"data/{user_id}/%",))
             
             rows = cur.fetchall()
@@ -427,7 +429,9 @@ def get_data_file_by_id(file_id: int, user_id: int) -> Optional[FileInDB]:
                        f.size_bytes, f.checksum, f.uploaded_at, f.created_at
                 FROM files f
                 LEFT JOIN folders fo ON f.folder_id = fo.id
-                WHERE f.id = %s AND (fo.user_id = %s OR (f.folder_id IS NULL AND f.s3_key LIKE %s))
+                WHERE f.id = %s
+                  AND f.job_id IS NULL
+                  AND (fo.user_id = %s OR (f.folder_id IS NULL AND f.s3_key LIKE %s))
             """, (file_id, user_id, f"data/{user_id}/%"))
             
             row = cur.fetchone()

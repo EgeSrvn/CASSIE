@@ -24,7 +24,7 @@ import { startPendingJobUploadProcessor } from './services/pendingJobUploadServi
 import { startStorageUploadProcessor } from './services/storageUploadService'
 
 function App() {
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean | null>(null)
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => !!getToken())
 
   useEffect(() => {
     // Check if user is authenticated
@@ -56,10 +56,6 @@ function App() {
     void startPendingJobUploadProcessor()
     void startStorageUploadProcessor()
   }, [])
-
-  if (isAuthenticated === null) {
-    return <div>Loading...</div>
-  }
 
   return (
     <Router>
@@ -135,20 +131,24 @@ function App() {
             element={<Profile />}
           />
           <Route
-            path="/contact"
-            element={<Navigate to="/pages/contact" replace />}
+            path="/about"
+            element={<StaticPage slugOverride="about" />}
           />
           <Route
-            path="/about"
-            element={<Navigate to="/pages/about" replace />}
+            path="/contact"
+            element={<Navigate to="/about" replace />}
+          />
+          <Route
+            path="/faq"
+            element={<StaticPage slugOverride="faq" />}
           />
           <Route
             path="/help"
-            element={<Navigate to="/pages/help" replace />}
+            element={<Navigate to="/faq" replace />}
           />
           <Route
             path="/tutorial"
-            element={<Navigate to="/pages/tutorial" replace />}
+            element={<Navigate to="/about" replace />}
           />
           <Route
             path="/pages/:slug"

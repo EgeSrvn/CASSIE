@@ -19,6 +19,8 @@ import { createPipeline, updatePipeline, getPipeline, Pipeline } from '../servic
 import { getToken, isTokenExpired, logout } from '../services/authService'
 import { StarterPipelineTemplate } from '../services/starterPipelines'
 import { EditableFlagDefinition, getAvailableTools, Tool } from '../services/toolService'
+import { configCatPipelineBuilder } from '../../cats/config_cat_pipeline_builder'
+import CatCornerCard from '../components/CatCornerCard'
 import Navigation from '../components/Navigation'
 import {
   applyPipelinePriorityGroupOrder,
@@ -1223,7 +1225,7 @@ export default function PipelineBuilder() {
     <div className="page-container pipeline-builder-page">
       <Navigation />
       <div className="page-content">
-        <div className="pipeline-builder">
+        <div className="pipeline-builder pipeline-builder--with-cat">
           <div className="pipeline-builder-grid">
             <div className="pipeline-sidebar">
               <div className="card">
@@ -1477,6 +1479,10 @@ export default function PipelineBuilder() {
           </div>
         </div>
       </div>
+      <CatCornerCard
+        config={configCatPipelineBuilder}
+        className="cat-corner-card--pipeline-builder"
+      />
 
       {editingNodeId && (
         <div className="modal-overlay" onClick={closeEditModal}>

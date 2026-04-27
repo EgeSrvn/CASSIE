@@ -33,6 +33,8 @@ import {
   PendingJobUploadFile,
 } from '../services/pendingJobUploadService'
 import { deleteFile, importGoogleDriveFileToJob, uploadFile } from '../services/fileService'
+import { getCreateJobCatConfig } from '../../cats/config_cat_job_builder'
+import CatCornerCard from '../components/CatCornerCard'
 import Navigation from '../components/Navigation'
 import PipelineVisualization from '../components/PipelineVisualization'
 import {
@@ -59,7 +61,7 @@ const formatRuntimeEstimate = (minutes: number): string => {
   return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`
 }
 
-type BuilderLevel = 1 | 2 | 3 | 4 | 5
+type BuilderLevel = 1 | 2 | 3 | 4
 type SlideDirection = 'forward' | 'backward'
 
 interface BuilderLevelDefinition {
@@ -87,7 +89,7 @@ const getManualInputBlockDefaultName = (block: ManualToolInputBlock): string => 
 }
 
 const PIPELINE_STAGE_NODE_TYPES = new Set(['tool', 'checkpoint'])
-const CREATE_JOB_DRAFT_STORAGE_KEY = 'cassie:create-job-draft:v2'
+const CREATE_JOB_DRAFT_STORAGE_KEY = 'cassie:create-job-draft:v3'
 const GOOGLE_DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.readonly'
 const GOOGLE_API_SCRIPT_ID = 'cassie-google-api-script'
 const GOOGLE_GSI_SCRIPT_ID = 'cassie-google-gsi-script'
@@ -152,7 +154,7 @@ const deriveGoogleDriveAppId = (clientId: string): string => (
 )
 
 interface CreateJobDraft {
-  version: 2
+  version: 3
   jobName: string
   selectionMode: 'tools' | 'pipeline'
   selectedTools: number[]
@@ -198,7 +200,7 @@ const readCreateJobDraft = (): CreateJobDraft | null => {
     }
 
     const parsed = JSON.parse(rawDraft)
-    if (!parsed || parsed.version !== 2) {
+    if (!parsed || parsed.version !== 3) {
       return null
     }
 
@@ -1761,21 +1763,16 @@ export default function CreateJob() {
     },
     {
       level: 2,
-      title: 'Select files',
-      description: 'Choose the files you want available for this run before assigning them to blocks.',
+      title: 'Attach inputs',
+      description: 'Review available files, then map them to each named pipeline or tool block.',
     },
     {
       level: 3,
-      title: 'Attach inputs',
-      description: 'Map the selected files to each named tool block.',
-    },
-    {
-      level: 4,
       title: 'Configure run',
       description: 'Choose compute resources and tune same-level priorities after inputs are assigned.',
     },
     {
-      level: 5,
+      level: 4,
       title: 'Review and submit',
       description: 'Inspect the final pipeline, estimated runtime, and expected price before launch.',
     },
@@ -1870,11 +1867,11 @@ export default function CreateJob() {
     )
   )
 
-  const canAdvanceFromLevelThree = selectionMode === 'pipeline'
+  const inputStepMappingsComplete = selectionMode === 'pipeline'
     ? (pipelineInputRequirements.length === 0 || missingPipelineInputCount === 0)
     : (manualToolInputBlocks.length === 0 || missingManualInputBlockCount === 0)
 
-  const canAdvanceFromLevelFour = Boolean(selectedVM)
+  const canAdvanceFromLevelThree = Boolean(selectedVM)
 
   const inputBlockDisplayName = useCallback((inputId: string, fallbackLabel: string): string => (
     inputBlockNames[inputId]?.trim() || fallbackLabel
@@ -1886,7 +1883,7 @@ export default function CreateJob() {
 
   const goToNextLevel = () => {
     setSlideDirection('forward')
-    setCurrentLevel((current) => Math.min(5, current + 1) as BuilderLevel)
+    setCurrentLevel((current) => Math.min(4, current + 1) as BuilderLevel)
   }
 
   const cancelSelectedUploads = ({ clearState = true }: { clearState?: boolean } = {}) => {
@@ -1964,9 +1961,7 @@ export default function CreateJob() {
   const failedGoogleDriveUploadCount = pendingGoogleDriveFiles.filter(file => file.upload_status === 'failed').length
   const pendingFileUploadCount = pendingLocalUploadCount + pendingGoogleDriveUploadCount
   const failedFileUploadCount = failedLocalUploadCount + failedGoogleDriveUploadCount
-  const hasSelectableInputFiles = combinedSelectableFiles.length > 0
-
-  const canAdvanceFromLevelTwo = hasSelectableInputFiles && pendingFileUploadCount === 0 && failedFileUploadCount === 0
+  const canAdvanceFromLevelTwo = pendingFileUploadCount === 0 && failedFileUploadCount === 0 && inputStepMappingsComplete
 
   const selectedLibraryFiles = useMemo(() => combinedSelectableFiles.filter((file) => {
     if (selectionMode === 'pipeline') {
@@ -1979,7 +1974,7 @@ export default function CreateJob() {
   }), [combinedSelectableFiles, pipelineInputMappings, selectionMode, toolFileMappings])
 
   const reviewPipelinePlanRequest = useMemo<PipelinePlanPreviewRequest | null>(() => {
-    if (currentLevel !== 5) {
+    if (currentLevel !== 4) {
       return null
     }
 
@@ -2185,7 +2180,7 @@ export default function CreateJob() {
     }
 
     const draft: CreateJobDraft = {
-      version: 2,
+      version: 3,
       jobName,
       selectionMode,
       selectedTools,
@@ -2231,9 +2226,9 @@ export default function CreateJob() {
     e.preventDefault()
     setError('')
 
-    if (currentLevel !== 5) {
+    if (currentLevel !== 4) {
       setSlideDirection('forward')
-      setCurrentLevel(5)
+      setCurrentLevel(4)
       return
     }
     
@@ -2484,8 +2479,7 @@ export default function CreateJob() {
                 builderLevel.level === 1 ||
                 (builderLevel.level === 2 && canAdvanceFromLevelOne) ||
                 (builderLevel.level === 3 && canAdvanceFromLevelOne && canAdvanceFromLevelTwo) ||
-                (builderLevel.level === 4 && canAdvanceFromLevelOne && canAdvanceFromLevelTwo && canAdvanceFromLevelThree) ||
-                (builderLevel.level === 5 && canAdvanceFromLevelOne && canAdvanceFromLevelTwo && canAdvanceFromLevelThree && canAdvanceFromLevelFour)
+                (builderLevel.level === 4 && canAdvanceFromLevelOne && canAdvanceFromLevelTwo && canAdvanceFromLevelThree)
 
               return (
                 <button
@@ -2803,7 +2797,7 @@ export default function CreateJob() {
             </>
           )}
 
-          {currentLevel === 4 && (
+          {currentLevel === 3 && (
             <>
           <div className="form-group">
             <label htmlFor="vm">Virtual Machine *</label>
@@ -2880,7 +2874,7 @@ export default function CreateJob() {
                 <label>Pipeline Files</label>
                 <div className="builder-section-card">
                   <p style={{ marginBottom: '1rem', color: '#666', fontSize: '0.875rem' }}>
-                    Choose the files you want available for this pipeline. In the next step you will assign them to the explicit tool blocks.
+                    Choose the files you want available for this pipeline, then assign them below to the explicit tool blocks.
                   </p>
 
                   {renderFileSourceControls()}
@@ -2889,7 +2883,7 @@ export default function CreateJob() {
                     <p style={{ color: '#666', fontStyle: 'italic' }}>Loading data library...</p>
                   ) : combinedSelectableFiles.length === 0 ? (
                     <p style={{ color: '#666', fontStyle: 'italic', margin: 0 }}>
-                      No files available yet. Upload files now, then map them to pipeline tool blocks in the next step.
+                      No files available yet. Upload files now, then map them to the pipeline tool blocks here.
                     </p>
                   ) : (
                     <div className="builder-file-chip-grid">
@@ -2905,7 +2899,7 @@ export default function CreateJob() {
                 <label>Input Files</label>
                 <div className="builder-section-card">
                   <p style={{ marginBottom: '1rem', color: '#666', fontSize: '0.875rem' }}>
-                    Add or review the files you want available. In the next step, you will assign them into named tool blocks.
+                    Add or review the files you want available, then assign them here into named tool blocks.
                   </p>
 
                   {renderFileSourceControls()}
@@ -2914,7 +2908,7 @@ export default function CreateJob() {
                     <p style={{ color: '#666', fontStyle: 'italic' }}>Loading data library...</p>
                   ) : combinedSelectableFiles.length === 0 ? (
                     <p style={{ color: '#666', fontStyle: 'italic', margin: 0 }}>
-                      No input files available yet. Upload files here, then map them to tool blocks in the next step.
+                      No input files available yet. Upload files here, then map them to the tool blocks below.
                     </p>
                   ) : (
                     <div className="builder-file-chip-grid">
@@ -2927,7 +2921,7 @@ export default function CreateJob() {
               </>
             )}
 
-            {currentLevel === 3 && (
+            {currentLevel === 2 && (
               <>
             {selectionMode === 'pipeline' && selectedPipelineId && (
               <div className="form-group">
@@ -3212,7 +3206,7 @@ export default function CreateJob() {
               </>
             )}
 
-          {currentLevel === 5 && (
+          {currentLevel === 4 && (
             <div className="form-group">
               <label>Submit Job</label>
               <div className="builder-submit-layout">
@@ -3465,7 +3459,7 @@ export default function CreateJob() {
                 Back
               </button>
             )}
-            {currentLevel < 5 ? (
+            {currentLevel < 4 ? (
               <button
                 key={`builder-next-${currentLevel}`}
                 type="button"
@@ -3474,15 +3468,14 @@ export default function CreateJob() {
                   creating ||
                   (currentLevel === 1 && !canAdvanceFromLevelOne) ||
                   (currentLevel === 2 && !canAdvanceFromLevelTwo) ||
-                  (currentLevel === 3 && !canAdvanceFromLevelThree) ||
-                  (currentLevel === 4 && !canAdvanceFromLevelFour)
+                  (currentLevel === 3 && !canAdvanceFromLevelThree)
                 }
                 onClick={(event) => {
                   event.preventDefault()
                   goToNextLevel()
                 }}
               >
-                {currentLevel === 4 ? 'Review Job' : 'Continue'}
+                {currentLevel === 3 ? 'Review Job' : 'Continue'}
               </button>
             ) : (
               <button
@@ -3498,6 +3491,10 @@ export default function CreateJob() {
         </form>
         </div>
       </div>
+      <CatCornerCard
+        config={getCreateJobCatConfig(currentLevel)}
+        className="cat-corner-card--job-builder"
+      />
     </div>
   )
 }

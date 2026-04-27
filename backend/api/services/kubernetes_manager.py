@@ -532,6 +532,12 @@ class KubernetesPipelineRunner:
             "timeout expired",
         )
         if any(marker in normalized for marker in timeout_markers):
+            if "kubectl command timed out" in normalized:
+                return (
+                    f"{prefix}the backend took too long waiting for a Kubernetes response while this stage was starting. "
+                    "Refresh the job details in a moment and retry only if the stage never begins."
+                    f"{detail}"
+                )
             return (
                 f"{prefix}the Kubernetes stage exceeded the configured execution timeout. "
                 "CASSIE is now configured to allow unlimited runtime by default, so retry the job after restarting the backend."
@@ -1879,14 +1885,31 @@ class KubernetesPipelineRunner:
                 tool=tool,
                 current_inputs=current_inputs,
             )
+            self._capture_stage_logs(stage_info, stage_job_name, pod_name=pod_name)
+            log_artifacts = self._upload_stage_log_artifacts(
+                stage_info=stage_info,
+                job_id=job_id,
+                execution_id=execution_id,
+                user_id=user_id,
+                stage_number=stage_number,
+                tool=tool,
+            )
+            if log_artifacts:
+                stage_outputs.extend(log_artifacts)
 
             return stage_outputs
         except Exception:
             self._capture_stage_logs(stage_info, stage_job_name, pod_name=pod_name)
+            self._upload_stage_log_artifacts(
+                stage_info=stage_info,
+                job_id=job_id,
+                execution_id=execution_id,
+                user_id=user_id,
+                stage_number=stage_number,
+                tool=tool,
+            )
             raise
         finally:
-            if stage_info.get("status") == "completed":
-                self._capture_stage_logs(stage_info, stage_job_name, pod_name=pod_name)
             try:
                 os.unlink(temp_manifest.name)
             except Exception:
@@ -3348,9 +3371,12 @@ exit "$CASSIE_STATUS"
             if pod_name:
                 pod_result = self._run_kubectl(
                     ["get", "pod", pod_name, "-n", namespace, "-o", "json"],
-                    timeout=20,
+                    timeout=60,
                 )
                 if pod_result.returncode != 0:
+                    if "timed out" in (pod_result.stderr or "").lower():
+                        time.sleep(poll_interval)
+                        continue
                     raise RuntimeError(
                         f"Failed to fetch Kubernetes pod status for {pod_name}: {pod_result.stderr.strip()}"
                     )
@@ -3439,9 +3465,12 @@ exit "$CASSIE_STATUS"
 
             status_result = self._run_kubectl(
                 ["get", "job", job_name, "-n", namespace, "-o", "json"],
-                timeout=20,
+                timeout=60,
             )
             if status_result.returncode != 0:
+                if "timed out" in (status_result.stderr or "").lower():
+                    time.sleep(poll_interval)
+                    continue
                 raise RuntimeError(f"Failed to fetch Kubernetes Job status for {job_name}: {status_result.stderr.strip()}")
 
             payload = json.loads(status_result.stdout)
@@ -3463,7 +3492,7 @@ exit "$CASSIE_STATUS"
         namespace = self._config.kubernetes.namespace
         result = self._run_kubectl(
             ["get", "pods", "-n", namespace, "-l", f"job-name={job_name}", "-o", "json"],
-            timeout=20,
+            timeout=60,
         )
         if result.returncode != 0:
             return ""
@@ -3628,6 +3657,71 @@ exit "$CASSIE_STATUS"
             shutil.rmtree(Path(local_output_dir).parent, ignore_errors=True)
 
         return stage_outputs
+
+    def _upload_stage_log_artifacts(
+        self,
+        *,
+        stage_info: Dict[str, Any],
+        job_id: int,
+        execution_id: int,
+        user_id: int,
+        stage_number: int,
+        tool: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        if stage_info.get("_log_artifacts_uploaded"):
+            return list(stage_info.get("log_artifacts") or [])
+
+        minio_client = get_minio_client()
+        log_artifacts: List[Dict[str, Any]] = []
+        tool_slug = self._tool_output_slug(tool)
+        stage_prefix = f"stage_{stage_number:02d}_{tool_slug}"
+        log_sources = (
+            ("tool_logs_full", f"{stage_prefix}__tool.txt"),
+        )
+
+        temp_dir = Path(tempfile.mkdtemp(prefix=f"cassie-stage-logs-{job_id}-{stage_number:02d}-"))
+        try:
+            for source_key, artifact_name in log_sources:
+                log_content = str(stage_info.get(source_key) or "").strip()
+                if not log_content:
+                    continue
+
+                local_path = temp_dir / artifact_name
+                local_path.write_text(log_content + "\n", encoding="utf-8")
+                s3_key = f"jobs/{job_id}/executions/{execution_id}/{artifact_name}"
+                upload_result = minio_client.upload_file(
+                    user_id=user_id,
+                    local_path=str(local_path),
+                    s3_key=s3_key,
+                )
+                create_file_record(
+                    FileCreate(
+                        job_id=job_id,
+                        filename=artifact_name,
+                        s3_key=s3_key,
+                        file_type=FileType.LOG,
+                        file_format="txt",
+                        size_bytes=upload_result["size"],
+                        checksum=upload_result["checksum"],
+                    )
+                )
+                log_artifacts.append(
+                    {
+                        "filename": artifact_name,
+                        "s3_key": s3_key,
+                        "size_bytes": upload_result["size"],
+                        "file_format": "txt",
+                        "source": source_key,
+                        "producer_tool_id": tool["id"],
+                    }
+                )
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+        stage_info["_log_artifacts_uploaded"] = True
+        if log_artifacts:
+            stage_info["log_artifacts"] = log_artifacts
+        return log_artifacts
 
     def _stage_output_display_name(
         self,
@@ -3798,15 +3892,36 @@ exit "$CASSIE_STATUS"
         namespace = self._config.kubernetes.namespace
         result = self._run_kubectl(["logs", f"job/{job_name}", "-n", namespace, "-c", "tool"], timeout=60)
         if result.returncode != 0:
-            return result.stderr.strip()
+            stderr = result.stderr.strip()
+            if self._is_transient_log_unavailable(stderr):
+                return ""
+            return stderr
         return result.stdout
 
     def _get_pod_container_logs(self, pod_name: str, container_name: str) -> str:
         namespace = self._config.kubernetes.namespace
         result = self._run_kubectl(["logs", pod_name, "-n", namespace, "-c", container_name], timeout=60)
         if result.returncode != 0:
-            return result.stderr.strip()
+            stderr = result.stderr.strip()
+            if self._is_transient_log_unavailable(stderr):
+                return ""
+            return stderr
         return result.stdout
+
+    def _is_transient_log_unavailable(self, message: str) -> bool:
+        normalized = str(message or "").strip().lower()
+        if not normalized:
+            return True
+        return any(
+            marker in normalized
+            for marker in (
+                "podinitializing",
+                "containercreating",
+                "waiting to start",
+                "is waiting to start",
+                "no such container",
+            )
+        )
 
     def _get_stage_failure_logs(self, job_name: str) -> str:
         pod_name = self._get_job_pod_name(job_name)
@@ -3814,7 +3929,7 @@ exit "$CASSIE_STATUS"
             return self._get_job_logs(job_name)
 
         namespace = self._config.kubernetes.namespace
-        pod_result = self._run_kubectl(["get", "pod", pod_name, "-n", namespace, "-o", "json"], timeout=20)
+        pod_result = self._run_kubectl(["get", "pod", pod_name, "-n", namespace, "-o", "json"], timeout=60)
         if pod_result.returncode != 0:
             return pod_result.stderr.strip()
 
@@ -4022,7 +4137,7 @@ exit "$CASSIE_STATUS"
                 if stage_job_name:
                     job_result = self._run_kubectl(
                         ["get", "job", stage_job_name, "-n", namespace, "-o", "json"],
-                        timeout=20,
+                        timeout=60,
                     )
                     if job_result.returncode == 0:
                         try:
@@ -4053,7 +4168,7 @@ exit "$CASSIE_STATUS"
                 if pod_name:
                     pod_result = self._run_kubectl(
                         ["get", "pod", pod_name, "-n", namespace, "-o", "json"],
-                        timeout=20,
+                        timeout=60,
                     )
                     if pod_result.returncode == 0:
                         try:
@@ -4070,21 +4185,21 @@ exit "$CASSIE_STATUS"
 
                     init_logs = self._run_kubectl(
                         ["logs", pod_name, "-n", namespace, "-c", "fetch-inputs", "--tail=120"],
-                        timeout=20,
+                        timeout=60,
                     )
                     if init_logs.returncode == 0 and init_logs.stdout.strip():
                         snapshot["live_init_logs"] = init_logs.stdout[-8000:]
 
                     tool_logs = self._run_kubectl(
                         ["logs", pod_name, "-n", namespace, "-c", "tool", "--tail=200"],
-                        timeout=20,
+                        timeout=60,
                     )
                     if tool_logs.returncode == 0 and tool_logs.stdout.strip():
                         snapshot["live_tool_logs"] = tool_logs.stdout[-12000:]
                 elif stage_job_name:
                     job_logs = self._run_kubectl(
                         ["logs", f"job/{stage_job_name}", "-n", namespace, "-c", "tool", "--tail=200"],
-                        timeout=20,
+                        timeout=60,
                     )
                     if job_logs.returncode == 0 and job_logs.stdout.strip():
                         snapshot["live_tool_logs"] = job_logs.stdout[-12000:]
@@ -4174,15 +4289,23 @@ exit "$CASSIE_STATUS"
     ) -> subprocess.CompletedProcess[str]:
         cmd = ["kubectl", *args]
         self._logger.info("Running kubectl command: %s", " ".join(cmd))
-        return subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            cwd=cwd,
-            check=False,
-            env=_kubectl_env(),
-        )
+        try:
+            return subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=cwd,
+                check=False,
+                env=_kubectl_env(),
+            )
+        except subprocess.TimeoutExpired:
+            return subprocess.CompletedProcess(
+                cmd,
+                124,
+                "",
+                f"kubectl command timed out after {timeout} seconds",
+            )
 
 
 _kubernetes_runner: Optional[KubernetesPipelineRunner] = None

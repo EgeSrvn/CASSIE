@@ -2,11 +2,16 @@
   padding: 2rem;
 }
 
+.pipeline-builder--with-cat {
+  padding-top: 1.35rem;
+  padding-bottom: 8.5rem;
+}
+
 .pipeline-builder-grid {
   display: grid;
   grid-template-columns: 300px 1fr;
   gap: 1.5rem;
-  height: calc(100vh - 200px);
+  height: calc(100vh - 240px);
 }
 
 .pipeline-sidebar {
@@ -694,6 +699,10 @@
   .pipeline-builder-grid {
     grid-template-columns: 1fr;
     height: auto;
+  }
+
+  .pipeline-builder--with-cat {
+    padding-bottom: 8rem;
   }
 
   .pipeline-canvas {

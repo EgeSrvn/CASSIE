@@ -2,9 +2,9 @@ import firuzanImage from '../images/firuzan.png'
 import type { CatCornerConfig } from './types'
 
 export const configCatProfile: CatCornerConfig = {
-  title: 'Cat 5',
-  description: 'CASSIE\'s snuggly, sassy mascot is keeping a calm eye on this page.',
-  detailText: 'Cat 5 handles profiles, help pages, and the quieter corners of CASSIE with a refined sense of dignity, strategic curiosity, and excellent whisker-based quality control.',
+  title: 'Profile Cat',
+  description: 'Manage your account details, security settings, balance, and public profile information here.',
+  detailText: 'Use this page to update the information other users see, change your password carefully, and keep enough balance available before starting jobs that require cost coverage.',
   mediaSrc: firuzanImage,
   mediaAlt: 'CASSIE cat mascot',
 }

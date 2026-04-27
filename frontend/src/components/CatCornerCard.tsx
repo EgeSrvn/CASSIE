@@ -4,9 +4,10 @@ import '../styles/CatCornerCard.css'
 
 interface CatCornerCardProps {
   config: CatCornerConfig
+  className?: string
 }
 
-export default function CatCornerCard({ config }: CatCornerCardProps) {
+export default function CatCornerCard({ config, className = '' }: CatCornerCardProps) {
   const [isOpen, setIsOpen] = useState(false)
 
   useEffect(() => {
@@ -28,7 +29,7 @@ export default function CatCornerCard({ config }: CatCornerCardProps) {
     <>
       <button
         type="button"
-        className="cat-corner-card"
+        className={`cat-corner-card ${className}`.trim()}
         aria-label={config.title}
         onClick={() => setIsOpen(true)}
       >

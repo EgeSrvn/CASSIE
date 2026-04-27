@@ -3,9 +3,14 @@ import Navigation from '../components/Navigation'
 import { STATIC_PAGES } from '../config/staticPages'
 import '../styles/globals.css'
 
-export default function StaticPage() {
+interface StaticPageProps {
+  slugOverride?: string
+}
+
+export default function StaticPage({ slugOverride }: StaticPageProps) {
   const { slug } = useParams()
-  const page = slug ? STATIC_PAGES[slug] : undefined
+  const resolvedSlug = slugOverride || slug
+  const page = resolvedSlug ? STATIC_PAGES[resolvedSlug] : undefined
 
   if (!page) {
     return <Navigate to="/" replace />
@@ -18,7 +23,7 @@ export default function StaticPage() {
         <section className="card forum-composer-page-card">
           <div className="section-heading">
             <h2>{page.title}</h2>
-            <p>{page.description}</p>
+            {page.description ? <p>{page.description}</p> : null}
           </div>
           <div className="static-page-sections">
             {page.sections.map((section) => (

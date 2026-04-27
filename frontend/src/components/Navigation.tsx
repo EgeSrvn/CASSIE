@@ -186,17 +186,11 @@ export default function Navigation({ onLogout }: NavigationProps) {
                   <button type="button" className="nav-user-menu-item" onClick={() => navigate('/profile')}>
                     Go Profile
                   </button>
-                  <button type="button" className="nav-user-menu-item" onClick={() => navigate('/contact')}>
-                    Contact
-                  </button>
                   <button type="button" className="nav-user-menu-item" onClick={() => navigate('/about')}>
                     About
                   </button>
-                  <button type="button" className="nav-user-menu-item" onClick={() => navigate('/help')}>
-                    Help
-                  </button>
-                  <button type="button" className="nav-user-menu-item" onClick={() => navigate('/tutorial')}>
-                    Tutorial
+                  <button type="button" className="nav-user-menu-item" onClick={() => navigate('/faq')}>
+                    FAQ
                   </button>
                   <button type="button" className="nav-user-menu-item nav-user-menu-item-danger" onClick={handleLogout}>
                     Logout
