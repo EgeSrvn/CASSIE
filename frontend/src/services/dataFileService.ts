@@ -1,4 +1,6 @@
 import apiClient from './apiClient'
+import { getUploadResponseTimeoutMs } from './fileService'
+import axios from 'axios'
 
 export interface DataFile {
   id: number
@@ -31,7 +33,9 @@ export const getDataFile = async (fileId: number): Promise<DataFile> => {
 export const uploadDataFile = async (
   file: File,
   folderId?: number | null,
-  fileFormat?: string
+  fileFormat?: string,
+  onProgress?: (progress: number) => void,
+  signal?: AbortSignal
 ): Promise<DataFile> => {
   const formData = new FormData()
   formData.append('file', file)
@@ -45,9 +49,91 @@ export const uploadDataFile = async (
   const response = await apiClient.post('/api/data-files/upload', formData, {
     headers: {
       'Content-Type': 'multipart/form-data'
-    }
+    },
+    timeout: getUploadResponseTimeoutMs(file.size),
+    signal,
+    onUploadProgress: (progressEvent) => {
+      if (onProgress && progressEvent.total) {
+        const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total)
+        onProgress(Math.min(percentCompleted, 100))
+      }
+    },
   })
   return response.data.data
+}
+
+interface DirectUploadPrepareResponse {
+  upload_url: string
+  s3_key: string
+  filename: string
+  expires_in: number
+}
+
+const delay = (ms: number): Promise<void> => new Promise((resolve) => window.setTimeout(resolve, ms))
+
+export const directUploadDataFile = async (
+  file: File,
+  folderId?: number | null,
+  fileFormat?: string,
+  onProgress?: (progress: number) => void,
+  signal?: AbortSignal
+): Promise<DataFile> => {
+  const prepareResponse = await apiClient.post<{ success: boolean; data: DirectUploadPrepareResponse; message?: string }>(
+    '/api/data-files/direct-upload/prepare',
+    {
+      filename: file.name,
+      size_bytes: file.size,
+      folder_id: folderId ?? null,
+      file_format: fileFormat || null,
+    }
+  )
+
+  if (!prepareResponse.data.success) {
+    throw new Error(prepareResponse.data.message || 'Failed to prepare direct upload')
+  }
+
+  const prepared = prepareResponse.data.data
+  await axios.put(prepared.upload_url, file, {
+    headers: {
+      'Content-Type': file.type || 'application/octet-stream',
+    },
+    timeout: getUploadResponseTimeoutMs(file.size),
+    signal,
+    onUploadProgress: (progressEvent) => {
+      if (onProgress && progressEvent.total) {
+        const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total)
+        onProgress(Math.min(percentCompleted, 100))
+      }
+    },
+  })
+
+  let lastCompleteError: any = null
+  for (let attempt = 1; attempt <= 5; attempt += 1) {
+    try {
+      const completeResponse = await apiClient.post<{ success: boolean; data: DataFile; message?: string }>(
+        '/api/data-files/direct-upload/complete',
+        {
+          filename: prepared.filename,
+          s3_key: prepared.s3_key,
+          size_bytes: file.size,
+          folder_id: folderId ?? null,
+          file_format: fileFormat || null,
+        }
+      )
+
+      if (completeResponse.data.success) {
+        return completeResponse.data.data
+      }
+
+      lastCompleteError = new Error(completeResponse.data.message || 'Failed to complete direct upload')
+    } catch (error) {
+      lastCompleteError = error
+    }
+
+    await delay(attempt * 1000)
+  }
+
+  throw lastCompleteError || new Error('Failed to complete direct upload')
 }
 
 export interface CloudImportPayload {

@@ -305,6 +305,29 @@ def _sanitize_execution_parameters(parameters_used: Optional[Dict]) -> Optional[
     return sanitized
 
 
+def _merge_runtime_stage_details(runtime_details: Optional[Dict[str, Any]]) -> Dict[int, Dict[tuple[Any, Any], Dict[str, Any]]]:
+    if not isinstance(runtime_details, dict):
+        return {}
+
+    runtime_stages = runtime_details.get("stages")
+    if not isinstance(runtime_stages, list):
+        return {}
+
+    merged: Dict[int, Dict[tuple[Any, Any], Dict[str, Any]]] = {}
+    for runtime_stage in runtime_stages:
+        if not isinstance(runtime_stage, dict):
+            continue
+        execution_id = runtime_stage.get("execution_id")
+        if not isinstance(execution_id, int):
+            continue
+        key = (
+            runtime_stage.get("stage_number"),
+            str(runtime_stage.get("tool_id") or "").strip().upper(),
+        )
+        merged.setdefault(execution_id, {})[key] = runtime_stage
+    return merged
+
+
 @router.get("/vms")
 async def list_available_vms(
     current_user: UserResponse = Depends(get_current_user)
@@ -356,6 +379,10 @@ async def create_job_endpoint(
     # Log parsed job data for debugging
     logger.info(f"[JOB CREATE] Received job data: name='{job_data.name}', workflow_id={job_data.workflow_id}, tool_indices={job_data.tool_indices}, pipeline_id={job_data.pipeline_id}, data_types={job_data.data_types}, assembler={job_data.assembler}, cloud_provider={job_data.cloud_provider}")
     logger.info(f"[JOB CREATE] Full job_data model: {job_data.model_dump()}")
+
+    selected_data_file_ids = list(job_data.input_file_ids or [])
+    selected_staged_file_ids = list(job_data.staged_input_file_ids or [])
+    selected_input_file_ids = selected_data_file_ids + selected_staged_file_ids
     
     # Validate input
     is_valid, error_msg = validate_job_name(job_data.name)
@@ -480,7 +507,7 @@ async def create_job_endpoint(
         return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
 
     should_reserve_vm_slot = bool(
-        (job_data.input_file_ids and len(job_data.input_file_ids) > 0)
+        len(selected_input_file_ids) > 0
         or (job_data.pending_upload_count and job_data.pending_upload_count > 0)
     )
 
@@ -525,7 +552,7 @@ async def create_job_endpoint(
                     job_id=job.id,
                     user_id=current_user.id,
                     workflow_id=job.workflow_id,
-                    input_file_ids=list(job_data.input_file_ids or []),
+                    input_file_ids=selected_input_file_ids,
                     vm_name=job.vm_name,
                 )
                 reserve_job_charge(
@@ -541,13 +568,16 @@ async def create_job_endpoint(
         # Link pre-uploaded files to this job if provided
         # Handle both staging files and data library files
         input_file_ids = []
-        if job_data.input_file_ids:
+        if selected_data_file_ids or selected_staged_file_ids:
             from backend.api.services.storage_service import get_file_by_id, update_file
             from backend.api.services.data_file_service import get_data_file_by_id, copy_data_file_to_job
             from backend.api.models.pipeline_model import FileUpdate
             
-            logger.info(f"[JOB CREATE] Processing {len(job_data.input_file_ids)} input file(s) for job {job.id}")
-            for file_id in job_data.input_file_ids:
+            logger.info(
+                f"[JOB CREATE] Processing {len(selected_data_file_ids)} data library file(s) and "
+                f"{len(selected_staged_file_ids)} staged file(s) for job {job.id}"
+            )
+            for file_id in selected_data_file_ids:
                 # Check if file is from data library (can be in folder or root)
                 data_file = get_data_file_by_id(file_id, current_user.id)
                 if data_file:
@@ -573,6 +603,19 @@ async def create_job_endpoint(
                             logger.warning(f"[JOB CREATE] Failed to link file {file_id} to job {job.id}")
                     else:
                         logger.warning(f"[JOB CREATE] File {file_id} not found or doesn't belong to user {current_user.id}")
+
+            for file_id in selected_staged_file_ids:
+                file_record = get_file_by_id(file_id, user_id=current_user.id)
+                if file_record:
+                    update_data = FileUpdate(job_id=job.id)
+                    updated_file = update_file(file_id, current_user.id, update_data)
+                    if updated_file:
+                        input_file_ids.append(file_id)
+                        logger.info(f"[JOB CREATE] Linked staged file {file_id} to job {job.id}")
+                    else:
+                        logger.warning(f"[JOB CREATE] Failed to link staged file {file_id} to job {job.id}")
+                else:
+                    logger.warning(f"[JOB CREATE] Staged file {file_id} not found or doesn't belong to user {current_user.id}")
         
         # Job creation complete - status is PENDING
         # User must manually execute the job via POST /jobs/{job_id}/execute
@@ -973,8 +1016,39 @@ async def list_job_executions(
         from backend.api.services.job_execution_service import get_executions_by_job
 
         executions = get_executions_by_job(job_id)
-        payload = [
-            JobExecutionResponse(
+        runtime_stage_lookup: Dict[int, Dict[tuple[Any, Any], Dict[str, Any]]] = {}
+        try:
+            runtime_stage_lookup = _merge_runtime_stage_details(
+                get_kubernetes_pipeline_runner().get_job_runtime_details(job_id, executions)
+            )
+        except Exception as runtime_error:
+            logger.warning("Failed to enrich runtime details for job %s: %s", job_id, runtime_error)
+
+        payload = []
+        for execution in executions:
+            parameters_used = _sanitize_execution_parameters(execution.parameters_used)
+            if isinstance(parameters_used, dict):
+                stages = parameters_used.get("stages")
+                if isinstance(stages, list):
+                    runtime_lookup = runtime_stage_lookup.get(execution.id, {})
+                    merged_stages = []
+                    for stage in stages:
+                        if not isinstance(stage, dict):
+                            merged_stages.append(stage)
+                            continue
+                        merged_stage = dict(stage)
+                        stage_key = (
+                            merged_stage.get("stage_number"),
+                            str(merged_stage.get("tool_id") or "").strip().upper(),
+                        )
+                        runtime_stage = runtime_lookup.get(stage_key) or {}
+                        merged_stage["live_tool_logs"] = runtime_stage.get("live_tool_logs")
+                        merged_stage["live_init_logs"] = runtime_stage.get("live_init_logs")
+                        merged_stage["pod_phase"] = runtime_stage.get("pod_phase")
+                        merged_stages.append(merged_stage)
+                    parameters_used["stages"] = merged_stages
+
+            payload.append(JobExecutionResponse(
                 id=execution.id,
                 job_id=execution.job_id,
                 execution_number=execution.execution_number,
@@ -984,14 +1058,12 @@ async def list_job_executions(
                 output_dir=execution.output_dir,
                 process_id=execution.process_id,
                 tool_versions=execution.tool_versions,
-                parameters_used=_sanitize_execution_parameters(execution.parameters_used),
+                parameters_used=parameters_used,
                 error_message=_sanitize_execution_message(execution.error_message),
                 started_at=execution.started_at,
                 completed_at=execution.completed_at,
                 created_at=execution.created_at
-            ).model_dump(mode="json")
-            for execution in executions
-        ]
+            ).model_dump(mode="json"))
 
         return JSONResponse(
             content=success_response(

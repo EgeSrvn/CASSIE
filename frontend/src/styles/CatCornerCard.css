@@ -53,6 +53,15 @@
   border-color: rgba(39, 84, 138, 0.24);
 }
 
+.cat-corner-card--job-builder,
+.cat-corner-card--pipeline-builder {
+  width: min(19rem, calc(100vw - 2rem));
+}
+
+.cat-corner-card--pipeline-builder {
+  bottom: 1.25rem;
+}
+
 .cat-corner-card:focus-visible {
   outline: 3px solid rgba(39, 84, 138, 0.22);
   outline-offset: 2px;
@@ -147,6 +156,11 @@
 
   .cat-corner-card__description {
     font-size: 0.75rem;
+  }
+
+  .cat-corner-card--job-builder,
+  .cat-corner-card--pipeline-builder {
+    width: min(15.5rem, calc(100vw - 1.5rem));
   }
 
   .cat-corner-modal {

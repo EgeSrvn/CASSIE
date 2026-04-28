@@ -1,0 +1,245 @@
+.storage-page {
+  min-height: 100vh;
+  background: var(--bg-secondary);
+}
+
+.storage-content {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 2rem 1.5rem 3rem;
+}
+
+.storage-header,
+.storage-section-heading,
+.storage-actions-panel,
+.storage-usage-footer,
+.storage-file-row,
+.storage-file-actions {
+  display: flex;
+  align-items: center;
+}
+
+.storage-header {
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1.4rem;
+}
+
+.storage-header h1 {
+  margin: 0;
+  color: var(--gray-900);
+  font-size: 2.2rem;
+}
+
+.storage-header p {
+  color: var(--gray-600);
+}
+
+.storage-kicker {
+  color: var(--primary);
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.storage-usage-panel,
+.storage-actions-panel,
+.storage-files-section {
+  background: var(--bg-primary);
+  border: 1px solid var(--gray-200);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+}
+
+.storage-usage-panel {
+  padding: 1.25rem;
+  margin-bottom: 1rem;
+}
+
+.storage-usage-panel strong {
+  color: var(--gray-900);
+  font-size: 1.1rem;
+}
+
+.storage-usage-panel span {
+  color: var(--gray-600);
+}
+
+.storage-usage-main {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.storage-usage-main > div,
+.storage-usage-main strong,
+.storage-usage-main span {
+  display: block;
+}
+
+.storage-meter,
+.storage-upload-progress {
+  width: 100%;
+  height: 0.7rem;
+  overflow: hidden;
+  background: var(--gray-100);
+  border-radius: 999px;
+}
+
+.storage-meter {
+  margin: 0.9rem 0 0.55rem;
+}
+
+.storage-meter span,
+.storage-upload-progress span {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, var(--primary), var(--secondary));
+  transition: width 0.2s ease;
+}
+
+.storage-usage-footer {
+  justify-content: space-between;
+  gap: 1rem;
+  font-size: 0.88rem;
+}
+
+.storage-actions-panel {
+  gap: 0.75rem;
+  padding: 1rem;
+  margin-bottom: 1rem;
+  flex-wrap: wrap;
+}
+
+.storage-upload-progress {
+  flex-basis: 100%;
+}
+
+.storage-files-section {
+  padding: 1rem;
+}
+
+.storage-section-heading {
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.storage-section-heading h2 {
+  margin: 0;
+  color: var(--gray-900);
+}
+
+.storage-file-list {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.storage-file-row {
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.9rem;
+  border: 1px solid var(--gray-200);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.38);
+}
+
+.storage-file-row-pending {
+  border-color: rgba(39, 84, 138, 0.32);
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.storage-file-row strong,
+.storage-file-row span {
+  display: block;
+}
+
+.storage-file-row strong {
+  color: var(--gray-900);
+  word-break: break-word;
+}
+
+.storage-file-row span {
+  color: var(--gray-600);
+  font-size: 0.88rem;
+}
+
+.storage-file-actions {
+  gap: 0.5rem;
+  flex-shrink: 0;
+}
+
+.storage-row-progress {
+  width: min(32rem, 100%);
+  margin-top: 0.65rem;
+}
+
+.storage-row-progress-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.35rem;
+}
+
+.storage-row-progress-header span,
+.storage-status-pill {
+  color: var(--primary);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.storage-status-pill {
+  padding: 0.4rem 0.65rem;
+  border: 1px solid rgba(39, 84, 138, 0.22);
+  border-radius: 999px;
+  background: rgba(39, 84, 138, 0.08);
+  white-space: nowrap;
+}
+
+.storage-confirming-bar {
+  width: 100%;
+  height: 0.7rem;
+  overflow: hidden;
+  position: relative;
+  background: var(--gray-100);
+  border-radius: 999px;
+}
+
+.storage-confirming-bar span {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 38%;
+  background: linear-gradient(90deg, transparent, var(--primary), transparent);
+  animation: storage-confirming-slide 1.1s ease-in-out infinite;
+}
+
+@keyframes storage-confirming-slide {
+  from {
+    left: -38%;
+  }
+
+  to {
+    left: 100%;
+  }
+}
+
+@media (max-width: 760px) {
+  .storage-header,
+  .storage-usage-main,
+  .storage-file-row,
+  .storage-usage-footer {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .storage-file-actions {
+    width: 100%;
+  }
+
+  .storage-file-actions button {
+    flex: 1;
+  }
+}

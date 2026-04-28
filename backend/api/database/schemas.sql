@@ -6,7 +6,7 @@
 -- Table 1: Users
 -- ============================================================================
 -- Purpose: Store user accounts and authentication information
--- Features: Per-user S3 buckets for complete data isolation
+-- Features: User accounts plus a legacy storage namespace column used by the app
 
 CREATE TABLE IF NOT EXISTS users (
     id SERIAL PRIMARY KEY,
@@ -37,6 +37,11 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 CREATE INDEX IF NOT EXISTS idx_users_bucket_name ON users(bucket_name);
+
+CREATE TABLE IF NOT EXISTS app_migrations (
+    key VARCHAR(120) PRIMARY KEY,
+    applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 
 DO $$
 BEGIN
@@ -173,6 +178,36 @@ BEGIN
         ALTER TABLE users ADD COLUMN suspension_reason VARCHAR(255);
     END IF;
 END $$;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM app_migrations
+        WHERE key = 'split_reserved_balance_20260428'
+    ) THEN
+        UPDATE users
+        SET cash_balance_usd = GREATEST(cash_balance_usd - cash_reserved_usd, 0),
+            updated_at = NOW()
+        WHERE cash_reserved_usd > 0;
+
+        INSERT INTO app_migrations (key)
+        VALUES ('split_reserved_balance_20260428');
+    END IF;
+END $$;
+
+-- ============================================================================
+-- Trigger Helper: Automatic Timestamp Updates
+-- ============================================================================
+-- Defined before any trigger declarations so the schema can be replayed from a
+-- clean database as well as against an existing one.
+
+CREATE OR REPLACE FUNCTION update_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = CURRENT_TIMESTAMP;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
 
 -- ============================================================================
 -- Table 15: Forum Threads
@@ -615,6 +650,7 @@ CREATE INDEX IF NOT EXISTS idx_files_job_id ON files(job_id);
 CREATE INDEX IF NOT EXISTS idx_files_file_type ON files(file_type);
 CREATE INDEX IF NOT EXISTS idx_files_s3_key ON files(s3_key);
 CREATE INDEX IF NOT EXISTS idx_files_job_type ON files(job_id, file_type);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_files_unassigned_s3_key_unique ON files(s3_key) WHERE job_id IS NULL;
 
 -- Add folder_id column if it doesn't exist
 DO $$
@@ -854,14 +890,6 @@ CREATE INDEX IF NOT EXISTS idx_execution_datasets_execution_dataset ON execution
 -- Triggers: Automatic Timestamp Updates
 -- ============================================================================
 -- Purpose: Automatically update updated_at timestamp on row modification
-
-CREATE OR REPLACE FUNCTION update_updated_at_column()
-RETURNS TRIGGER AS $$
-BEGIN
-    NEW.updated_at = CURRENT_TIMESTAMP;
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
 
 -- Triggers (idempotent: drop then create)
 DROP TRIGGER IF EXISTS trigger_update_users_updated_at ON users;

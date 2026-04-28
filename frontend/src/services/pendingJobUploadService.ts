@@ -11,6 +11,10 @@ export type PendingJobUploadFile = {
   uploaded_at: null
   created_at: string
   folderPath?: string
+  staged_file_id?: number
+  upload_status?: 'queued' | 'uploading' | 'uploaded' | 'failed'
+  upload_progress?: number
+  upload_error?: string
 }
 
 export type PendingGoogleDriveJobImportFile = {
@@ -24,6 +28,10 @@ export type PendingGoogleDriveJobImportFile = {
   mime_type?: string
   created_at: string
   folderPath?: string
+  staged_file_id?: number
+  upload_status?: 'queued' | 'uploading' | 'uploaded' | 'failed'
+  upload_progress?: number
+  upload_error?: string
 }
 
 export type JobUploadStage = 'queued' | 'uploading' | 'starting' | 'failed'
@@ -79,8 +87,10 @@ const TRANSIENT_UPLOAD_RETRY_DELAY_MS = 10000
 const listeners = new Set<(jobId: number, status: JobUploadStatus | null) => void>()
 let uploadProcessorStarted = false
 let uploadInFlight = false
+const inMemoryUploadRecords: StoredUploadRecord[] = []
 
-const isBrowser = () => typeof window !== 'undefined' && typeof indexedDB !== 'undefined'
+const isBrowser = () => typeof window !== 'undefined'
+const hasIndexedDb = () => typeof indexedDB !== 'undefined'
 
 const readStatusMap = (): Record<string, JobUploadStatus> => {
   if (typeof window === 'undefined') return {}
@@ -128,7 +138,7 @@ export const subscribeToJobUploadStatus = (
 
 const openUploadDb = (): Promise<IDBDatabase> => {
   return new Promise((resolve, reject) => {
-    if (!isBrowser()) {
+    if (!isBrowser() || !hasIndexedDb()) {
       reject(new Error('Browser storage is unavailable'))
       return
     }
@@ -191,6 +201,9 @@ const requestToPromise = <T>(request: IDBRequest<T>): Promise<T> => {
 }
 
 const getAllUploadRecords = async (): Promise<StoredUploadRecord[]> => {
+  if (!isBrowser() || !hasIndexedDb()) {
+    return []
+  }
   return withStore('readonly', async (store) => {
     const records = await requestToPromise(store.getAll())
     return (records as StoredUploadRecord[]).sort((a, b) => a.queueOrder - b.queueOrder)
@@ -198,8 +211,9 @@ const getAllUploadRecords = async (): Promise<StoredUploadRecord[]> => {
 }
 
 const getUploadRecordsForJob = async (jobId: number): Promise<StoredUploadRecord[]> => {
-  const allRecords = await getAllUploadRecords()
-  return allRecords.filter(record => record.jobId === jobId)
+  const persistedRecords = await getAllUploadRecords()
+  const memoryRecords = inMemoryUploadRecords.filter(record => record.jobId === jobId)
+  return [...memoryRecords, ...persistedRecords].sort((a, b) => a.queueOrder - b.queueOrder)
 }
 
 export const getPendingJobUploadFiles = async (jobId: number): Promise<PendingQueuedJobFile[]> => {
@@ -222,6 +236,16 @@ const putUploadRecord = async (record: StoredUploadRecord) => {
 }
 
 const deleteUploadRecord = async (recordId: string) => {
+  const memoryIndex = inMemoryUploadRecords.findIndex(record => record.id === recordId)
+  if (memoryIndex >= 0) {
+    inMemoryUploadRecords.splice(memoryIndex, 1)
+    return
+  }
+
+  if (!hasIndexedDb()) {
+    return
+  }
+
   await withStore('readwrite', async (store) => {
     await requestToPromise(store.delete(recordId))
   })
@@ -350,6 +374,10 @@ const buildUploadStatus = (
 })
 
 const resetInterruptedUploadsToQueued = async () => {
+  if (!hasIndexedDb()) {
+    return
+  }
+
   const statuses = readStatusMap()
   const allRecords = await getAllUploadRecords()
   const currentRecords = allRecords.filter(record => record.schemaVersion === UPLOAD_RECORD_SCHEMA_VERSION)
@@ -388,7 +416,8 @@ const processUploadQueue = async () => {
 
   try {
     while (true) {
-      const allRecords = await getAllUploadRecords()
+      const persistedRecords = await getAllUploadRecords()
+      const allRecords = [...inMemoryUploadRecords, ...persistedRecords].sort((a, b) => a.queueOrder - b.queueOrder)
       if (allRecords.length === 0) break
 
       const nextRecord = allRecords[0]
@@ -518,6 +547,21 @@ const processUploadQueue = async () => {
                   )
                 },
                 record.uploadSessionToken
+              )
+
+              setJobUploadStatus(
+                jobId,
+                buildUploadStatus(
+                  jobId,
+                  'uploading',
+                  transferMessage,
+                  totalFiles,
+                  uploadedFiles,
+                  {
+                    currentFileName: record.filename,
+                    progress: 100,
+                  }
+                )
               )
             }
 
@@ -694,7 +738,9 @@ export const startPendingJobUploadProcessor = async () => {
 
   if (!uploadProcessorStarted) {
     uploadProcessorStarted = true
-    await resetInterruptedUploadsToQueued()
+    if (hasIndexedDb()) {
+      await resetInterruptedUploadsToQueued()
+    }
   }
 
   void processUploadQueue()
@@ -786,4 +832,100 @@ export const enqueuePendingJobUploads = async (
   uploadSessionToken?: string
 ) => {
   await enqueuePendingJobInputUploads(jobId, files, [], uploadSessionToken)
+}
+
+export const queuePendingJobInputUploadsInBackground = (
+  jobId: number,
+  files: PendingJobUploadFile[],
+  googleDriveFiles: PendingGoogleDriveJobImportFile[] = [],
+  uploadSessionToken?: string
+) => {
+  const totalFiles = files.length + googleDriveFiles.length
+
+  setJobUploadStatus(
+    jobId,
+    buildUploadStatus(
+      jobId,
+      'queued',
+      totalFiles > 0
+        ? `Preparing ${totalFiles} selected file${totalFiles !== 1 ? 's' : ''} for upload...`
+        : 'Preparing job upload queue...',
+      totalFiles,
+      0
+    )
+  )
+
+  window.setTimeout(() => {
+    void (async () => {
+      try {
+        const uniqueFiles = files.filter((file, index, allFiles) => {
+          const key = getFileFingerprint(file)
+          return allFiles.findIndex(candidate => (
+            getFileFingerprint(candidate) === key
+          )) === index
+        })
+        const uniqueGoogleDriveFiles = googleDriveFiles.filter((file, index, allFiles) => {
+          const key = getGoogleDriveFingerprint(file)
+          return allFiles.findIndex(candidate => (
+            getGoogleDriveFingerprint(candidate) === key
+          )) === index
+        })
+
+        const baseOrder = Date.now()
+        uniqueFiles.forEach((file, index) => {
+          inMemoryUploadRecords.push({
+            id: `${jobId}:${encodeURIComponent(getFileFingerprint(file))}`,
+            schemaVersion: UPLOAD_RECORD_SCHEMA_VERSION,
+            source: 'pc',
+            jobId,
+            tempId: file.tempId,
+            filename: file.filename,
+            original_filename: file.original_filename || file.file.name,
+            size_bytes: file.size_bytes,
+            lastModified: file.file.lastModified,
+            file_format: file.file_format,
+            created_at: file.created_at,
+            queueOrder: baseOrder + index,
+            fileBlob: file.file,
+            uploadSessionToken,
+          })
+        })
+
+        uniqueGoogleDriveFiles.forEach((file, index) => {
+          inMemoryUploadRecords.push({
+            id: `${jobId}:${encodeURIComponent(getGoogleDriveFingerprint(file))}`,
+            schemaVersion: UPLOAD_RECORD_SCHEMA_VERSION,
+            source: 'google-drive',
+            jobId,
+            tempId: file.tempId,
+            filename: file.filename,
+            original_filename: file.original_filename || file.filename,
+            size_bytes: file.size_bytes || 0,
+            file_format: file.file_format,
+            created_at: file.created_at,
+            queueOrder: baseOrder + uniqueFiles.length + index,
+            googleFileId: file.googleFileId,
+            googleAccessToken: file.accessToken,
+            mime_type: file.mime_type,
+            uploadSessionToken,
+          })
+        })
+        await startPendingJobUploadProcessor()
+      } catch (error: any) {
+        setJobUploadStatus(
+          jobId,
+          buildUploadStatus(
+            jobId,
+            'failed',
+            'Failed to queue selected files',
+            totalFiles,
+            0,
+            {
+              error: getUploadErrorMessage(error) || 'Failed to queue selected files',
+            }
+          )
+        )
+      }
+    })()
+  }, 0)
 }

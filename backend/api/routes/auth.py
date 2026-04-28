@@ -209,7 +209,7 @@ def _user_response_from_model(user) -> UserResponse:
         avatar_url=_resolved_avatar_url(user),
         cash_balance_usd=cash_balance,
         cash_reserved_usd=cash_reserved,
-        cash_available_usd=max(cash_balance - cash_reserved, 0.0),
+        cash_available_usd=max(cash_balance, 0.0),
         email_verified=getattr(user, "email_verified", False),
         login_two_factor_enabled=getattr(user, "login_two_factor_enabled", False),
         job_notifications_enabled=getattr(user, "job_notifications_enabled", False),
@@ -334,6 +334,25 @@ def _build_account_deletion_email(username: str, code: str, expires_in_minutes: 
         f"<p style=\"font-size:24px;font-weight:700;letter-spacing:4px;\">{code}</p>"
         f"<p>It expires in {expires_in_minutes} minutes.</p>"
         "<p>If you did not request account deletion, ignore this email and your account will remain active.</p>"
+    )
+    return subject, text_body, html_body
+
+
+def _build_balance_receipt_email(username: str, amount_usd: float, total_balance_usd: float) -> tuple[str, str, str]:
+    amount = f"${amount_usd:.2f}"
+    total = f"${total_balance_usd:.2f}"
+    subject = "CASSIE balance purchase confirmation"
+    text_body = (
+        f"Hello {username},\n\n"
+        f"We added {amount} to your CASSIE job balance.\n"
+        f"Your total balance is now {total}.\n\n"
+        "Card details are not stored by CASSIE."
+    )
+    html_body = (
+        f"<p>Hello {username},</p>"
+        f"<p>We added <strong>{amount}</strong> to your CASSIE job balance.</p>"
+        f"<p>Your total balance is now <strong>{total}</strong>.</p>"
+        "<p>Card details are not stored by CASSIE.</p>"
     )
     return subject, text_body, html_body
 
@@ -511,8 +530,8 @@ async def register(request: RegisterRequest):
         )
         return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
     
-    # Generate bucket name
-    bucket_name = f"cassie-user-{request.username.lower()}"
+    # Keep a unique per-user storage namespace in the legacy column.
+    bucket_name = f"users/{request.username.lower()}"
     
     # Create user
     try:
@@ -1145,9 +1164,20 @@ async def deposit_profile_balance(
             error_data = unauthorized_response("User not found")
             return JSONResponse(content=error_data, status_code=status.HTTP_401_UNAUTHORIZED)
 
+        email_sent = False
+        if updated_user.email:
+            subject, text_body, html_body = _build_balance_receipt_email(
+                updated_user.username,
+                payload.amount_usd,
+                float(getattr(updated_user, "cash_balance_usd", 0) or 0),
+            )
+            email_sent = send_email(updated_user.email, subject, text_body, html_body)
+            if not email_sent:
+                logger.warning("Balance confirmation email could not be sent to user %s", updated_user.id)
+
         return success_response(
             data=_user_response_from_model(updated_user).model_dump(),
-            message="Cash balance updated successfully",
+            message="Balance updated successfully" if email_sent else "Balance updated successfully; confirmation email could not be sent",
         )
     except ValueError as exc:
         error_data = error_response(

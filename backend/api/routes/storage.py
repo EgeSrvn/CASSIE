@@ -13,9 +13,10 @@ import os
 import time
 import tempfile
 import hashlib
+import shutil
 from pydantic import BaseModel, Field
 from fastapi.concurrency import run_in_threadpool
-from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, status, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, UploadFile, File, HTTPException, status, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse, RedirectResponse
 from typing import Optional, List
 # Use real JWT auth (Task 5.4 - now fixed)
@@ -32,6 +33,8 @@ from backend.api.services.storage_service import (
     get_existing_file_record_by_fingerprint,
     get_file_by_id,
     get_files_by_user,
+    get_total_file_bytes_by_user,
+    prune_missing_file_records_by_user,
     update_file,
     delete_file_record,
     count_files_by_user
@@ -42,8 +45,11 @@ from backend.api.services.job_archive_service import (
     request_job_outputs_zip_generation,
 )
 from backend.api.services.job_service import get_job_by_id
+from backend.api.services.job_launch_service import get_auto_start_payload, start_job_execution_task
 from backend.api.services.user_limit_service import (
     can_user_access_job_outputs,
+    get_user_limits,
+    validate_user_storage_capacity,
     validate_output_file_access,
 )
 from backend.api.utils.response_builder import (
@@ -82,6 +88,49 @@ class GoogleDriveStorageImportRequest(BaseModel):
     file_format: Optional[str] = Field(None, max_length=50)
 
 
+class StorageFileUpdateRequest(BaseModel):
+    filename: Optional[str] = Field(None, min_length=1, max_length=255)
+    file_format: Optional[str] = Field(None, max_length=50)
+
+
+@router.get("/summary", status_code=status.HTTP_200_OK)
+async def get_storage_summary(
+    current_user: UserResponse = Depends(get_current_user),
+):
+    """Return storage quota and usage for the current user."""
+    try:
+        limits = await run_in_threadpool(get_user_limits, current_user.username)
+        await run_in_threadpool(
+            prune_missing_file_records_by_user,
+            current_user.id,
+            current_user.username,
+        )
+        used_bytes = await run_in_threadpool(get_total_file_bytes_by_user, current_user.id)
+        max_storage_bytes = max(int(limits.get("max_storage_bytes", 0)), 0)
+        remaining_bytes = max(max_storage_bytes - used_bytes, 0) if max_storage_bytes > 0 else None
+
+        return success_response(
+            data={
+                "used_bytes": used_bytes,
+                "max_storage_bytes": max_storage_bytes,
+                "remaining_bytes": remaining_bytes,
+                "usage_ratio": (used_bytes / max_storage_bytes) if max_storage_bytes > 0 else None,
+                "subscription_upgrade_available": True,
+                "subscription_period": "weekly",
+            },
+            message="Storage summary retrieved successfully",
+            status_code=status.HTTP_200_OK,
+        )
+    except Exception as e:
+        logger.error(f"Error getting storage summary: {e}", exc_info=True)
+        error_data = error_response(
+            error_code=ErrorCode.INTERNAL_ERROR,
+            message="Failed to retrieve storage summary",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
 def _hash_local_file_md5(local_path: str) -> str:
     hash_md5 = hashlib.md5()
     with open(local_path, "rb") as source:
@@ -92,8 +141,114 @@ def _hash_local_file_md5(local_path: str) -> str:
             hash_md5.update(chunk)
     return hash_md5.hexdigest()
 
+
+def _parse_content_length(request: Request) -> Optional[int]:
+    raw_value = request.headers.get("content-length")
+    if not raw_value:
+        return None
+    try:
+        return max(int(raw_value), 0)
+    except ValueError:
+        return None
+
+
+def _queue_job_start_if_uploads_complete(
+    background_tasks: BackgroundTasks,
+    *,
+    job_id: Optional[int],
+    user_id: int,
+    expected_total_input_files: Optional[int],
+) -> None:
+    if job_id is None or not expected_total_input_files or expected_total_input_files <= 0:
+        return
+
+    input_files = get_files_by_user(
+        user_id=user_id,
+        job_id=job_id,
+        file_type=FileType.INPUT,
+        limit=max(expected_total_input_files, 100),
+        offset=0,
+    )
+    if len(input_files) < expected_total_input_files:
+        return
+
+    job, input_file_ids, readiness_error = get_auto_start_payload(job_id, user_id)
+    if readiness_error or not job or not input_file_ids:
+        logger.info(
+            "Job %s has %s/%s uploaded input files but is not ready to auto-start: %s",
+            job_id,
+            len(input_files),
+            expected_total_input_files,
+            readiness_error or "missing input files",
+        )
+        return
+
+    background_tasks.add_task(
+        start_job_execution_task,
+        job_id,
+        user_id,
+        job.workflow_id,
+        input_file_ids,
+    )
+
+
+@router.put("/files/{file_id}", status_code=status.HTTP_200_OK)
+async def update_storage_file(
+    file_id: int,
+    payload: StorageFileUpdateRequest,
+    current_user: UserResponse = Depends(get_current_user),
+):
+    file_record = get_file_by_id(file_id, user_id=current_user.id)
+    if file_record is None:
+        error_data = not_found_response("File", file_id)
+        return JSONResponse(content=error_data, status_code=status.HTTP_404_NOT_FOUND)
+
+    if payload.file_format:
+        is_valid, error_msg = validate_file_format(payload.file_format)
+        if not is_valid:
+            error_data = error_response(
+                error_code=ErrorCode.VALIDATION_ERROR,
+                message=error_msg,
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+            return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+
+    updated_file = update_file(
+        file_id,
+        current_user.id,
+        FileUpdate(
+            filename=payload.filename,
+            file_format=payload.file_format,
+        ),
+    )
+    if updated_file is None:
+        error_data = not_found_response("File", file_id)
+        return JSONResponse(content=error_data, status_code=status.HTTP_404_NOT_FOUND)
+
+    return JSONResponse(
+        content=success_response(
+            data=FileResponse(
+                id=updated_file.id,
+                job_id=updated_file.job_id,
+                filename=updated_file.filename,
+                s3_key=updated_file.s3_key,
+                file_type=updated_file.file_type,
+                file_format=updated_file.file_format,
+                size_bytes=updated_file.size_bytes,
+                checksum=updated_file.checksum,
+                uploaded_at=updated_file.uploaded_at,
+                created_at=updated_file.created_at,
+            ).model_dump(mode="json"),
+            message="File updated successfully",
+            status_code=status.HTTP_200_OK,
+        ),
+        status_code=status.HTTP_200_OK,
+    )
+
 @router.post("/upload", status_code=status.HTTP_201_CREATED)
 async def upload_file(
+    request: Request,
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     job_id: Optional[int] = Query(None, description="Job ID to associate file with (optional for pre-upload)"),
     file_type: FileType = Query(..., description="Type of file (input, output, intermediate, log)"),
@@ -114,6 +269,29 @@ async def upload_file(
         Success response with file data (including file_id for later job association)
     """
     current_user = auth_context.user
+    request_size = _parse_content_length(request)
+    logger.info(
+        "Upload request accepted for user %s job %s file %s (%s bytes declared)",
+        current_user.id,
+        job_id,
+        file.filename,
+        request_size if request_size is not None else "unknown",
+    )
+    if request_size is not None:
+        storage_ok, storage_error = await run_in_threadpool(
+            validate_user_storage_capacity,
+            current_user.id,
+            current_user.username,
+            request_size,
+            shutil.disk_usage(tempfile.gettempdir()).free,
+        )
+        if not storage_ok:
+            error_data = error_response(
+                error_code=ErrorCode.VALIDATION_ERROR,
+                message=storage_error,
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            )
+            return JSONResponse(content=error_data, status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE)
 
     if auth_context.token_type == "job_upload_session":
         if job_id is None or job_id != auth_context.job_id:
@@ -175,6 +353,28 @@ async def upload_file(
             await run_in_threadpool(temp_file.flush)
 
         checksum = hash_md5.hexdigest()
+        logger.info(
+            "Upload body received for user %s job %s file %s (%s bytes). Storing object...",
+            current_user.id,
+            job_id,
+            file.filename,
+            file_size,
+        )
+
+        storage_ok, storage_error = await run_in_threadpool(
+            validate_user_storage_capacity,
+            current_user.id,
+            current_user.username,
+            file_size,
+            shutil.disk_usage(temp_path).free,
+        )
+        if not storage_ok:
+            error_data = error_response(
+                error_code=ErrorCode.VALIDATION_ERROR,
+                message=storage_error,
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            )
+            return JSONResponse(content=error_data, status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE)
 
         if job_id:
             s3_key = f"jobs/{job_id}/{file_type.value}/{file.filename}"
@@ -226,6 +426,13 @@ async def upload_file(
             s3_key,
             current_user.username,
         )
+        logger.info(
+            "Object stored for user %s job %s file %s at %s",
+            current_user.id,
+            job_id,
+            file.filename,
+            upload_result.get("object_key") or upload_result.get("key"),
+        )
 
         file_data = FileCreate(
             job_id=job_id,
@@ -238,11 +445,24 @@ async def upload_file(
         )
 
         file_record = await run_in_threadpool(create_file_record, file_data)
+        logger.info(
+            "File record %s created for user %s job %s file %s",
+            file_record.id,
+            current_user.id,
+            job_id,
+            file.filename,
+        )
 
         if job_id and file_type == FileType.INPUT:
             logger.info(
                 "Input file uploaded to pending job %s. Job execution is controlled by the upload queue.",
                 job_id,
+            )
+            _queue_job_start_if_uploads_complete(
+                background_tasks,
+                job_id=job_id,
+                user_id=current_user.id,
+                expected_total_input_files=auth_context.expected_total_input_files,
             )
 
         response_data = success_response(
@@ -290,7 +510,8 @@ async def upload_file(
 @router.post("/import-google-drive", status_code=status.HTTP_201_CREATED)
 async def import_google_drive_file_to_job(
     payload: GoogleDriveStorageImportRequest,
-    job_id: int = Query(..., description="Job ID to associate file with"),
+    background_tasks: BackgroundTasks,
+    job_id: Optional[int] = Query(None, description="Job ID to associate file with, or omit to import to staging"),
     auth_context: AuthContext = Depends(get_auth_context),
 ):
     """
@@ -298,15 +519,16 @@ async def import_google_drive_file_to_job(
     """
     current_user = auth_context.user
 
-    if auth_context.token_type == "job_upload_session" and job_id != auth_context.job_id:
+    if auth_context.token_type == "job_upload_session" and (job_id is None or job_id != auth_context.job_id):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Upload session token can only import files for its job",
         )
 
-    job = get_job_by_id(job_id, user_id=current_user.id)
-    if job is None:
-        return JSONResponse(content=not_found_response("Job", job_id), status_code=status.HTTP_404_NOT_FOUND)
+    if job_id is not None:
+        job = get_job_by_id(job_id, user_id=current_user.id)
+        if job is None:
+            return JSONResponse(content=not_found_response("Job", job_id), status_code=status.HTTP_404_NOT_FOUND)
 
     if payload.file_format:
         is_valid, error_msg = validate_file_format(payload.file_format)
@@ -331,7 +553,24 @@ async def import_google_drive_file_to_job(
         )
         file_size = await run_in_threadpool(os.path.getsize, temp_path)
         checksum = await run_in_threadpool(_hash_local_file_md5, temp_path)
-        s3_key = f"jobs/{job_id}/input/{filename}"
+        s3_key = f"jobs/{job_id}/input/{filename}" if job_id is not None else f"staging/{current_user.id}/{int(time.time())}_{filename}"
+
+        storage_ok, storage_error = await run_in_threadpool(
+            validate_user_storage_capacity,
+            current_user.id,
+            current_user.username,
+            file_size,
+            shutil.disk_usage(temp_path).free,
+        )
+        if not storage_ok:
+            return JSONResponse(
+                content=error_response(
+                    error_code=ErrorCode.VALIDATION_ERROR,
+                    message=storage_error,
+                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                ),
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            )
 
         existing_file = await run_in_threadpool(
             get_existing_file_record_by_fingerprint,
@@ -342,6 +581,13 @@ async def import_google_drive_file_to_job(
             checksum=checksum,
         )
         if existing_file:
+            if job_id is not None:
+                _queue_job_start_if_uploads_complete(
+                    background_tasks,
+                    job_id=job_id,
+                    user_id=current_user.id,
+                    expected_total_input_files=auth_context.expected_total_input_files,
+                )
             response_data = success_response(
                 data=FileResponse(
                     id=existing_file.id,
@@ -385,6 +631,13 @@ async def import_google_drive_file_to_job(
                 checksum=checksum,
             ),
         )
+        if job_id is not None:
+            _queue_job_start_if_uploads_complete(
+                background_tasks,
+                job_id=job_id,
+                user_id=current_user.id,
+                expected_total_input_files=auth_context.expected_total_input_files,
+            )
 
         response_data = success_response(
             data=FileResponse(

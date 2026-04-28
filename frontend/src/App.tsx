@@ -6,6 +6,8 @@ import Home from './pages/Home'
 import Jobs from './pages/Jobs'
 import CreateJob from './pages/CreateJob'
 import JobDetails from './pages/JobDetails'
+import Storage from './pages/Storage'
+import Balance from './pages/Balance'
 import Pipelines from './pages/Pipelines'
 import StarterTemplates from './pages/StarterTemplates'
 import PipelineBuilder from './pages/PipelineBuilder'
@@ -20,9 +22,10 @@ import VerifyEmail from './pages/VerifyEmail'
 import ForgotPassword from './pages/ForgotPassword'
 import { getToken } from './services/authService'
 import { startPendingJobUploadProcessor } from './services/pendingJobUploadService'
+import { startStorageUploadProcessor } from './services/storageUploadService'
 
 function App() {
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean | null>(null)
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => !!getToken())
 
   useEffect(() => {
     // Check if user is authenticated
@@ -52,11 +55,8 @@ function App() {
 
   useEffect(() => {
     void startPendingJobUploadProcessor()
+    void startStorageUploadProcessor()
   }, [])
-
-  if (isAuthenticated === null) {
-    return <div>Loading...</div>
-  }
 
   return (
     <Router>
@@ -124,24 +124,36 @@ function App() {
             element={isAuthenticated ? <Profile /> : <Navigate to="/login" />}
           />
           <Route
+            path="/storage"
+            element={isAuthenticated ? <Storage /> : <Navigate to="/login" />}
+          />
+          <Route
+            path="/balance"
+            element={isAuthenticated ? <Balance /> : <Navigate to="/login" />}
+          />
+          <Route
             path="/profile/:userId"
             element={<Profile />}
           />
           <Route
-            path="/contact"
-            element={<Navigate to="/pages/contact" replace />}
+            path="/about"
+            element={<StaticPage slugOverride="about" />}
           />
           <Route
-            path="/about"
-            element={<Navigate to="/pages/about" replace />}
+            path="/contact"
+            element={<Navigate to="/about" replace />}
+          />
+          <Route
+            path="/faq"
+            element={<StaticPage slugOverride="faq" />}
           />
           <Route
             path="/help"
-            element={<Navigate to="/pages/help" replace />}
+            element={<Navigate to="/faq" replace />}
           />
           <Route
             path="/tutorial"
-            element={<Navigate to="/pages/tutorial" replace />}
+            element={<Navigate to="/about" replace />}
           />
           <Route
             path="/pages/:slug"

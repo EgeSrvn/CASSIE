@@ -2,7 +2,7 @@
 MinIO/S3 client service for CASSIE backend.
 
 This module provides a service for interacting with MinIO (local S3-compatible storage)
-or AWS S3. It supports per-user bucket management and file operations.
+or AWS S3. It supports file operations in a shared bucket with per-user object prefixes.
 
 Usage:
     from backend.api.services.minio_client import MinIOClient
@@ -19,6 +19,7 @@ import time
 from typing import Optional, List, Dict, Any
 from urllib.parse import urlparse, urlunparse
 from botocore.exceptions import ClientError, BotoCoreError
+from boto3.s3.transfer import TransferConfig
 from botocore.config import Config
 
 from backend.api.utils.config_loader import get_config
@@ -26,13 +27,21 @@ from backend.api.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+S3_CONNECT_TIMEOUT_SECONDS = int(os.getenv("S3_CONNECT_TIMEOUT_SECONDS", "20"))
+S3_READ_TIMEOUT_SECONDS = int(os.getenv("S3_READ_TIMEOUT_SECONDS", "300"))
+S3_RETRY_ATTEMPTS = int(os.getenv("S3_RETRY_ATTEMPTS", "8"))
+S3_UPLOAD_VERIFY_TIMEOUT_SECONDS = float(os.getenv("S3_UPLOAD_VERIFY_TIMEOUT_SECONDS", "30"))
+S3_UPLOAD_VERIFY_INTERVAL_SECONDS = float(os.getenv("S3_UPLOAD_VERIFY_INTERVAL_SECONDS", "0.5"))
+S3_MULTIPART_THRESHOLD_BYTES = int(os.getenv("S3_MULTIPART_THRESHOLD_BYTES", str(64 * 1024 * 1024)))
+S3_MULTIPART_CHUNK_BYTES = int(os.getenv("S3_MULTIPART_CHUNK_BYTES", str(64 * 1024 * 1024)))
+
 
 class MinIOClient:
     """
     MinIO/S3 client service for file storage operations.
     
     Supports both MinIO (local) and AWS S3 (production) through configuration.
-    Provides per-user bucket management and file operations.
+    Uses one shared bucket and scopes each user's objects under a dedicated prefix.
     """
     
     def __init__(self, s3_client: Optional[Any] = None):
@@ -45,6 +54,7 @@ class MinIOClient:
         self._s3_client = s3_client
         self._config = get_config()
         self._logger = get_logger(__name__)
+        self._cors_checked_buckets = set()
     
     @property
     def s3_client(self):
@@ -62,23 +72,23 @@ class MinIOClient:
         """
         minio_config = self._config.minio
         
-        # Configure boto3 for MinIO or AWS S3
-        # Increase connection timeout and add retry configuration
         config = Config(
             signature_version='s3v4',
-            retries={'max_attempts': 3, 'mode': 'standard'},
-            connect_timeout=10,
-            read_timeout=10,
-            max_pool_connections=10
+            retries={'max_attempts': S3_RETRY_ATTEMPTS, 'mode': 'adaptive'},
+            connect_timeout=S3_CONNECT_TIMEOUT_SECONDS,
+            read_timeout=S3_READ_TIMEOUT_SECONDS,
+            max_pool_connections=25
         )
         
         client_kwargs = {
             'service_name': 's3',
-            'aws_access_key_id': minio_config.access_key,
-            'aws_secret_access_key': minio_config.secret_key,
             'region_name': minio_config.region,
             'config': config,
         }
+
+        if minio_config.access_key and minio_config.secret_key:
+            client_kwargs['aws_access_key_id'] = minio_config.access_key
+            client_kwargs['aws_secret_access_key'] = minio_config.secret_key
         
         # Any configured endpoint is treated as an S3-compatible custom endpoint
         # (MinIO locally, MinIO in Docker Compose, or a remote S3-compatible store).
@@ -96,7 +106,6 @@ class MinIOClient:
         for attempt in range(max_retries):
             try:
                 client = boto3.client(**client_kwargs)
-                # Test connection with timeout
                 client.list_buckets()
                 self._logger.info("S3 client initialized successfully")
                 return client
@@ -118,17 +127,142 @@ class MinIOClient:
     
     def _get_bucket_name(self, user_id: int, username: Optional[str] = None) -> str:
         """
-        Generate bucket name for a user.
+        Resolve the shared storage bucket name.
         
         Args:
-            user_id: User ID
-            username: Optional username (for backward compatibility)
+            user_id: User ID (unused, kept for backward compatibility)
+            username: Optional username (unused, kept for backward compatibility)
         
         Returns:
-            str: Bucket name (e.g., "cassie-user-1")
+            str: Shared bucket name
         """
+        return self._config.minio.bucket_prefix.rstrip('-')
+
+    def _get_legacy_bucket_name(self, user_id: int, username: Optional[str] = None) -> str:
+        """Return the pre-migration per-user bucket name for compatibility reads."""
         prefix = self._config.minio.bucket_prefix.rstrip('-')
         return f"{prefix}-user-{user_id}"
+
+    def _normalize_s3_key(self, s3_key: str) -> str:
+        """Normalize logical object keys stored in the database."""
+        return str(s3_key or "").lstrip("/")
+
+    def _get_user_prefix(self, user_id: int) -> str:
+        """Return the per-user prefix inside the shared bucket."""
+        return f"users/{user_id}"
+
+    def _get_object_key(self, user_id: int, s3_key: str) -> str:
+        """Map a logical key to the physical key stored in the shared bucket."""
+        logical_key = self._normalize_s3_key(s3_key)
+        user_prefix = self._get_user_prefix(user_id)
+        return f"{user_prefix}/{logical_key}" if logical_key else f"{user_prefix}/"
+
+    def _strip_user_prefix(self, user_id: int, object_key: str) -> str:
+        """Convert a physical shared-bucket key back to the logical DB key."""
+        user_prefix = f"{self._get_user_prefix(user_id)}/"
+        if object_key.startswith(user_prefix):
+            return object_key[len(user_prefix):]
+        return object_key
+
+    def _get_primary_storage_location(
+        self,
+        user_id: int,
+        s3_key: str,
+        username: Optional[str] = None,
+    ) -> tuple[str, str]:
+        """Return the shared-bucket location for a logical object key."""
+        return self._get_bucket_name(user_id, username), self._get_object_key(user_id, s3_key)
+
+    def _get_read_locations(
+        self,
+        user_id: int,
+        s3_key: str,
+        username: Optional[str] = None,
+    ) -> List[tuple[str, str]]:
+        """
+        Return possible storage locations for a logical object key.
+
+        The first entry is always the new shared-bucket layout. A legacy per-user
+        bucket location is included as a fallback so existing data remains readable
+        after the storage migration.
+        """
+        logical_key = self._normalize_s3_key(s3_key)
+        primary_location = self._get_primary_storage_location(user_id, logical_key, username)
+        legacy_location = (self._get_legacy_bucket_name(user_id, username), logical_key)
+
+        locations: List[tuple[str, str]] = []
+        for location in (primary_location, legacy_location):
+            if location not in locations:
+                locations.append(location)
+        return locations
+
+    def get_read_locations(
+        self,
+        user_id: int,
+        s3_key: str,
+        username: Optional[str] = None,
+    ) -> List[Dict[str, str]]:
+        """Expose candidate storage locations for callers outside this client."""
+        return [
+            {"bucket": bucket_name, "key": object_key}
+            for bucket_name, object_key in self._get_read_locations(user_id, s3_key, username)
+        ]
+
+    def _head_object(self, bucket_name: str, object_key: str) -> Optional[Dict[str, Any]]:
+        """Return object metadata if the object exists, otherwise None."""
+        try:
+            return self.s3_client.head_object(Bucket=bucket_name, Key=object_key)
+        except ClientError as e:
+            error_code = e.response.get('Error', {}).get('Code', '')
+            if error_code in {'404', 'NoSuchKey', 'NoSuchBucket', 'NotFound'}:
+                return None
+            raise
+
+    def _resolve_existing_location(
+        self,
+        user_id: int,
+        s3_key: str,
+        username: Optional[str] = None,
+    ) -> Optional[tuple[str, str]]:
+        """Find the first existing physical location for a logical key."""
+        for bucket_name, object_key in self._get_read_locations(user_id, s3_key, username):
+            if self._head_object(bucket_name, object_key):
+                return bucket_name, object_key
+        return None
+
+    def _wait_for_uploaded_object(
+        self,
+        bucket_name: str,
+        object_key: str,
+        expected_size: int,
+        timeout_seconds: float = S3_UPLOAD_VERIFY_TIMEOUT_SECONDS,
+    ) -> Dict[str, Any]:
+        """Wait until object storage confirms the uploaded object exists."""
+        deadline = time.monotonic() + timeout_seconds
+        last_error: Optional[Exception] = None
+
+        while True:
+            try:
+                head = self.s3_client.head_object(Bucket=bucket_name, Key=object_key)
+                content_length = int(head.get("ContentLength", -1))
+                if content_length == expected_size:
+                    return head
+                last_error = RuntimeError(
+                    f"object size mismatch: expected {expected_size} bytes, got {content_length} bytes"
+                )
+            except ClientError as e:
+                error_code = e.response.get('Error', {}).get('Code', '')
+                if error_code not in {'404', 'NoSuchKey', 'NoSuchBucket', 'NotFound'}:
+                    raise
+                last_error = e
+
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    f"Storage did not confirm object '{object_key}' in bucket '{bucket_name}' "
+                    f"within {timeout_seconds:.0f}s"
+                ) from last_error
+
+            time.sleep(S3_UPLOAD_VERIFY_INTERVAL_SECONDS)
 
     def _rewrite_url_base(self, url: str, endpoint: Optional[str]) -> str:
         """
@@ -150,17 +284,45 @@ class MinIOClient:
             scheme=parsed_endpoint.scheme,
             netloc=parsed_endpoint.netloc,
         ))
+
+    def _ensure_browser_upload_cors(self, bucket_name: str) -> None:
+        """Allow browser presigned uploads to the shared bucket when supported."""
+        if bucket_name in self._cors_checked_buckets:
+            return
+
+        try:
+            self.s3_client.put_bucket_cors(
+                Bucket=bucket_name,
+                CORSConfiguration={
+                    "CORSRules": [
+                        {
+                            "AllowedMethods": ["GET", "PUT", "POST", "HEAD", "DELETE"],
+                            "AllowedOrigins": ["*"],
+                            "AllowedHeaders": ["*"],
+                            "ExposeHeaders": ["ETag"],
+                            "MaxAgeSeconds": 3600,
+                        }
+                    ]
+                },
+            )
+            self._cors_checked_buckets.add(bucket_name)
+        except Exception as e:
+            self._logger.warning(
+                "Could not apply browser upload CORS policy to bucket '%s': %s",
+                bucket_name,
+                e,
+            )
     
     def ensure_user_bucket(self, user_id: int, username: Optional[str] = None) -> str:
         """
-        Ensure a user's bucket exists, creating it if necessary.
+        Ensure the shared storage bucket exists, creating it if necessary.
         
         Args:
             user_id: User ID
             username: Optional username (for backward compatibility)
         
         Returns:
-            str: Bucket name
+            str: Shared bucket name
         
         Raises:
             RuntimeError: If bucket creation fails
@@ -172,6 +334,7 @@ class MinIOClient:
             try:
                 self.s3_client.head_bucket(Bucket=bucket_name)
                 self._logger.debug(f"Bucket '{bucket_name}' already exists")
+                self._ensure_browser_upload_cors(bucket_name)
                 return bucket_name
             except ClientError as e:
                 error_code = e.response.get('Error', {}).get('Code', '')
@@ -189,12 +352,15 @@ class MinIOClient:
             if minio_config.endpoint:
                 self.s3_client.create_bucket(Bucket=bucket_name)
             else:
-                # AWS S3 - may need location constraint
+                # AWS S3 - us-east-1 is the special case that omits the location constraint.
                 try:
-                    self.s3_client.create_bucket(
-                        Bucket=bucket_name,
-                        CreateBucketConfiguration={'LocationConstraint': minio_config.region}
-                    )
+                    if minio_config.region == "us-east-1":
+                        self.s3_client.create_bucket(Bucket=bucket_name)
+                    else:
+                        self.s3_client.create_bucket(
+                            Bucket=bucket_name,
+                            CreateBucketConfiguration={'LocationConstraint': minio_config.region}
+                        )
                 except ClientError as e:
                     # If bucket already exists or other error
                     if e.response.get('Error', {}).get('Code') == 'BucketAlreadyOwnedByYou':
@@ -202,7 +368,8 @@ class MinIOClient:
                         return bucket_name
                     raise
             
-            self._logger.info(f"Created bucket '{bucket_name}' for user {user_id}")
+            self._logger.info(f"Created shared storage bucket '{bucket_name}'")
+            self._ensure_browser_upload_cors(bucket_name)
             return bucket_name
             
         except (ClientError, BotoCoreError) as e:
@@ -219,7 +386,7 @@ class MinIOClient:
         metadata: Optional[Dict[str, str]] = None
     ) -> Dict[str, Any]:
         """
-        Upload a file to user's bucket.
+        Upload a file to shared storage under the user's prefix.
         
         Args:
             user_id: User ID
@@ -239,6 +406,7 @@ class MinIOClient:
             raise FileNotFoundError(f"File not found: {local_path}")
         
         bucket_name = self.ensure_user_bucket(user_id, username)
+        object_key = self._get_object_key(user_id, s3_key)
         
         # Calculate file size and checksum
         file_size = os.path.getsize(local_path)
@@ -249,24 +417,35 @@ class MinIOClient:
             if metadata:
                 extra_args['Metadata'] = metadata
             
+            transfer_config = TransferConfig(
+                multipart_threshold=S3_MULTIPART_THRESHOLD_BYTES,
+                multipart_chunksize=S3_MULTIPART_CHUNK_BYTES,
+                max_concurrency=4,
+                use_threads=True,
+            )
+
             self.s3_client.upload_file(
                 local_path,
                 bucket_name,
-                s3_key,
-                ExtraArgs=extra_args
+                object_key,
+                ExtraArgs=extra_args,
+                Config=transfer_config,
             )
+            head = self._wait_for_uploaded_object(bucket_name, object_key, file_size)
             
             self._logger.info(
-                f"Uploaded file '{s3_key}' to bucket '{bucket_name}' "
+                f"Uploaded file '{s3_key}' to shared bucket '{bucket_name}' as '{object_key}' "
                 f"(size: {file_size} bytes, checksum: {checksum})"
             )
             
             return {
                 'bucket': bucket_name,
                 'key': s3_key,
+                'object_key': object_key,
                 'size': file_size,
                 'checksum': checksum,
-                'path': local_path
+                'path': local_path,
+                'etag': str(head.get('ETag', '')).strip('"') if head else None,
             }
             
         except (ClientError, BotoCoreError) as e:
@@ -282,7 +461,7 @@ class MinIOClient:
         username: Optional[str] = None
     ) -> str:
         """
-        Download a file from user's bucket.
+        Download a file from shared storage, with a legacy per-user-bucket fallback.
         
         Args:
             user_id: User ID
@@ -296,27 +475,31 @@ class MinIOClient:
         Raises:
             RuntimeError: If download fails
         """
-        bucket_name = self._get_bucket_name(user_id, username)
-        
         try:
             # Ensure directory exists
             os.makedirs(os.path.dirname(local_path) if os.path.dirname(local_path) else '.', exist_ok=True)
-            
-            self.s3_client.download_file(bucket_name, s3_key, local_path)
-            
-            self._logger.info(f"Downloaded file '{s3_key}' from bucket '{bucket_name}' to '{local_path}'")
-            return local_path
-            
-        except ClientError as e:
-            error_code = e.response.get('Error', {}).get('Code', '')
-            if error_code == 'NoSuchKey':
-                raise RuntimeError(f"File '{s3_key}' not found in bucket '{bucket_name}'")
-            elif error_code == 'NoSuchBucket':
-                raise RuntimeError(f"Bucket '{bucket_name}' not found")
-            else:
-                error_msg = f"Failed to download file '{s3_key}': {e}"
-                self._logger.error(error_msg)
-                raise RuntimeError(error_msg)
+
+            last_error: Optional[Exception] = None
+            for bucket_name, object_key in self._get_read_locations(user_id, s3_key, username):
+                try:
+                    self.s3_client.download_file(bucket_name, object_key, local_path)
+                    self._logger.info(
+                        f"Downloaded file '{s3_key}' from bucket '{bucket_name}' "
+                        f"(object key '{object_key}') to '{local_path}'"
+                    )
+                    return local_path
+                except ClientError as e:
+                    error_code = e.response.get('Error', {}).get('Code', '')
+                    if error_code in {'404', 'NoSuchKey', 'NoSuchBucket', 'NotFound'}:
+                        last_error = e
+                        continue
+                    error_msg = f"Failed to download file '{s3_key}': {e}"
+                    self._logger.error(error_msg)
+                    raise RuntimeError(error_msg)
+
+            raise RuntimeError(
+                f"File '{s3_key}' not found in shared storage for user {user_id}"
+            ) from last_error
         except (BotoCoreError, OSError) as e:
             error_msg = f"Failed to download file '{s3_key}': {e}"
             self._logger.error(error_msg)
@@ -330,7 +513,7 @@ class MinIOClient:
         max_keys: int = 1000
     ) -> List[Dict[str, Any]]:
         """
-        List files in user's bucket.
+        List files in shared storage for a user, with legacy-bucket compatibility.
         
         Args:
             user_id: User ID
@@ -344,42 +527,66 @@ class MinIOClient:
         Raises:
             RuntimeError: If listing fails
         """
-        bucket_name = self._get_bucket_name(user_id, username)
-        
         try:
-            paginator = self.s3_client.get_paginator('list_objects_v2')
-            pages = paginator.paginate(
-                Bucket=bucket_name,
-                Prefix=prefix or '',
-                MaxKeys=max_keys
-            )
-            
             files = []
-            for page in pages:
-                if 'Contents' in page:
-                    for obj in page['Contents']:
-                        files.append({
-                            'key': obj['Key'],
-                            'size': obj['Size'],
-                            'last_modified': obj['LastModified'].isoformat(),
-                            'etag': obj['ETag'].strip('"')
-                        })
-            
-            self._logger.debug(f"Listed {len(files)} files from bucket '{bucket_name}' with prefix '{prefix}'")
+            seen_keys = set()
+            paginator = self.s3_client.get_paginator('list_objects_v2')
+            shared_bucket = self._get_bucket_name(user_id, username)
+            shared_prefix = self._get_object_key(user_id, prefix or "")
+            legacy_bucket = self._get_legacy_bucket_name(user_id, username)
+            candidate_locations = [
+                (shared_bucket, shared_prefix, True),
+                (legacy_bucket, self._normalize_s3_key(prefix or ""), False),
+            ]
+
+            for bucket_name, key_prefix, is_shared_layout in candidate_locations:
+                try:
+                    pages = paginator.paginate(
+                        Bucket=bucket_name,
+                        Prefix=key_prefix,
+                        MaxKeys=max_keys
+                    )
+                    for page in pages:
+                        if 'Contents' not in page:
+                            continue
+                        for obj in page['Contents']:
+                            logical_key = (
+                                self._strip_user_prefix(user_id, obj['Key'])
+                                if is_shared_layout
+                                else obj['Key']
+                            )
+                            if logical_key in seen_keys:
+                                continue
+                            seen_keys.add(logical_key)
+                            files.append({
+                                'key': logical_key,
+                                'size': obj['Size'],
+                                'last_modified': obj['LastModified'].isoformat(),
+                                'etag': obj['ETag'].strip('"')
+                            })
+                except ClientError as e:
+                    error_code = e.response.get('Error', {}).get('Code', '')
+                    if error_code == 'NoSuchBucket':
+                        continue
+                    raise
+
+            self._logger.debug(
+                f"Listed {len(files)} files for user {user_id} with logical prefix '{prefix or ''}'"
+            )
             return files
             
         except ClientError as e:
             error_code = e.response.get('Error', {}).get('Code', '')
             if error_code == 'NoSuchBucket':
                 # Bucket doesn't exist, return empty list
-                self._logger.debug(f"Bucket '{bucket_name}' does not exist, returning empty list")
+                self._logger.debug(f"No storage bucket exists yet for user {user_id}, returning empty list")
                 return []
             else:
-                error_msg = f"Failed to list files in bucket '{bucket_name}': {e}"
+                error_msg = f"Failed to list files for user {user_id}: {e}"
                 self._logger.error(error_msg)
                 raise RuntimeError(error_msg)
         except BotoCoreError as e:
-            error_msg = f"Failed to list files in bucket '{bucket_name}': {e}"
+            error_msg = f"Failed to list files for user {user_id}: {e}"
             self._logger.error(error_msg)
             raise RuntimeError(error_msg)
     
@@ -390,7 +597,7 @@ class MinIOClient:
         username: Optional[str] = None
     ) -> bool:
         """
-        Delete a file from user's bucket.
+        Delete a file from shared storage and any legacy per-user bucket copy.
         
         Args:
             user_id: User ID
@@ -403,22 +610,22 @@ class MinIOClient:
         Raises:
             RuntimeError: If deletion fails
         """
-        bucket_name = self._get_bucket_name(user_id, username)
-        
         try:
-            self.s3_client.delete_object(Bucket=bucket_name, Key=s3_key)
-            self._logger.info(f"Deleted file '{s3_key}' from bucket '{bucket_name}'")
-            return True
-            
-        except ClientError as e:
-            error_code = e.response.get('Error', {}).get('Code', '')
-            if error_code == 'NoSuchKey':
-                self._logger.warning(f"File '{s3_key}' not found in bucket '{bucket_name}'")
-                return False
-            else:
-                error_msg = f"Failed to delete file '{s3_key}': {e}"
-                self._logger.error(error_msg)
-                raise RuntimeError(error_msg)
+            deleted_any = False
+            for bucket_name, object_key in self._get_read_locations(user_id, s3_key, username):
+                try:
+                    if not self._head_object(bucket_name, object_key):
+                        continue
+                    self.s3_client.delete_object(Bucket=bucket_name, Key=object_key)
+                    deleted_any = True
+                    self._logger.info(
+                        f"Deleted file '{s3_key}' from bucket '{bucket_name}' (object key '{object_key}')"
+                    )
+                except ClientError as e:
+                    error_msg = f"Failed to delete file '{s3_key}': {e}"
+                    self._logger.error(error_msg)
+                    raise RuntimeError(error_msg)
+            return deleted_any
         except BotoCoreError as e:
             error_msg = f"Failed to delete file '{s3_key}': {e}"
             self._logger.error(error_msg)
@@ -431,37 +638,51 @@ class MinIOClient:
         username: Optional[str] = None,
     ) -> int:
         """
-        Delete every object under a prefix in a user's bucket.
+        Delete every object under a prefix in shared storage and any legacy bucket.
 
         This is used for job cleanup so partial uploads or outputs that do not
         have database records are removed with the rest of the job.
         """
-        bucket_name = self._get_bucket_name(user_id, username)
         deleted_count = 0
 
         try:
             paginator = self.s3_client.get_paginator("list_objects_v2")
-            for page in paginator.paginate(Bucket=bucket_name, Prefix=prefix):
-                objects = [{"Key": obj["Key"]} for obj in page.get("Contents", [])]
-                if not objects:
-                    continue
+            shared_bucket = self._get_bucket_name(user_id, username)
+            shared_prefix = self._get_object_key(user_id, prefix)
+            legacy_bucket = self._get_legacy_bucket_name(user_id, username)
+            candidate_locations = [
+                (shared_bucket, shared_prefix),
+                (legacy_bucket, self._normalize_s3_key(prefix)),
+            ]
 
-                self.s3_client.delete_objects(
-                    Bucket=bucket_name,
-                    Delete={"Objects": objects, "Quiet": True},
-                )
-                deleted_count += len(objects)
+            for bucket_name, key_prefix in candidate_locations:
+                try:
+                    for page in paginator.paginate(Bucket=bucket_name, Prefix=key_prefix):
+                        objects = [{"Key": obj["Key"]} for obj in page.get("Contents", [])]
+                        if not objects:
+                            continue
+
+                        self.s3_client.delete_objects(
+                            Bucket=bucket_name,
+                            Delete={"Objects": objects, "Quiet": True},
+                        )
+                        deleted_count += len(objects)
+                except ClientError as e:
+                    error_code = e.response.get("Error", {}).get("Code", "")
+                    if error_code == "NoSuchBucket":
+                        continue
+                    raise
 
             if deleted_count:
                 self._logger.info(
-                    f"Deleted {deleted_count} object(s) under prefix '{prefix}' from bucket '{bucket_name}'"
+                    f"Deleted {deleted_count} object(s) under logical prefix '{prefix}' for user {user_id}"
                 )
             return deleted_count
 
         except ClientError as e:
             error_code = e.response.get("Error", {}).get("Code", "")
             if error_code == "NoSuchBucket":
-                self._logger.debug(f"Bucket '{bucket_name}' does not exist, nothing to delete")
+                self._logger.debug(f"No storage bucket exists yet for user {user_id}, nothing to delete")
                 return 0
 
             error_msg = f"Failed to delete objects under prefix '{prefix}': {e}"
@@ -498,30 +719,36 @@ class MinIOClient:
         Raises:
             RuntimeError: If URL generation fails
         """
-        bucket_name = self._get_bucket_name(user_id, username)
-        
         try:
-            params = {'Bucket': bucket_name, 'Key': s3_key}
+            resolved_location = self._resolve_existing_location(user_id, s3_key, username)
+            if resolved_location:
+                bucket_name, object_key = resolved_location
+            else:
+                bucket_name, object_key = self._get_primary_storage_location(user_id, s3_key, username)
+
+            params = {'Bucket': bucket_name, 'Key': object_key}
             if response_content_disposition and http_method.upper() == 'GET':
                 params['ResponseContentDisposition'] = response_content_disposition
 
             presign_client = self.s3_client
             minio_config = self._config.minio
             if minio_config.public_endpoint and minio_config.public_endpoint != minio_config.endpoint:
-                presign_client = boto3.client(
-                    's3',
-                    aws_access_key_id=minio_config.access_key,
-                    aws_secret_access_key=minio_config.secret_key,
-                    region_name=minio_config.region,
-                    endpoint_url=minio_config.public_endpoint,
-                    config=Config(
+                public_client_kwargs = {
+                    'service_name': 's3',
+                    'region_name': minio_config.region,
+                    'endpoint_url': minio_config.public_endpoint,
+                    'config': Config(
                         signature_version='s3v4',
                         retries={'max_attempts': 3, 'mode': 'standard'},
-                        connect_timeout=10,
-                        read_timeout=10,
-                        max_pool_connections=10
+                        connect_timeout=S3_CONNECT_TIMEOUT_SECONDS,
+                        read_timeout=S3_READ_TIMEOUT_SECONDS,
+                        max_pool_connections=25
                     ),
-                )
+                }
+                if minio_config.access_key and minio_config.secret_key:
+                    public_client_kwargs['aws_access_key_id'] = minio_config.access_key
+                    public_client_kwargs['aws_secret_access_key'] = minio_config.secret_key
+                presign_client = boto3.client(**public_client_kwargs)
 
             url = presign_client.generate_presigned_url(
                 'get_object' if http_method.upper() == 'GET' else 'put_object',
@@ -554,15 +781,9 @@ class MinIOClient:
         Returns:
             bool: True if file exists, False otherwise
         """
-        bucket_name = self._get_bucket_name(user_id, username)
-        
         try:
-            self.s3_client.head_object(Bucket=bucket_name, Key=s3_key)
-            return True
+            return self._resolve_existing_location(user_id, s3_key, username) is not None
         except ClientError as e:
-            error_code = e.response.get('Error', {}).get('Code', '')
-            if error_code == '404':
-                return False
             # Other errors, log and return False
             self._logger.warning(f"Error checking file existence for '{s3_key}': {e}")
             return False
@@ -586,10 +807,13 @@ class MinIOClient:
         Returns:
             dict: File metadata (size, last_modified, etag, content_type) or None if not found
         """
-        bucket_name = self._get_bucket_name(user_id, username)
-        
         try:
-            response = self.s3_client.head_object(Bucket=bucket_name, Key=s3_key)
+            resolved_location = self._resolve_existing_location(user_id, s3_key, username)
+            if not resolved_location:
+                return None
+
+            bucket_name, object_key = resolved_location
+            response = self.s3_client.head_object(Bucket=bucket_name, Key=object_key)
             return {
                 'key': s3_key,
                 'size': response['ContentLength'],

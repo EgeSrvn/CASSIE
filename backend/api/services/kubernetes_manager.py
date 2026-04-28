@@ -293,6 +293,10 @@ class KubernetesPipelineRunner:
                     spec["tool_plan"] = tool_plan
 
                     fits_budget = self._fits_job_budget(job_budget, reserved, tool_plan)
+                    if not fits_budget and not running_stages and not launched_any:
+                        tool_plan = self._single_stage_schedulable_plan(job_budget, reserved, tool_plan)
+                        spec["tool_plan"] = tool_plan
+
                     if fits_budget or (not running_stages and not launched_any):
                         stage_job_name = self._make_job_name(job_id, execution_id, spec["stage_number"], spec["tool"]["id"])
                         stage_info["status"] = "running"
@@ -528,6 +532,12 @@ class KubernetesPipelineRunner:
             "timeout expired",
         )
         if any(marker in normalized for marker in timeout_markers):
+            if "kubectl command timed out" in normalized:
+                return (
+                    f"{prefix}the backend took too long waiting for a Kubernetes response while this stage was starting. "
+                    "Refresh the job details in a moment and retry only if the stage never begins."
+                    f"{detail}"
+                )
             return (
                 f"{prefix}the Kubernetes stage exceeded the configured execution timeout. "
                 "CASSIE is now configured to allow unlimited runtime by default, so retry the job after restarting the backend."
@@ -1755,6 +1765,36 @@ class KubernetesPipelineRunner:
             )
         )
 
+    def _single_stage_schedulable_plan(
+        self,
+        job_budget: Dict[str, int],
+        reserved: Dict[str, int],
+        tool_plan: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        adjusted = dict(tool_plan)
+        resources = dict(tool_plan.get("resources") or {})
+        requests = dict(resources.get("requests") or {})
+        resources["requests"] = requests
+        adjusted["resources"] = resources
+
+        available_cpu_millis = max(50, job_budget["cpu_millis"] - reserved["cpu_millis"])
+        available_memory_mib = max(256, job_budget["memory_mib"] - reserved["memory_mib"])
+        available_storage_mib = max(0, job_budget.get("storage_mib", 0) - reserved["storage_mib"])
+
+        requested_cpu_millis = self._parse_cpu_quantity(str(requests.get("cpu") or "0"))
+        requested_memory_mib = self._parse_memory_quantity_mib(str(requests.get("memory") or "0"))
+        requested_storage_mib = self._parse_memory_quantity_mib(str(requests.get("ephemeral-storage") or "0"))
+
+        if requested_cpu_millis <= 0 or requested_cpu_millis > available_cpu_millis:
+            requests["cpu"] = self._format_cpu_quantity(available_cpu_millis)
+        if requested_memory_mib <= 0 or requested_memory_mib > available_memory_mib:
+            requests["memory"] = f"{available_memory_mib}Mi"
+        if available_storage_mib > 0 and (requested_storage_mib <= 0 or requested_storage_mib > available_storage_mib):
+            requests["ephemeral-storage"] = f"{available_storage_mib}Mi"
+
+        adjusted["scheduler_request_adjusted"] = True
+        return adjusted
+
     def _reserve_plan_resources(
         self,
         reserved: Dict[str, int],
@@ -1845,14 +1885,31 @@ class KubernetesPipelineRunner:
                 tool=tool,
                 current_inputs=current_inputs,
             )
+            self._capture_stage_logs(stage_info, stage_job_name, pod_name=pod_name)
+            log_artifacts = self._upload_stage_log_artifacts(
+                stage_info=stage_info,
+                job_id=job_id,
+                execution_id=execution_id,
+                user_id=user_id,
+                stage_number=stage_number,
+                tool=tool,
+            )
+            if log_artifacts:
+                stage_outputs.extend(log_artifacts)
 
             return stage_outputs
         except Exception:
             self._capture_stage_logs(stage_info, stage_job_name, pod_name=pod_name)
+            self._upload_stage_log_artifacts(
+                stage_info=stage_info,
+                job_id=job_id,
+                execution_id=execution_id,
+                user_id=user_id,
+                stage_number=stage_number,
+                tool=tool,
+            )
             raise
         finally:
-            if stage_info.get("status") == "completed":
-                self._capture_stage_logs(stage_info, stage_job_name, pod_name=pod_name)
             try:
                 os.unlink(temp_manifest.name)
             except Exception:
@@ -1875,8 +1932,8 @@ class KubernetesPipelineRunner:
         config = self._config
         namespace = config.kubernetes.namespace
         minio_client = get_minio_client()
-        bucket_name = minio_client.ensure_user_bucket(user_id=user_id)
-        download_script = self._build_init_download_script(bucket_name, current_inputs)
+        minio_client.ensure_user_bucket(user_id=user_id)
+        download_script = self._build_init_download_script(minio_client, user_id, current_inputs)
         tool_plan = tool_plan or self._plan_tool_resources(tool["id"], current_inputs, vm_name=vm_name)
         raw_tool_script = self._build_tool_script(tool, current_inputs, tool_plan, tool_config=tool_config)
         tool_script = self._wrap_tool_script_with_resource_capture(raw_tool_script)
@@ -1978,16 +2035,45 @@ class KubernetesPipelineRunner:
             },
         }
 
-    def _build_init_download_script(self, bucket_name: str, current_inputs: List[Dict[str, Any]]) -> str:
+    def _build_init_download_script(
+        self,
+        minio_client,
+        user_id: int,
+        current_inputs: List[Dict[str, Any]],
+    ) -> str:
         lines = [
             "set -euo pipefail",
             "mkdir -p /workspace/input /workspace/output",
+            "cassie_s3_cp() {",
+            '  if [ -n "${S3_ENDPOINT:-}" ]; then',
+            '    aws --endpoint-url "$S3_ENDPOINT" s3 cp "$1" "$2"',
+            "  else",
+            '    aws s3 cp "$1" "$2"',
+            "  fi",
+            "}",
         ]
         for artifact in current_inputs:
-            s3_key = artifact["s3_key"].replace('"', '\\"')
             filename = os.path.basename(artifact["filename"]).replace('"', '\\"')
-            lines.append(
-                f'aws --endpoint-url "$S3_ENDPOINT" s3 cp "s3://{bucket_name}/{s3_key}" "/workspace/input/{filename}"'
+            destination = f'/workspace/input/{filename}'
+            lines.append("downloaded=0")
+            for location in minio_client.get_read_locations(user_id=user_id, s3_key=artifact["s3_key"]):
+                bucket_name = location["bucket"].replace('"', '\\"')
+                object_key = location["key"].replace('"', '\\"')
+                lines.extend(
+                    [
+                        f'if [ "$downloaded" -ne 1 ] && cassie_s3_cp "s3://{bucket_name}/{object_key}" "{destination}"; then',
+                        "  downloaded=1",
+                        "fi",
+                    ]
+                )
+            original_key = str(artifact["s3_key"]).replace('"', '\\"')
+            lines.extend(
+                [
+                    'if [ "$downloaded" -ne 1 ]; then',
+                    f'  echo "Failed to download input {original_key} for user {user_id}" >&2',
+                    "  exit 1",
+                    "fi",
+                ]
             )
         return "\n".join(lines)
 
@@ -2562,8 +2648,8 @@ exit "$CASSIE_STATUS"
     ) -> Dict[str, Any]:
         """Choose the strongest safe tool profile for the current cluster."""
         capacity = self._detect_effective_cluster_capacity(vm_name=vm_name)
-        cpu_millis = max(250, capacity["cpu_millis"])
-        memory_mib = max(768, capacity["memory_mib"])
+        cpu_millis = max(1, capacity["cpu_millis"])
+        memory_mib = max(1, capacity["memory_mib"])
         tool_memory_budget_mib = memory_mib
         whole_cpus = max(1, cpu_millis // 1000)
         resource_mode = os.getenv("CASSIE_RESOURCE_MODE", "adaptive").strip().lower()
@@ -2606,7 +2692,7 @@ exit "$CASSIE_STATUS"
                 threads=threads,
                 memory_gb=memory_gb,
                 memory_limit_mib=memory_limit,
-                cpu_limit_millis=min(max(250, threads * 500), max(250, cpu_millis)),
+                cpu_limit_millis=min(max(250, threads * 500), max(1, cpu_millis)),
                 low_resource=low_resource,
                 kmers=kmers,
                 input_size_mib=input_size_mib,
@@ -2627,7 +2713,7 @@ exit "$CASSIE_STATUS"
                 threads=threads,
                 memory_gb=memory_gb,
                 memory_limit_mib=memory_limit,
-                cpu_limit_millis=min(max(250, threads * 500), max(250, cpu_millis)),
+                cpu_limit_millis=min(max(250, threads * 500), max(1, cpu_millis)),
                 low_resource=low_resource,
                 kmers="",
                 input_size_mib=input_size_mib,
@@ -2645,7 +2731,7 @@ exit "$CASSIE_STATUS"
                 threads=requested_threads,
                 memory_gb=requested_memory_gb,
                 memory_limit_mib=memory_limit,
-                cpu_limit_millis=min(max(250, requested_threads * 500), max(250, cpu_millis)),
+                cpu_limit_millis=min(max(250, requested_threads * 500), max(1, cpu_millis)),
                 low_resource=memory_mib < 4096,
                 kmers="",
                 input_size_mib=input_size_mib,
@@ -2664,7 +2750,7 @@ exit "$CASSIE_STATUS"
                 threads=requested_threads,
                 memory_gb=requested_memory_gb,
                 memory_limit_mib=memory_limit,
-                cpu_limit_millis=min(max(250, requested_threads * 500), max(250, cpu_millis)),
+                cpu_limit_millis=min(max(250, requested_threads * 500), max(1, cpu_millis)),
                 low_resource=memory_mib < 4096,
                 kmers="",
                 input_size_mib=input_size_mib,
@@ -2685,7 +2771,7 @@ exit "$CASSIE_STATUS"
                 threads=threads,
                 memory_gb=memory_gb,
                 memory_limit_mib=memory_limit,
-                cpu_limit_millis=min(max(500, threads * 750), max(250, cpu_millis)),
+                cpu_limit_millis=min(max(500, threads * 750), max(1, cpu_millis)),
                 low_resource=low_resource,
                 kmers="",
                 input_size_mib=input_size_mib,
@@ -2706,7 +2792,7 @@ exit "$CASSIE_STATUS"
                 threads=threads,
                 memory_gb=memory_gb,
                 memory_limit_mib=memory_limit,
-                cpu_limit_millis=min(max(500, threads * 750), max(250, cpu_millis)),
+                cpu_limit_millis=min(max(500, threads * 750), max(1, cpu_millis)),
                 low_resource=low_resource,
                 kmers="",
                 input_size_mib=input_size_mib,
@@ -2723,7 +2809,7 @@ exit "$CASSIE_STATUS"
                 threads=threads,
                 memory_gb=memory_gb,
                 memory_limit_mib=memory_limit,
-                cpu_limit_millis=min(max(250, threads * 500), max(250, cpu_millis)),
+                cpu_limit_millis=min(max(250, threads * 500), max(1, cpu_millis)),
                 low_resource=memory_mib < 4096,
                 kmers="",
                 input_size_mib=input_size_mib,
@@ -2744,7 +2830,7 @@ exit "$CASSIE_STATUS"
                 threads=threads,
                 memory_gb=memory_gb,
                 memory_limit_mib=memory_limit,
-                cpu_limit_millis=min(max(500, threads * 500), max(250, cpu_millis)),
+                cpu_limit_millis=min(max(500, threads * 500), max(1, cpu_millis)),
                 low_resource=low_resource,
                 kmers="",
                 input_size_mib=input_size_mib,
@@ -2761,7 +2847,7 @@ exit "$CASSIE_STATUS"
                 threads=threads,
                 memory_gb=memory_gb,
                 memory_limit_mib=memory_limit,
-                cpu_limit_millis=min(max(250, threads * 500), max(250, cpu_millis)),
+                cpu_limit_millis=min(max(250, threads * 500), max(1, cpu_millis)),
                 low_resource=memory_mib < 4096,
                 kmers="",
                 input_size_mib=input_size_mib,
@@ -2778,7 +2864,7 @@ exit "$CASSIE_STATUS"
                 threads=threads,
                 memory_gb=memory_gb,
                 memory_limit_mib=memory_limit,
-                cpu_limit_millis=min(max(250, threads * 500), max(250, cpu_millis)),
+                cpu_limit_millis=min(max(250, threads * 500), max(1, cpu_millis)),
                 low_resource=memory_mib < 4096,
                 kmers="",
                 input_size_mib=input_size_mib,
@@ -2795,7 +2881,7 @@ exit "$CASSIE_STATUS"
             threads=requested_threads,
             memory_gb=requested_memory_gb,
             memory_limit_mib=memory_limit,
-            cpu_limit_millis=min(max(250, requested_threads * 500), max(250, cpu_millis)),
+            cpu_limit_millis=min(max(250, requested_threads * 500), max(1, cpu_millis)),
             low_resource=False,
             kmers="",
             input_size_mib=input_size_mib,
@@ -2832,7 +2918,13 @@ exit "$CASSIE_STATUS"
             capacity["memory_mib"],
             max(768, memory_limit_mib, input_size_mib + 384),
         )
-        init_memory_request = f"{init_memory_limit_mib}Mi"
+        init_memory_request_mib = self._init_memory_request_mib(
+            tool_id=tool_id,
+            memory_limit_mib=memory_limit_mib,
+            init_memory_limit_mib=init_memory_limit_mib,
+            capacity=capacity,
+        )
+        init_memory_request = f"{init_memory_request_mib}Mi"
         cpu_limit = self._env_value_or_default(f"{prefix}_CPU_LIMIT", self._format_cpu_quantity(cpu_limit_millis))
         memory_limit = self._env_value_or_default(f"{prefix}_MEMORY_LIMIT", f"{memory_limit_mib}Mi")
         storage_limit = self._env_value_or_default(f"{prefix}_STORAGE_LIMIT", f"{storage_limit_mib}Mi")
@@ -2853,6 +2945,7 @@ exit "$CASSIE_STATUS"
             "storage_request_mib": storage_request_mib,
             "init_storage_request_mib": init_storage_request_mib,
             "init_memory_limit_mib": init_memory_limit_mib,
+            "init_memory_request_mib": init_memory_request_mib,
             "init_memory_request": init_memory_request,
             "storage_constrained": storage_limit_mib < self._estimated_required_storage_mib(
                 tool_id, input_size_mib, low_resource
@@ -2931,9 +3024,28 @@ exit "$CASSIE_STATUS"
         if cluster_storage_mib <= 0:
             return max(required_mib, 4096)
 
-        reserve_mib = self._env_int("CASSIE_CLUSTER_STORAGE_RESERVE_MIB") or 2048
-        max_workspace_mib = max(1024, cluster_storage_mib - reserve_mib)
+        max_workspace_mib = max(1024, cluster_storage_mib)
         return min(max_workspace_mib, max(required_mib, 1024))
+
+    def _init_memory_request_mib(
+        self,
+        tool_id: str,
+        memory_limit_mib: int,
+        init_memory_limit_mib: int,
+        capacity: Dict[str, int],
+    ) -> int:
+        prefix = tool_id.upper()
+        explicit_request = self._env_int(f"{prefix}_INIT_MEMORY_REQUEST_MIB") or self._env_int(
+            "CASSIE_INIT_MEMORY_REQUEST_MIB"
+        )
+        if explicit_request > 0:
+            requested_mib = explicit_request
+        else:
+            requested_mib = min(512, max(256, memory_limit_mib // 8))
+
+        reserve_mib = self._env_int("CASSIE_CLUSTER_MEMORY_RESERVE_MIB") or 256
+        schedulable_mib = max(128, capacity["memory_mib"] - reserve_mib)
+        return max(128, min(requested_mib, init_memory_limit_mib, schedulable_mib))
 
     def _genomescope_hash_size(self, memory_limit_mib: int) -> str:
         if memory_limit_mib >= 4096:
@@ -2995,16 +3107,33 @@ exit "$CASSIE_STATUS"
             return cluster_capacity
 
         selected_partition = get_vm_partition(vm_name) or partitions[0]
-        partition_count = max(1, len(partitions))
-        max_jobs = max(1, selected_partition.max_jobs)
+        vm_count = max(1, len(partitions))
+        partition_count = max(1, selected_partition.max_jobs)
+
+        cluster_storage_mib = max(0, cluster_capacity.get("storage_mib", 0))
+        storage_reserve_mib = min(
+            cluster_storage_mib,
+            self._env_int("CASSIE_CLUSTER_STORAGE_RESERVE_MIB") or 2048,
+        )
+        usable_storage_mib = max(0, cluster_storage_mib - storage_reserve_mib)
+
+        vm_cpu_millis = max(0, cluster_capacity["cpu_millis"] // vm_count)
+        vm_memory_mib = max(0, cluster_capacity["memory_mib"] // vm_count)
+        vm_storage_mib = usable_storage_mib // vm_count if usable_storage_mib > 0 else 0
 
         partition_capacity = dict(cluster_capacity)
-        partition_capacity["cpu_millis"] = max(250, cluster_capacity["cpu_millis"] // partition_count // max_jobs)
-        partition_capacity["memory_mib"] = max(768, cluster_capacity["memory_mib"] // partition_count // max_jobs)
+        partition_capacity["vm_count"] = vm_count
+        partition_capacity["vm_cpu_millis"] = vm_cpu_millis
+        partition_capacity["vm_memory_mib"] = vm_memory_mib
+        partition_capacity["vm_storage_mib"] = vm_storage_mib
+        partition_capacity["partition_count"] = partition_count
+        partition_capacity["cpu_millis"] = max(1, vm_cpu_millis // partition_count)
+        partition_capacity["memory_mib"] = max(1, vm_memory_mib // partition_count)
 
-        storage_mib = cluster_capacity.get("storage_mib", 0)
-        if storage_mib > 0:
-            partition_capacity["storage_mib"] = max(1024, storage_mib // partition_count // max_jobs)
+        if usable_storage_mib > 0:
+            partition_capacity["storage_mib"] = max(1, vm_storage_mib // partition_count)
+        else:
+            partition_capacity["storage_mib"] = 0
         return partition_capacity
 
     def get_vm_capacity_summary(self) -> List[Dict[str, Any]]:
@@ -3025,6 +3154,11 @@ exit "$CASSIE_STATUS"
                     "running_jobs": slot_usage["running_jobs"],
                     "active_jobs": slot_usage.get("active_jobs", slot_usage["running_jobs"]),
                     "available_job_slots": slot_usage["available_job_slots"],
+                    "vm_count": capacity.get("vm_count", len(get_vm_partitions())),
+                    "partition_count": capacity.get("partition_count", partition.max_jobs),
+                    "vm_cpu_millis": capacity.get("vm_cpu_millis", 0),
+                    "vm_memory_mib": capacity.get("vm_memory_mib", 0),
+                    "vm_storage_mib": capacity.get("vm_storage_mib", 0),
                     "available_cpu_millis": capacity["cpu_millis"],
                     "available_memory_mib": capacity["memory_mib"],
                     "available_storage_mib": capacity.get("storage_mib", 0),
@@ -3258,9 +3392,12 @@ exit "$CASSIE_STATUS"
             if pod_name:
                 pod_result = self._run_kubectl(
                     ["get", "pod", pod_name, "-n", namespace, "-o", "json"],
-                    timeout=20,
+                    timeout=60,
                 )
                 if pod_result.returncode != 0:
+                    if "timed out" in (pod_result.stderr or "").lower():
+                        time.sleep(poll_interval)
+                        continue
                     raise RuntimeError(
                         f"Failed to fetch Kubernetes pod status for {pod_name}: {pod_result.stderr.strip()}"
                     )
@@ -3349,9 +3486,12 @@ exit "$CASSIE_STATUS"
 
             status_result = self._run_kubectl(
                 ["get", "job", job_name, "-n", namespace, "-o", "json"],
-                timeout=20,
+                timeout=60,
             )
             if status_result.returncode != 0:
+                if "timed out" in (status_result.stderr or "").lower():
+                    time.sleep(poll_interval)
+                    continue
                 raise RuntimeError(f"Failed to fetch Kubernetes Job status for {job_name}: {status_result.stderr.strip()}")
 
             payload = json.loads(status_result.stdout)
@@ -3373,7 +3513,7 @@ exit "$CASSIE_STATUS"
         namespace = self._config.kubernetes.namespace
         result = self._run_kubectl(
             ["get", "pods", "-n", namespace, "-l", f"job-name={job_name}", "-o", "json"],
-            timeout=20,
+            timeout=60,
         )
         if result.returncode != 0:
             return ""
@@ -3538,6 +3678,71 @@ exit "$CASSIE_STATUS"
             shutil.rmtree(Path(local_output_dir).parent, ignore_errors=True)
 
         return stage_outputs
+
+    def _upload_stage_log_artifacts(
+        self,
+        *,
+        stage_info: Dict[str, Any],
+        job_id: int,
+        execution_id: int,
+        user_id: int,
+        stage_number: int,
+        tool: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        if stage_info.get("_log_artifacts_uploaded"):
+            return list(stage_info.get("log_artifacts") or [])
+
+        minio_client = get_minio_client()
+        log_artifacts: List[Dict[str, Any]] = []
+        tool_slug = self._tool_output_slug(tool)
+        stage_prefix = f"stage_{stage_number:02d}_{tool_slug}"
+        log_sources = (
+            ("tool_logs_full", f"{stage_prefix}__tool.txt"),
+        )
+
+        temp_dir = Path(tempfile.mkdtemp(prefix=f"cassie-stage-logs-{job_id}-{stage_number:02d}-"))
+        try:
+            for source_key, artifact_name in log_sources:
+                log_content = str(stage_info.get(source_key) or "").strip()
+                if not log_content:
+                    continue
+
+                local_path = temp_dir / artifact_name
+                local_path.write_text(log_content + "\n", encoding="utf-8")
+                s3_key = f"jobs/{job_id}/executions/{execution_id}/{artifact_name}"
+                upload_result = minio_client.upload_file(
+                    user_id=user_id,
+                    local_path=str(local_path),
+                    s3_key=s3_key,
+                )
+                create_file_record(
+                    FileCreate(
+                        job_id=job_id,
+                        filename=artifact_name,
+                        s3_key=s3_key,
+                        file_type=FileType.LOG,
+                        file_format="txt",
+                        size_bytes=upload_result["size"],
+                        checksum=upload_result["checksum"],
+                    )
+                )
+                log_artifacts.append(
+                    {
+                        "filename": artifact_name,
+                        "s3_key": s3_key,
+                        "size_bytes": upload_result["size"],
+                        "file_format": "txt",
+                        "source": source_key,
+                        "producer_tool_id": tool["id"],
+                    }
+                )
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+        stage_info["_log_artifacts_uploaded"] = True
+        if log_artifacts:
+            stage_info["log_artifacts"] = log_artifacts
+        return log_artifacts
 
     def _stage_output_display_name(
         self,
@@ -3708,15 +3913,36 @@ exit "$CASSIE_STATUS"
         namespace = self._config.kubernetes.namespace
         result = self._run_kubectl(["logs", f"job/{job_name}", "-n", namespace, "-c", "tool"], timeout=60)
         if result.returncode != 0:
-            return result.stderr.strip()
+            stderr = result.stderr.strip()
+            if self._is_transient_log_unavailable(stderr):
+                return ""
+            return stderr
         return result.stdout
 
     def _get_pod_container_logs(self, pod_name: str, container_name: str) -> str:
         namespace = self._config.kubernetes.namespace
         result = self._run_kubectl(["logs", pod_name, "-n", namespace, "-c", container_name], timeout=60)
         if result.returncode != 0:
-            return result.stderr.strip()
+            stderr = result.stderr.strip()
+            if self._is_transient_log_unavailable(stderr):
+                return ""
+            return stderr
         return result.stdout
+
+    def _is_transient_log_unavailable(self, message: str) -> bool:
+        normalized = str(message or "").strip().lower()
+        if not normalized:
+            return True
+        return any(
+            marker in normalized
+            for marker in (
+                "podinitializing",
+                "containercreating",
+                "waiting to start",
+                "is waiting to start",
+                "no such container",
+            )
+        )
 
     def _get_stage_failure_logs(self, job_name: str) -> str:
         pod_name = self._get_job_pod_name(job_name)
@@ -3724,7 +3950,7 @@ exit "$CASSIE_STATUS"
             return self._get_job_logs(job_name)
 
         namespace = self._config.kubernetes.namespace
-        pod_result = self._run_kubectl(["get", "pod", pod_name, "-n", namespace, "-o", "json"], timeout=20)
+        pod_result = self._run_kubectl(["get", "pod", pod_name, "-n", namespace, "-o", "json"], timeout=60)
         if pod_result.returncode != 0:
             return pod_result.stderr.strip()
 
@@ -3932,7 +4158,7 @@ exit "$CASSIE_STATUS"
                 if stage_job_name:
                     job_result = self._run_kubectl(
                         ["get", "job", stage_job_name, "-n", namespace, "-o", "json"],
-                        timeout=20,
+                        timeout=60,
                     )
                     if job_result.returncode == 0:
                         try:
@@ -3963,7 +4189,7 @@ exit "$CASSIE_STATUS"
                 if pod_name:
                     pod_result = self._run_kubectl(
                         ["get", "pod", pod_name, "-n", namespace, "-o", "json"],
-                        timeout=20,
+                        timeout=60,
                     )
                     if pod_result.returncode == 0:
                         try:
@@ -3980,21 +4206,21 @@ exit "$CASSIE_STATUS"
 
                     init_logs = self._run_kubectl(
                         ["logs", pod_name, "-n", namespace, "-c", "fetch-inputs", "--tail=120"],
-                        timeout=20,
+                        timeout=60,
                     )
                     if init_logs.returncode == 0 and init_logs.stdout.strip():
                         snapshot["live_init_logs"] = init_logs.stdout[-8000:]
 
                     tool_logs = self._run_kubectl(
                         ["logs", pod_name, "-n", namespace, "-c", "tool", "--tail=200"],
-                        timeout=20,
+                        timeout=60,
                     )
                     if tool_logs.returncode == 0 and tool_logs.stdout.strip():
                         snapshot["live_tool_logs"] = tool_logs.stdout[-12000:]
                 elif stage_job_name:
                     job_logs = self._run_kubectl(
                         ["logs", f"job/{stage_job_name}", "-n", namespace, "-c", "tool", "--tail=200"],
-                        timeout=20,
+                        timeout=60,
                     )
                     if job_logs.returncode == 0 and job_logs.stdout.strip():
                         snapshot["live_tool_logs"] = job_logs.stdout[-12000:]
@@ -4084,15 +4310,23 @@ exit "$CASSIE_STATUS"
     ) -> subprocess.CompletedProcess[str]:
         cmd = ["kubectl", *args]
         self._logger.info("Running kubectl command: %s", " ".join(cmd))
-        return subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            cwd=cwd,
-            check=False,
-            env=_kubectl_env(),
-        )
+        try:
+            return subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=cwd,
+                check=False,
+                env=_kubectl_env(),
+            )
+        except subprocess.TimeoutExpired:
+            return subprocess.CompletedProcess(
+                cmd,
+                124,
+                "",
+                f"kubectl command timed out after {timeout} seconds",
+            )
 
 
 _kubernetes_runner: Optional[KubernetesPipelineRunner] = None

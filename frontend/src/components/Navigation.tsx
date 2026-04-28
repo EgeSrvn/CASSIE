@@ -15,6 +15,8 @@ export default function Navigation({ onLogout }: NavigationProps) {
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false)
   const userMenuRef = useRef<HTMLDivElement | null>(null)
 
+  const formatUsd = (value?: number | null): string => `$${Number(value || 0).toFixed(2)}`
+
   useEffect(() => {
     let isMounted = true
 
@@ -128,6 +130,15 @@ export default function Navigation({ onLogout }: NavigationProps) {
           >
             Pipelines
           </button>
+          {isAuthenticated && (
+            <button
+              type="button"
+              className={`nav-link ${isActive('/storage') ? 'active' : ''}`}
+              onClick={() => navigate('/storage')}
+            >
+              Storage
+            </button>
+          )}
           <button
             type="button"
             className={`nav-link ${isActive('/community') ? 'active' : ''}`}
@@ -146,6 +157,24 @@ export default function Navigation({ onLogout }: NavigationProps) {
 
         <div className="nav-actions">
           {isAuthenticated ? (
+            <>
+            {user && (
+              <button
+                type="button"
+                className={`nav-balance-chip ${isActive('/balance') ? 'active' : ''}`}
+                onClick={() => navigate('/balance')}
+                title={`Balance ${formatUsd(user.cash_balance_usd)}; reserved ${formatUsd(user.cash_reserved_usd)}`}
+              >
+                <span>
+                  <small>Balance</small>
+                  <strong>{formatUsd(user.cash_balance_usd)}</strong>
+                </span>
+                <span>
+                  <small>Reserved</small>
+                  <strong>{formatUsd(user.cash_reserved_usd)}</strong>
+                </span>
+              </button>
+            )}
             <div className="nav-user-menu-shell" ref={userMenuRef}>
               {user && (
                 <button
@@ -177,17 +206,11 @@ export default function Navigation({ onLogout }: NavigationProps) {
                   <button type="button" className="nav-user-menu-item" onClick={() => navigate('/profile')}>
                     Go Profile
                   </button>
-                  <button type="button" className="nav-user-menu-item" onClick={() => navigate('/contact')}>
-                    Contact
-                  </button>
                   <button type="button" className="nav-user-menu-item" onClick={() => navigate('/about')}>
                     About
                   </button>
-                  <button type="button" className="nav-user-menu-item" onClick={() => navigate('/help')}>
-                    Help
-                  </button>
-                  <button type="button" className="nav-user-menu-item" onClick={() => navigate('/tutorial')}>
-                    Tutorial
+                  <button type="button" className="nav-user-menu-item" onClick={() => navigate('/faq')}>
+                    FAQ
                   </button>
                   <button type="button" className="nav-user-menu-item nav-user-menu-item-danger" onClick={handleLogout}>
                     Logout
@@ -195,6 +218,7 @@ export default function Navigation({ onLogout }: NavigationProps) {
                 </div>
               )}
             </div>
+            </>
           ) : (
             <>
               <button 

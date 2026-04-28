@@ -68,6 +68,7 @@ export default function JobDetails() {
   const [selectedOutputIndex, setSelectedOutputIndex] = useState<number>(0)
   const [viewingFile, setViewingFile] = useState<File | null>(null)
   const [viewingFileUrl, setViewingFileUrl] = useState<string | null>(null)
+  const [viewingTextContent, setViewingTextContent] = useState<string | null>(null)
   const viewingFileUrlRef = useRef<string | null>(null)
   const [htmlZoom, setHtmlZoom] = useState<number>(0.75)
   const [, setClockTick] = useState(0)
@@ -248,7 +249,8 @@ export default function JobDetails() {
 
   // Compute files before early returns (will be empty arrays initially)
   const inputFiles = (files || []).filter(f => f && f.file_type === 'input')
-  const outputFiles = (files || []).filter(f => f && f.file_type === 'output')
+  const outputFiles = (files || []).filter(f => f && (f.file_type === 'output' || f.file_type === 'log'))
+  const logFiles = outputFiles.filter((file) => file.file_type === 'log')
   const visibleInputCount = inputFiles.length + pendingQueuedFiles.length
   const selectedVMDetails = job?.vm_name ? availableVMs.find(vm => vm.name === job.vm_name) || null : null
   const latestExecution = executions.length > 0 ? executions[0] : null
@@ -313,7 +315,9 @@ export default function JobDetails() {
       let family = 'Other'
       
       // Determine tool family based on filename patterns
-      if (filename.includes('fastqc')) {
+      if (file.file_type === 'log') {
+        family = 'Logs'
+      } else if (filename.includes('fastqc')) {
         family = 'FastQC'
       } else if (filename.includes('metaspades')) {
         family = 'metaSPAdes'
@@ -354,6 +358,8 @@ export default function JobDetails() {
   const isViewable = (file: File): boolean => {
     const filename = file.filename.toLowerCase()
     return filename.endsWith('.html') ||
+           filename.endsWith('.txt') ||
+           filename.endsWith('.log') ||
            filename.endsWith('.png') ||
            filename.endsWith('.jpg') ||
            filename.endsWith('.jpeg') ||
@@ -419,6 +425,7 @@ export default function JobDetails() {
         viewingFileUrlRef.current = null
       }
       setViewingFileUrl(null)
+      setViewingTextContent(null)
       return
     }
 
@@ -443,6 +450,7 @@ export default function JobDetails() {
           viewingFileUrlRef.current = null
         }
         setViewingFileUrl(null)
+        setViewingTextContent(null)
       })
 
     return () => {
@@ -487,6 +495,38 @@ export default function JobDetails() {
       window.clearInterval(poller)
     }
   }, [jobId, interactiveOutputsEnabled, zipPanelVisible, zipStatus?.status])
+
+  useEffect(() => {
+    if (!viewingFileUrl || !viewingFile) {
+      setViewingTextContent(null)
+      return
+    }
+
+    const lowerName = viewingFile.filename.toLowerCase()
+    if (!lowerName.endsWith('.txt') && !lowerName.endsWith('.log')) {
+      setViewingTextContent(null)
+      return
+    }
+
+    let cancelled = false
+    fetch(viewingFileUrl)
+      .then((response) => response.text())
+      .then((text) => {
+        if (!cancelled) {
+          setViewingTextContent(text)
+        }
+      })
+      .catch((err) => {
+        console.error('Failed to load text preview:', err)
+        if (!cancelled) {
+          setViewingTextContent('Failed to load text preview.')
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [viewingFileUrl, viewingFile])
 
   useEffect(() => {
     return () => {
@@ -620,6 +660,20 @@ export default function JobDetails() {
     if (stage.status === 'failed') return `Failed Tool: ${toolName}`
     if (stage.status === 'completed' && execution.status === 'completed') return `Last Completed Tool: ${toolName}`
     return `Tool: ${toolName}`
+  }
+
+  const getExecutionProgressPercent = (execution: JobExecution): number | null => {
+    const stages = execution.parameters_used?.stages || []
+    if (stages.length === 0) return null
+
+    const completedStages = stages.filter(stage => stage.status === 'completed').length
+    const activeStages = stages.filter(stage => (
+      stage.status === 'running' ||
+      stage.status === 'waiting_for_resources' ||
+      stage.status === 'waiting_for_checkpoint'
+    )).length
+    const progressUnits = Math.min(stages.length, completedStages + (activeStages > 0 ? 0.5 : 0))
+    return Math.round((progressUnits / stages.length) * 100)
   }
 
   const getPipelineRequirementTools = (req: { type: string; used_by?: string[] }): string[] => {
@@ -775,7 +829,7 @@ export default function JobDetails() {
                     >
                       {jobUploadStatus.stage === 'starting'
                         ? 'Starting job'
-                        : `Uploading files (${jobUploadStatus.uploadedFiles}/${jobUploadStatus.totalFiles})`}
+                        : `Uploading files (${jobUploadStatus.uploadedFiles}/${jobUploadStatus.totalFiles}, ${jobUploadStatus.progress || 0}%)`}
                     </span>
                   )}
                 </div>
@@ -880,6 +934,7 @@ export default function JobDetails() {
                   const stages = execution.parameters_used?.stages || []
                   const elapsed = formatDurationClock(execution.started_at, execution.completed_at)
                   const currentStageLabel = getCurrentStageLabel(execution)
+                  const progressPercent = getExecutionProgressPercent(execution)
 
                   return (
                     <div key={execution.id} className="execution-card">
@@ -904,6 +959,17 @@ export default function JobDetails() {
                       {currentStageLabel && (
                         <div className="execution-progress-banner">
                           <strong>Current Progress:</strong> {currentStageLabel}
+                          {progressPercent !== null && (
+                            <div style={{ marginTop: '0.6rem' }}>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem', marginBottom: '0.35rem' }}>
+                                <span>{stages.filter(stage => stage.status === 'completed').length}/{stages.length} tool stages completed</span>
+                                <strong>{progressPercent}%</strong>
+                              </div>
+                              <div style={{ height: '10px', borderRadius: '999px', backgroundColor: '#dbe5f0', overflow: 'hidden' }}>
+                                <div style={{ width: `${progressPercent}%`, height: '100%', backgroundColor: '#2563eb' }} />
+                              </div>
+                            </div>
+                          )}
                         </div>
                       )}
 
@@ -939,6 +1005,33 @@ export default function JobDetails() {
                               {stage.error && (
                                 <div className="error-message" style={{ marginTop: '0.75rem' }}>
                                   {stage.error}
+                                </div>
+                              )}
+
+                              {(stage.live_tool_logs || stage.live_init_logs || ['pending', 'running', 'waiting_for_resources', 'waiting_for_dependencies'].includes(stage.status)) && (
+                                <div style={{ marginTop: '0.85rem' }}>
+                                  <strong style={{ display: 'block', marginBottom: '0.45rem' }}>Live Logs</strong>
+                                  <pre
+                                    style={{
+                                      margin: 0,
+                                      padding: '0.9rem 1rem',
+                                      borderRadius: '10px',
+                                      backgroundColor: '#183B4E',
+                                      color: '#f8fafc',
+                                      fontSize: '0.78rem',
+                                      lineHeight: 1.55,
+                                      whiteSpace: 'pre-wrap',
+                                      wordBreak: 'break-word',
+                                      maxHeight: '260px',
+                                      overflow: 'auto',
+                                    }}
+                                  >
+                                    {stage.live_tool_logs || stage.live_init_logs || (
+                                      stage.pod_phase === 'Pending'
+                                        ? 'Logs will appear after the Kubernetes container starts.'
+                                        : 'Waiting for live logs...'
+                                    )}
+                                  </pre>
                                 </div>
                               )}
                             </div>
@@ -1222,11 +1315,16 @@ export default function JobDetails() {
                 {job.status === 'completed' ? (
                   <p>No output files available yet.</p>
                 ) : (
-                  <p>Output files will appear here when the job completes.</p>
+                  <p>Output files and per-tool logs will appear here as tools finish.</p>
                 )}
               </div>
             ) : (
               <>
+                {logFiles.length > 0 && (
+                  <p style={{ marginBottom: '1rem', color: '#6b7280' }}>
+                    Tool logs are included here as downloadable files alongside regular outputs.
+                  </p>
+                )}
                 {interactiveOutputsEnabled && outputFilesCollapsed ? (
                   <div className="file-list-collapsed">
                     <div className="file-list-preview">
@@ -1404,6 +1502,26 @@ export default function JobDetails() {
                                     title={currentViewingFile.filename}
                                   />
                                 </div>
+                              </div>
+                            ) : currentViewingFile.filename.toLowerCase().match(/\.(txt|log)$/i) ? (
+                              <div style={{
+                                width: '100%',
+                                maxHeight: '480px',
+                                overflow: 'auto',
+                                padding: '1rem',
+                                backgroundColor: '#fffaf0'
+                              }}>
+                                <pre style={{
+                                  margin: 0,
+                                  whiteSpace: 'pre-wrap',
+                                  wordBreak: 'break-word',
+                                  fontFamily: 'Consolas, Monaco, monospace',
+                                  fontSize: '0.9rem',
+                                  lineHeight: 1.5,
+                                  color: '#1f2937'
+                                }}>
+                                  {viewingTextContent ?? 'Loading text preview...'}
+                                </pre>
                               </div>
                             ) : currentViewingFile.filename.toLowerCase().match(/\.(png|jpg|jpeg|gif|svg)$/i) ? (
                               <div style={{ 

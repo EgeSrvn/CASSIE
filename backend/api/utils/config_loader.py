@@ -165,6 +165,8 @@ class UserLimitsConfig:
         self.default_max_running_jobs = 3
         self.default_downloadable_finished_jobs = 5
         self.default_interactive_output_jobs = 5
+        self.default_max_storage_gb = float(os.getenv("DEFAULT_MAX_USER_STORAGE_GB", "35"))
+        self.default_min_free_storage_gb = float(os.getenv("MIN_FREE_STORAGE_GB", "5"))
         self.raw = self._load_json()
 
     def _load_json(self) -> dict:
@@ -174,6 +176,7 @@ class UserLimitsConfig:
                     "max_running_jobs": self.default_max_running_jobs,
                     "downloadable_finished_jobs": self.default_downloadable_finished_jobs,
                     "interactive_output_jobs": self.default_interactive_output_jobs,
+                    "max_storage_gb": self.default_max_storage_gb,
                 },
                 "users": {},
             }
@@ -191,6 +194,7 @@ class UserLimitsConfig:
                 "max_running_jobs": self.default_max_running_jobs,
                 "downloadable_finished_jobs": self.default_downloadable_finished_jobs,
                 "interactive_output_jobs": self.default_interactive_output_jobs,
+                "max_storage_gb": self.default_max_storage_gb,
             },
             "users": {},
         }
@@ -218,11 +222,22 @@ class UserLimitsConfig:
                 defaults.get("interactive_output_jobs", self.default_interactive_output_jobs),
             )
         )
+        max_storage_gb = float(
+            user_overrides.get(
+                "max_storage_gb",
+                defaults.get("max_storage_gb", self.default_max_storage_gb),
+            )
+        )
+        min_free_storage_gb = float(
+            defaults.get("min_free_storage_gb", self.default_min_free_storage_gb)
+        )
 
         return {
             "max_running_jobs": max_running_jobs,
             "downloadable_finished_jobs": downloadable_finished_jobs,
             "interactive_output_jobs": interactive_output_jobs,
+            "max_storage_bytes": int(max_storage_gb * 1024 * 1024 * 1024),
+            "min_free_storage_bytes": int(min_free_storage_gb * 1024 * 1024 * 1024),
         }
 
 

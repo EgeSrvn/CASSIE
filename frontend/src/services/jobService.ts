@@ -56,6 +56,9 @@ export interface JobExecutionStage {
   cpu_limit_millis?: number
   memory_limit_mib?: number
   storage_limit_mib?: number
+  live_tool_logs?: string | null
+  live_init_logs?: string | null
+  pod_phase?: string | null
 }
 
 export interface JobExecution {
@@ -152,7 +155,8 @@ export interface JobCreate {
   cloud_provider?: string
   execution_preferences?: Record<string, unknown>
   vm_name?: string // Virtual machine name for execution (e.g., 'vm1', 'vm2')
-  input_file_ids?: number[] // Pre-uploaded file IDs to associate with this job
+  input_file_ids?: number[] // Data library file IDs to associate with this job
+  staged_input_file_ids?: number[] // Staged storage file IDs to associate with this job
   pending_upload_count?: number
   expected_total_input_files?: number
   estimated_price_usd?: number

@@ -303,6 +303,7 @@ def get_folder_tree(user_id: int) -> List[Dict[str, Any]]:
                        size_bytes, checksum, uploaded_at, created_at
                 FROM files
                 WHERE folder_id IS NULL
+                  AND job_id IS NULL
                   AND s3_key LIKE %s
                 ORDER BY filename
             """, (f"data/{user_id}/%",))

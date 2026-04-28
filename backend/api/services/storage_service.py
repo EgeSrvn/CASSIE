@@ -9,9 +9,11 @@ from datetime import datetime
 from contextlib import contextmanager
 from backend.api.database.db_init import get_db_connection
 from backend.api.models.pipeline_model import FileInDB, FileCreate, FileUpdate, FileResponse, FileType
+from backend.api.services.minio_client import get_minio_client
 from backend.api.utils.logger import get_logger
 
 logger = get_logger(__name__)
+minio_client = get_minio_client()
 
 
 def create_file_record(file_data: FileCreate) -> FileInDB:
@@ -123,6 +125,110 @@ def get_existing_file_record_by_fingerprint(
                 uploaded_at=row[9],
                 created_at=row[10],
             )
+        finally:
+            cur.close()
+
+
+def get_total_file_bytes_by_user(user_id: int) -> int:
+    """Return recorded storage usage for distinct objects owned by a user."""
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+
+        try:
+            cur.execute(
+                """
+                SELECT COALESCE(SUM(size_bytes), 0)
+                FROM (
+                    SELECT f.s3_key, MAX(COALESCE(f.size_bytes, 0)) AS size_bytes
+                    FROM files f
+                    LEFT JOIN jobs j ON f.job_id = j.id
+                    LEFT JOIN folders fo ON f.folder_id = fo.id
+                    WHERE j.user_id = %s
+                       OR fo.user_id = %s
+                       OR (
+                            f.job_id IS NULL
+                            AND f.folder_id IS NULL
+                            AND (
+                                f.s3_key LIKE %s
+                                OR f.s3_key LIKE %s
+                            )
+                       )
+                    GROUP BY f.s3_key
+                ) owned_objects
+                """,
+                (user_id, user_id, f"staging/{user_id}/%", f"data/{user_id}/%"),
+            )
+            return int(cur.fetchone()[0] or 0)
+        finally:
+            cur.close()
+
+
+def prune_missing_file_records_by_user(user_id: int, username: Optional[str] = None) -> int:
+    """Delete owned file records whose object no longer exists in object storage."""
+    try:
+        storage_files = minio_client.list_files(
+            user_id=user_id,
+            prefix="",
+            username=username,
+            max_keys=10000,
+        )
+    except Exception as e:
+        logger.warning(
+            "Skipping stale file pruning for user %s because object storage could not be listed: %s",
+            user_id,
+            e,
+        )
+        return 0
+
+    existing_keys = {str(file_info.get("key") or "") for file_info in storage_files}
+
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+
+        try:
+            cur.execute(
+                """
+                SELECT f.id, f.filename, f.s3_key
+                FROM files f
+                LEFT JOIN jobs j ON f.job_id = j.id
+                LEFT JOIN folders fo ON f.folder_id = fo.id
+                WHERE j.user_id = %s
+                   OR fo.user_id = %s
+                   OR (
+                        f.job_id IS NULL
+                        AND f.folder_id IS NULL
+                        AND (
+                            f.s3_key LIKE %s
+                            OR f.s3_key LIKE %s
+                        )
+                   )
+                """,
+                (user_id, user_id, f"staging/{user_id}/%", f"data/{user_id}/%"),
+            )
+
+            stale_rows = [
+                (row[0], row[1], row[2])
+                for row in cur.fetchall()
+                if row[2] not in existing_keys
+            ]
+            if not stale_rows:
+                return 0
+
+            stale_ids = [row[0] for row in stale_rows]
+            cur.execute("DELETE FROM files WHERE id = ANY(%s)", (stale_ids,))
+            conn.commit()
+
+            logger.warning(
+                "Pruned %s stale file records for user %s: %s",
+                len(stale_rows),
+                user_id,
+                ", ".join(f"{filename} ({s3_key})" for _, filename, s3_key in stale_rows[:10]),
+            )
+            return len(stale_rows)
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Error pruning stale file records for user {user_id}: {e}", exc_info=True)
+            raise
         finally:
             cur.close()
 

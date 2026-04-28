@@ -71,7 +71,7 @@ def _row_to_user(row) -> UserInDB:
         job_notifications_enabled=bool(row[14]),
         cash_balance_usd=cash_balance,
         cash_reserved_usd=cash_reserved,
-        cash_available_usd=max(cash_balance - cash_reserved, 0.0),
+        cash_available_usd=max(cash_balance, 0.0),
         email_verification_code=row[17],
         email_verification_expires_at=row[18],
         password_reset_code=row[19],
@@ -436,7 +436,7 @@ def ensure_admin_user() -> UserInDB:
                     config.admin_panel.username,
                     admin_email,
                     password_hash,
-                    f"cassie-user-{config.admin_panel.username}",
+                    f"users/{config.admin_panel.username}",
                     True,
                 ),
             )

@@ -1,4 +1,6 @@
-FROM node:20-alpine AS build
+ARG NODE_BASE_IMAGE=node:20-alpine
+ARG NGINX_BASE_IMAGE=nginx:1.27-alpine
+FROM ${NODE_BASE_IMAGE} AS build
 
 WORKDIR /app
 
@@ -12,12 +14,12 @@ ENV VITE_GOOGLE_DRIVE_API_KEY=${VITE_GOOGLE_DRIVE_API_KEY}
 ENV VITE_GOOGLE_DRIVE_APP_ID=${VITE_GOOGLE_DRIVE_APP_ID}
 
 COPY frontend/package*.json ./
-RUN npm ci
+RUN npm ci --fetch-retries=5 --fetch-retry-mintimeout=5000 --fetch-retry-maxtimeout=60000
 
 COPY frontend/ ./
 RUN npm run build
 
-FROM nginx:1.27-alpine
+FROM ${NGINX_BASE_IMAGE}
 
 COPY --from=build /app/dist /usr/share/nginx/html
 COPY frontend/nginx.conf /etc/nginx/conf.d/default.conf

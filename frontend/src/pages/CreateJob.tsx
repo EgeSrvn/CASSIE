@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import {
   createJob,
+  executeJob,
   JobCreate,
   JobPipelineVisualization,
   PipelinePlanPreviewRequest,
@@ -27,11 +28,8 @@ import { getPipelines, getPipeline, Pipeline, getPipelineRequirements, PipelineR
 import { getDataFileTree } from '../services/dataFileService'
 import { FolderTreeItem, FileItem } from '../services/folderService'
 import { getToken } from '../services/authService'
-import {
-  PendingGoogleDriveJobImportFile,
-  PendingJobUploadFile,
-  enqueuePendingJobInputUploads,
-} from '../services/pendingJobUploadService'
+import { getCreateJobCatConfig } from '../../cats/config_cat_job_builder'
+import CatCornerCard from '../components/CatCornerCard'
 import Navigation from '../components/Navigation'
 import PipelineVisualization from '../components/PipelineVisualization'
 import {
@@ -58,7 +56,7 @@ const formatRuntimeEstimate = (minutes: number): string => {
   return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`
 }
 
-type BuilderLevel = 1 | 2 | 3 | 4 | 5
+type BuilderLevel = 1 | 2 | 3 | 4
 type SlideDirection = 'forward' | 'backward'
 
 interface BuilderLevelDefinition {
@@ -86,72 +84,10 @@ const getManualInputBlockDefaultName = (block: ManualToolInputBlock): string => 
 }
 
 const PIPELINE_STAGE_NODE_TYPES = new Set(['tool', 'checkpoint'])
-const CREATE_JOB_DRAFT_STORAGE_KEY = 'cassie:create-job-draft:v2'
-const GOOGLE_DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.readonly'
-const GOOGLE_API_SCRIPT_ID = 'cassie-google-api-script'
-const GOOGLE_GSI_SCRIPT_ID = 'cassie-google-gsi-script'
-
-const loadExternalScript = (id: string, src: string): Promise<void> => {
-  if (typeof document === 'undefined') {
-    return Promise.reject(new Error('Browser document is unavailable'))
-  }
-
-  const existing = document.getElementById(id) as HTMLScriptElement | null
-  if (existing) {
-    if (existing.dataset.loaded === 'true') {
-      return Promise.resolve()
-    }
-    return new Promise((resolve, reject) => {
-      existing.addEventListener('load', () => resolve(), { once: true })
-      existing.addEventListener('error', () => reject(new Error(`Failed to load ${src}`)), { once: true })
-    })
-  }
-
-  return new Promise((resolve, reject) => {
-    const script = document.createElement('script')
-    script.id = id
-    script.src = src
-    script.async = true
-    script.defer = true
-    script.onload = () => {
-      script.dataset.loaded = 'true'
-      resolve()
-    }
-    script.onerror = () => reject(new Error(`Failed to load ${src}`))
-    document.head.appendChild(script)
-  })
-}
-
-const loadGoogleDriveScripts = async () => {
-  await Promise.all([
-    loadExternalScript(GOOGLE_API_SCRIPT_ID, 'https://apis.google.com/js/api.js'),
-    loadExternalScript(GOOGLE_GSI_SCRIPT_ID, 'https://accounts.google.com/gsi/client'),
-  ])
-}
-
-const loadGooglePicker = (): Promise<void> => {
-  return new Promise((resolve, reject) => {
-    if (!window.gapi) {
-      reject(new Error('Google API script is not available'))
-      return
-    }
-    window.gapi.load('picker', {
-      callback: () => resolve(),
-      onerror: () => reject(new Error('Failed to load Google Picker')),
-      timeout: 10000,
-      ontimeout: () => reject(new Error('Timed out loading Google Picker')),
-    })
-  })
-}
-
-const deriveGoogleDriveAppId = (clientId: string): string => (
-  import.meta.env.VITE_GOOGLE_DRIVE_APP_ID ||
-  clientId.split('-')[0] ||
-  ''
-)
+const CREATE_JOB_DRAFT_STORAGE_KEY = 'cassie:create-job-draft:v3'
 
 interface CreateJobDraft {
-  version: 2
+  version: 3
   jobName: string
   selectionMode: 'tools' | 'pipeline'
   selectedTools: number[]
@@ -162,7 +98,6 @@ interface CreateJobDraft {
   pipelineInputMappings: Record<string, number[]>
   requirementSourceSelections: Record<string, 'external' | 'upstream'>
   selectedIntentIds: string[]
-  recommendationFileIds: number[]
   priorityGroups: PriorityGroup[]
   openPriorityGroups: number[]
   currentLevel: BuilderLevel
@@ -197,7 +132,7 @@ const readCreateJobDraft = (): CreateJobDraft | null => {
     }
 
     const parsed = JSON.parse(rawDraft)
-    if (!parsed || parsed.version !== 2) {
+    if (!parsed || parsed.version !== 3) {
       return null
     }
 
@@ -299,9 +234,6 @@ export default function CreateJob() {
   const [error, setError] = useState<string>('')
   const [dataFileTree, setDataFileTree] = useState<FolderTreeItem[]>([])
   const [loadingDataTree, setLoadingDataTree] = useState(false)
-  const [pendingLocalFiles, setPendingLocalFiles] = useState<PendingJobUploadFile[]>([])
-  const [pendingGoogleDriveFiles, setPendingGoogleDriveFiles] = useState<PendingGoogleDriveJobImportFile[]>([])
-  const [importingGoogleDriveFile, setImportingGoogleDriveFile] = useState(false)
   const [submitStatus, setSubmitStatus] = useState<string>('')
   const [availableVMs, setAvailableVMs] = useState<VM[]>([])
   const [loadingVMs, setLoadingVMs] = useState(false)
@@ -316,7 +248,6 @@ export default function CreateJob() {
   const [requirementSourceSelections, setRequirementSourceSelections] = useState<Record<string, 'external' | 'upstream'>>(() => storedDraftRef.current?.requirementSourceSelections || {})
   const [recommendationIntents, setRecommendationIntents] = useState<RecommendationIntent[]>([])
   const [selectedIntentIds, setSelectedIntentIds] = useState<string[]>(() => storedDraftRef.current?.selectedIntentIds || [])
-  const [recommendationFileIds, setRecommendationFileIds] = useState<number[]>(() => storedDraftRef.current?.recommendationFileIds || [])
   const [recommendationOptions, setRecommendationOptions] = useState<RecommendationOption[]>([])
   const [loadingRecommendations, setLoadingRecommendations] = useState(false)
   const [appliedRecommendationFileIds, setAppliedRecommendationFileIds] = useState<number[] | null>(null)
@@ -476,7 +407,7 @@ export default function CreateJob() {
     return () => {
       cancelled = true
     }
-  }, [selectedVM, selectionMode, selectedPipelineId, selectedTools, toolFileMappings, pendingLocalFiles, pendingGoogleDriveFiles, dataFileTree])
+  }, [selectedVM, selectionMode, selectedPipelineId, selectedTools, toolFileMappings, dataFileTree])
 
   useEffect(() => {
     const fetchIntents = async () => {
@@ -878,7 +809,7 @@ export default function CreateJob() {
 
     setToolFileMappings(suggestedMappings)
     setAppliedRecommendationFileIds(null)
-  }, [selectionMode, appliedRecommendationFileIds, toolRequirements, pendingLocalFiles, pendingGoogleDriveFiles, dataFileTree])
+  }, [selectionMode, appliedRecommendationFileIds, toolRequirements, dataFileTree])
 
   useEffect(() => {
     if (selectionMode !== 'tools') {
@@ -1049,7 +980,7 @@ export default function CreateJob() {
     setSelectedPipelineId(null)
     setSelectedTools(option.tool_indices)
     setToolFileMappings({})
-    setAppliedRecommendationFileIds([...recommendationFileIds])
+    setAppliedRecommendationFileIds(getCombinedSelectableFiles().map(file => file.id))
   }
 
   // Helper function to flatten file tree into a list of files with folder paths
@@ -1084,27 +1015,6 @@ export default function CreateJob() {
     }
     traverse(tree)
     return files
-  }
-
-  const inferFileFormat = (filename: string): string | null => {
-    const lower = filename.toLowerCase()
-    if (lower.endsWith('.fastq') || lower.endsWith('.fastq.gz') || lower.endsWith('.fq') || lower.endsWith('.fq.gz')) return 'fastq'
-    if (lower.endsWith('.fasta') || lower.endsWith('.fasta.gz') || lower.endsWith('.fa') || lower.endsWith('.fa.gz') || lower.endsWith('.fna') || lower.endsWith('.fna.gz')) return 'fasta'
-    if (lower.endsWith('.gff3')) return 'gff3'
-    if (lower.endsWith('.gff')) return 'gff'
-    if (lower.endsWith('.gtf')) return 'gtf'
-    if (lower.endsWith('.hal')) return 'hal'
-    if (lower.endsWith('.gfa')) return 'gfa'
-    if (lower.endsWith('.meryl') || lower.endsWith('.meryl.tar') || lower.endsWith('.meryl.tar.gz') || lower.endsWith('.meryl.tgz')) return 'meryl'
-    if (lower.endsWith('.cfg')) return 'cfg'
-    if (lower.endsWith('.conf')) return 'conf'
-    if (lower.endsWith('.ini')) return 'ini'
-    if (lower.endsWith('.json')) return 'json'
-    if (lower.endsWith('.tsv')) return 'tsv'
-    if (lower.endsWith('.csv')) return 'csv'
-    if (lower.endsWith('.txt')) return 'txt'
-    if (lower.endsWith('.html')) return 'html'
-    return null
   }
 
   const normalizeFileFormats = (file: FileItem & { folderPath?: string }): string[] => {
@@ -1160,33 +1070,7 @@ export default function CreateJob() {
   }
 
   const getCombinedSelectableFiles = (): Array<FileItem & { folderPath?: string }> => {
-    const libraryFiles = flattenFiles(dataFileTree)
-    const pendingFilesAsItems: Array<FileItem & { folderPath?: string }> = pendingLocalFiles.map(file => ({
-      id: file.tempId,
-      filename: file.filename,
-      s3_key: `pending://${file.tempId}/${file.filename}`,
-      file_type: 'input',
-      file_format: file.file_format,
-      size_bytes: file.size_bytes,
-      checksum: '',
-      uploaded_at: null,
-      created_at: file.created_at,
-      folderPath: 'Selected Files',
-    }))
-    const pendingGoogleDriveFilesAsItems: Array<FileItem & { folderPath?: string }> = pendingGoogleDriveFiles.map(file => ({
-      id: file.tempId,
-      filename: file.filename,
-      s3_key: `gdrive://${file.googleFileId}/${file.filename}`,
-      file_type: 'input',
-      file_format: file.file_format,
-      size_bytes: file.size_bytes,
-      checksum: '',
-      uploaded_at: null,
-      created_at: file.created_at,
-      folderPath: 'Selected Google Drive Files',
-    }))
-
-    return [...pendingGoogleDriveFilesAsItems, ...pendingFilesAsItems, ...libraryFiles]
+    return flattenFiles(dataFileTree)
   }
 
   const getRuntimeInputAssignments = (): RuntimeInputAssignment[] => {
@@ -1249,209 +1133,7 @@ export default function CreateJob() {
     return compatibleFiles.map(file => file.id)
   }
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const selectedFiles = Array.from(e.target.files || [])
-    if (selectedFiles.length === 0) return
-
-    try {
-      setError('')
-      setPendingLocalFiles(prev => {
-        const existingKeys = new Set(prev.map(file => `${file.file.name}:${file.size_bytes}:${file.file.lastModified}`))
-        const additions = selectedFiles
-          .filter(file => !existingKeys.has(`${file.name}:${file.size}:${file.lastModified}`))
-          .map((file, index) => ({
-            tempId: -(Date.now() + index + Math.floor(Math.random() * 1000)),
-            file,
-            filename: file.name,
-            original_filename: file.name,
-            size_bytes: file.size,
-            file_format: inferFileFormat(file.name),
-            uploaded_at: null,
-            created_at: new Date().toISOString(),
-            folderPath: 'Selected Files',
-          }))
-
-        return [...additions, ...prev]
-      })
-      e.target.value = '' // Reset input
-    } catch (err: any) {
-      setError(err.response?.data?.message || err.message || 'Failed to select file')
-    }
-  }
-
-  const addPickedGoogleDriveFiles = (
-    accessToken: string,
-    docs: Array<{ id: string; name?: string; mimeType?: string; sizeBytes?: string | number; size?: string | number }>
-  ) => {
-    const selectedAt = Date.now()
-    setPendingGoogleDriveFiles(prev => {
-      const existingIds = new Set(prev.map(file => file.googleFileId))
-      const additions = docs
-        .filter(doc => doc.id && !existingIds.has(doc.id))
-        .map((doc, index) => {
-          const filename = sanitizeSelectedFilename(doc.name || `google-drive-${doc.id}`)
-          const rawSize = doc.sizeBytes ?? doc.size
-          const parsedSize = rawSize !== undefined && rawSize !== null ? Number(rawSize) : 0
-
-          return {
-            tempId: -(selectedAt + index + Math.floor(Math.random() * 1000)),
-            googleFileId: doc.id,
-            accessToken,
-            filename,
-            original_filename: doc.name || filename,
-            size_bytes: Number.isFinite(parsedSize) && parsedSize > 0 ? parsedSize : null,
-            file_format: inferFileFormat(filename),
-            mime_type: doc.mimeType,
-            created_at: new Date().toISOString(),
-            folderPath: 'Selected Google Drive Files',
-          }
-        })
-
-      return [...additions, ...prev]
-    })
-  }
-
-  const openGoogleDrivePicker = async () => {
-    const clientId = import.meta.env.VITE_GOOGLE_DRIVE_CLIENT_ID
-    const apiKey = import.meta.env.VITE_GOOGLE_DRIVE_API_KEY
-    const appId = clientId ? deriveGoogleDriveAppId(clientId) : ''
-
-    if (!clientId || !apiKey || !appId) {
-      setError(
-        'Google Drive sign-in is not configured. CASSIE needs Google OAuth app credentials, but files still come from each user\'s own Drive account.'
-      )
-      return
-    }
-
-    try {
-      setError('')
-      setImportingGoogleDriveFile(true)
-      await loadGoogleDriveScripts()
-      await loadGooglePicker()
-
-      await new Promise<void>((resolve, reject) => {
-        const tokenClient = window.google?.accounts?.oauth2?.initTokenClient({
-          client_id: clientId,
-          scope: GOOGLE_DRIVE_SCOPE,
-          callback: async (tokenResponse: any) => {
-            if (tokenResponse?.error) {
-              reject(new Error(tokenResponse.error_description || tokenResponse.error))
-              return
-            }
-
-            const accessToken = tokenResponse?.access_token
-            if (!accessToken) {
-              reject(new Error('Google did not return an access token.'))
-              return
-            }
-
-            const picker = new window.google.picker.PickerBuilder()
-              .setDeveloperKey(apiKey)
-              .setAppId(appId)
-              .setOAuthToken(accessToken)
-              .addView(
-                new window.google.picker.DocsView(window.google.picker.ViewId.DOCS)
-                  .setIncludeFolders(false)
-                  .setSelectFolderEnabled(false)
-              )
-              .enableFeature(window.google.picker.Feature.SUPPORT_DRIVES)
-              .enableFeature(window.google.picker.Feature.MULTISELECT_ENABLED)
-              .setCallback((data: any) => {
-                if (data.action === window.google.picker.Action.CANCEL) {
-                  resolve()
-                  return
-                }
-                if (data.action !== window.google.picker.Action.PICKED) {
-                  return
-                }
-
-                const docs = (data.docs || []).filter((doc: any) => doc?.id)
-                if (docs.length === 0) {
-                  reject(new Error('No Google Drive file was selected.'))
-                  return
-                }
-
-                addPickedGoogleDriveFiles(accessToken, docs)
-                resolve()
-              })
-              .build()
-
-            picker.setVisible(true)
-          },
-        })
-
-        if (!tokenClient) {
-          reject(new Error('Google Identity Services could not be initialized.'))
-          return
-        }
-
-        tokenClient.requestAccessToken({ prompt: 'consent' })
-      })
-    } catch (err: any) {
-      setError(
-        err.response?.data?.error?.message ||
-        err.response?.data?.message ||
-        err.message ||
-        'Failed to import from Google Drive'
-      )
-    } finally {
-      setImportingGoogleDriveFile(false)
-    }
-  }
-
-  const renderFileSourceControls = () => (
-    <div className="job-file-source-controls">
-      <label className="btn-secondary" style={{ cursor: 'pointer', display: 'inline-block' }}>
-        Select New File(s)
-        <input
-          type="file"
-          onChange={handleFileUpload}
-          disabled={creating}
-          multiple
-          style={{ display: 'none' }}
-          accept=".fastq,.fastq.gz,.fq,.fq.gz,.fasta,.fasta.gz,.fa,.fa.gz,.fna,.fna.gz,.gff,.gff3,.gtf,.hal,.gfa,.meryl,.meryl.tar,.meryl.tar.gz,.meryl.tgz,.cfg,.conf,.ini,.json,.txt,.tsv,.csv,.gz"
-        />
-      </label>
-      <button
-        type="button"
-        className="btn-secondary"
-        onClick={() => void openGoogleDrivePicker()}
-        disabled={creating || importingGoogleDriveFile}
-      >
-        {importingGoogleDriveFile ? 'Opening Your Drive...' : 'Choose from Your Google Drive'}
-      </button>
-    </div>
-  )
-
-  const sanitizeSelectedFilename = (value: string): string => (
-    value.replace(/[\\/:*?"<>|]/g, '_').trim()
-  )
-
-  const handleSelectedFileRename = (tempId: number, nextFilename: string) => {
-    const sanitizedName = sanitizeSelectedFilename(nextFilename)
-    setPendingLocalFiles(prev => prev.map(file => (
-      file.tempId === tempId
-        ? {
-            ...file,
-            filename: sanitizedName,
-            file_format: inferFileFormat(sanitizedName),
-          }
-        : file
-    )))
-    setPendingGoogleDriveFiles(prev => prev.map(file => (
-      file.tempId === tempId
-        ? {
-            ...file,
-            filename: sanitizedName,
-            file_format: inferFileFormat(sanitizedName),
-          }
-        : file
-    )))
-  }
-
   const renderSelectableFileChip = (file: FileItem & { folderPath?: string }, keyPrefix: string, selected = false) => {
-    const pendingFile = pendingLocalFiles.find(item => item.tempId === file.id)
-    const pendingGoogleDriveFile = pendingGoogleDriveFiles.find(item => item.tempId === file.id)
     const title = file.folderPath ? `${file.folderPath}/${file.filename}` : file.filename
 
     return (
@@ -1460,60 +1142,14 @@ export default function CreateJob() {
         className={`builder-file-chip ${selected ? 'selected' : ''}`}
         title={title}
       >
-        {pendingFile ? (
-          <>
-            <label style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', width: '100%' }}>
-              <span style={{ fontSize: '0.7rem', color: '#64748b', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-                File name
-              </span>
-              <input
-                type="text"
-                value={pendingFile.filename}
-                onChange={(event) => handleSelectedFileRename(pendingFile.tempId, event.target.value)}
-                disabled={creating}
-                style={{ minWidth: '220px', fontWeight: 700 }}
-                aria-label={`Rename selected file ${pendingFile.original_filename || pendingFile.file.name}`}
-              />
-            </label>
-            <span>From PC: {pendingFile.original_filename || pendingFile.file.name}</span>
-          </>
-        ) : pendingGoogleDriveFile ? (
-          <>
-            <label style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', width: '100%' }}>
-              <span style={{ fontSize: '0.7rem', color: '#64748b', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-                File name
-              </span>
-              <input
-                type="text"
-                value={pendingGoogleDriveFile.filename}
-                onChange={(event) => handleSelectedFileRename(pendingGoogleDriveFile.tempId, event.target.value)}
-                disabled={creating}
-                style={{ minWidth: '220px', fontWeight: 700 }}
-                aria-label={`Rename selected Google Drive file ${pendingGoogleDriveFile.original_filename || pendingGoogleDriveFile.filename}`}
-              />
-            </label>
-            <span>From Google Drive: {pendingGoogleDriveFile.original_filename || pendingGoogleDriveFile.filename}</span>
-          </>
-        ) : (
-          <>
-            <strong>{file.filename}</strong>
-            {file.folderPath && <span>{file.folderPath}</span>}
-          </>
-        )}
+        <strong>{file.filename}</strong>
+        {file.folderPath && <span>{file.folderPath}</span>}
       </div>
     )
   }
 
-  const handleRecommendationFileToggle = (fileId: number) => {
-    setRecommendationFileIds(prev => (
-      prev.includes(fileId)
-        ? prev.filter(id => id !== fileId)
-        : [...prev, fileId]
-    ))
-  }
-
   const handleGenerateRecommendations = async () => {
-    const selectedFiles = getCombinedSelectableFiles().filter(file => recommendationFileIds.includes(file.id))
+    const selectedFiles = getCombinedSelectableFiles()
     setLoadingRecommendations(true)
     try {
       const response = await getPipelineRecommendations(
@@ -1526,7 +1162,7 @@ export default function CreateJob() {
       const options = response?.pipeline_options || []
       setRecommendationOptions(options)
       if (options.length === 0) {
-        setError('No recommendation could be generated from the selected intentions and candidate files')
+        setError('No recommendation could be generated from the selected intentions and Storage files')
       } else {
         setError('')
       }
@@ -1543,21 +1179,16 @@ export default function CreateJob() {
     },
     {
       level: 2,
-      title: 'Select files',
-      description: 'Choose the files you want available for this run before assigning them to blocks.',
+      title: 'Attach inputs',
+      description: 'Review available files, then map them to each named pipeline or tool block.',
     },
     {
       level: 3,
-      title: 'Attach inputs',
-      description: 'Map the selected files to each named tool block.',
-    },
-    {
-      level: 4,
       title: 'Configure run',
       description: 'Choose compute resources and tune same-level priorities after inputs are assigned.',
     },
     {
-      level: 5,
+      level: 4,
       title: 'Review and submit',
       description: 'Inspect the final pipeline, estimated runtime, and expected price before launch.',
     },
@@ -1652,13 +1283,11 @@ export default function CreateJob() {
     )
   )
 
-  const canAdvanceFromLevelTwo = true
-
-  const canAdvanceFromLevelThree = selectionMode === 'pipeline'
+  const inputStepMappingsComplete = selectionMode === 'pipeline'
     ? (pipelineInputRequirements.length === 0 || missingPipelineInputCount === 0)
     : (manualToolInputBlocks.length === 0 || missingManualInputBlockCount === 0)
 
-  const canAdvanceFromLevelFour = Boolean(selectedVM)
+  const canAdvanceFromLevelThree = Boolean(selectedVM)
 
   const inputBlockDisplayName = useCallback((inputId: string, fallbackLabel: string): string => (
     inputBlockNames[inputId]?.trim() || fallbackLabel
@@ -1670,7 +1299,7 @@ export default function CreateJob() {
 
   const goToNextLevel = () => {
     setSlideDirection('forward')
-    setCurrentLevel((current) => Math.min(5, current + 1) as BuilderLevel)
+    setCurrentLevel((current) => Math.min(4, current + 1) as BuilderLevel)
   }
 
   const goToPreviousLevel = () => {
@@ -1678,11 +1307,19 @@ export default function CreateJob() {
     setCurrentLevel((current) => Math.max(1, current - 1) as BuilderLevel)
   }
 
+  const handleCancelCreateJob = () => {
+    shouldPersistDraftRef.current = false
+    clearCreateJobDraft()
+    navigate('/')
+  }
+
   const shouldShowRuntimeEstimateCard = Boolean(loadingRuntimeEstimate || runtimeEstimate || runtimeEstimateError)
   const combinedSelectableFiles = useMemo(
     () => getCombinedSelectableFiles(),
-    [dataFileTree, pendingGoogleDriveFiles, pendingLocalFiles]
+    [dataFileTree]
   )
+  const canAdvanceFromLevelTwo = inputStepMappingsComplete
+
   const selectedLibraryFiles = useMemo(() => combinedSelectableFiles.filter((file) => {
     if (selectionMode === 'pipeline') {
       return Object.values(pipelineInputMappings).some((fileIds) => fileIds.includes(file.id))
@@ -1694,7 +1331,7 @@ export default function CreateJob() {
   }), [combinedSelectableFiles, pipelineInputMappings, selectionMode, toolFileMappings])
 
   const reviewPipelinePlanRequest = useMemo<PipelinePlanPreviewRequest | null>(() => {
-    if (currentLevel !== 5) {
+    if (currentLevel !== 4) {
       return null
     }
 
@@ -1720,7 +1357,7 @@ export default function CreateJob() {
             file_format: file.file_format || null,
             size_bytes: file.size_bytes || 0,
             s3_key: file.s3_key,
-            source: file.id < 0 ? 'pending-local' : 'library',
+            source: 'library',
           }))
       })
 
@@ -1767,7 +1404,7 @@ export default function CreateJob() {
             file_format: file.file_format || null,
             size_bytes: file.size_bytes || 0,
             s3_key: file.s3_key,
-            source: file.id < 0 ? 'pending-local' : 'library',
+            source: 'library',
           }))
       })
     })
@@ -1900,7 +1537,7 @@ export default function CreateJob() {
     }
 
     const draft: CreateJobDraft = {
-      version: 2,
+      version: 3,
       jobName,
       selectionMode,
       selectedTools,
@@ -1911,7 +1548,6 @@ export default function CreateJob() {
       pipelineInputMappings,
       requirementSourceSelections,
       selectedIntentIds,
-      recommendationFileIds,
       priorityGroups,
       openPriorityGroups,
       currentLevel,
@@ -1931,7 +1567,6 @@ export default function CreateJob() {
     pipelineInputMappings,
     pipelineRequirements,
     priorityGroups,
-    recommendationFileIds,
     requirementSourceSelections,
     selectedIntentIds,
     selectedPipelineDetails,
@@ -1946,9 +1581,9 @@ export default function CreateJob() {
     e.preventDefault()
     setError('')
 
-    if (currentLevel !== 5) {
+    if (currentLevel !== 4) {
       setSlideDirection('forward')
-      setCurrentLevel(5)
+      setCurrentLevel(4)
       return
     }
     
@@ -2055,44 +1690,11 @@ export default function CreateJob() {
         estimated_price_usd: runtimeEstimate.estimated_price_usd,
       }
       
-      const selectedPendingGoogleDriveFiles = pendingGoogleDriveFiles.filter(file => uploadedFileIds.includes(file.tempId))
-      const blankPendingGoogleDriveFile = selectedPendingGoogleDriveFiles.find(file => !file.filename.trim())
-      if (blankPendingGoogleDriveFile) {
-        setError(`Please give every selected Google Drive file a name before starting the job. Original file: ${blankPendingGoogleDriveFile.original_filename || blankPendingGoogleDriveFile.googleFileId}`)
-        return
-      }
-      const duplicatePendingGoogleDriveName = selectedPendingGoogleDriveFiles.find((file, index, allFiles) => (
-        allFiles.findIndex(candidate => candidate.filename.trim().toLowerCase() === file.filename.trim().toLowerCase()) !== index
-      ))
-      if (duplicatePendingGoogleDriveName) {
-        setError(`Selected Google Drive files must have unique names before import. Duplicate name: ${duplicatePendingGoogleDriveName.filename}`)
-        return
-      }
-
       const existingLibraryFileIds = uploadedFileIds.filter(id => id > 0)
-      const pendingFileIds = Array.from(new Set(uploadedFileIds.filter(id => id < 0)))
-      const expectedTotalInputFiles = existingLibraryFileIds.length + pendingFileIds.length
-      const pendingFilesToUpload = pendingLocalFiles.filter(file => pendingFileIds.includes(file.tempId))
-      const blankPendingFile = pendingFilesToUpload.find(file => !file.filename.trim())
-      if (blankPendingFile) {
-        setError(`Please give every selected PC file a name before starting the job. Original file: ${blankPendingFile.original_filename || blankPendingFile.file.name}`)
-        return
-      }
-      const duplicatePendingName = pendingFilesToUpload.find((file, index, allFiles) => (
-        allFiles.findIndex(candidate => candidate.filename.trim().toLowerCase() === file.filename.trim().toLowerCase()) !== index
-      ))
-      if (duplicatePendingName) {
-        setError(`Selected PC files must have unique names before upload. Duplicate name: ${duplicatePendingName.filename}`)
-        return
-      }
 
       // Only include already-uploaded library files at create time
       if (existingLibraryFileIds.length > 0) {
         jobData.input_file_ids = existingLibraryFileIds
-      }
-      if (pendingFileIds.length > 0) {
-        jobData.pending_upload_count = pendingFileIds.length
-        jobData.expected_total_input_files = expectedTotalInputFiles
       }
 
       const inputSourceOverrides = selectionMode === 'tools'
@@ -2140,21 +1742,9 @@ export default function CreateJob() {
 
       const job = await createJob(cleanJobData)
 
-      if (job && job.id && (pendingFilesToUpload.length > 0 || selectedPendingGoogleDriveFiles.length > 0)) {
-        setSubmitStatus('Queueing selected files...')
-        await enqueuePendingJobInputUploads(
-          job.id,
-          pendingFilesToUpload,
-          selectedPendingGoogleDriveFiles,
-          job.upload_session_token
-        )
-        shouldPersistDraftRef.current = false
-        clearCreateJobDraft()
-        navigate(`/jobs/${job.id}`)
-        return
-      }
-
       if (job && job.id) {
+        setSubmitStatus('Starting job...')
+        await executeJob(job.id)
         shouldPersistDraftRef.current = false
         clearCreateJobDraft()
         navigate(`/jobs/${job.id}`)
@@ -2195,8 +1785,7 @@ export default function CreateJob() {
                 builderLevel.level === 1 ||
                 (builderLevel.level === 2 && canAdvanceFromLevelOne) ||
                 (builderLevel.level === 3 && canAdvanceFromLevelOne && canAdvanceFromLevelTwo) ||
-                (builderLevel.level === 4 && canAdvanceFromLevelOne && canAdvanceFromLevelTwo && canAdvanceFromLevelThree) ||
-                (builderLevel.level === 5 && canAdvanceFromLevelOne && canAdvanceFromLevelTwo && canAdvanceFromLevelThree && canAdvanceFromLevelFour)
+                (builderLevel.level === 4 && canAdvanceFromLevelOne && canAdvanceFromLevelTwo && canAdvanceFromLevelThree)
 
               return (
                 <button
@@ -2251,7 +1840,7 @@ export default function CreateJob() {
               <label>Intent-Based Suggestions</label>
               <div className="builder-section-card">
                 <p style={{ marginBottom: '1rem', color: '#666', fontSize: '0.875rem' }}>
-                  Choose what you want to achieve, provide candidate input files, and the system will suggest a few possible pipelines.
+                  Choose what you want to achieve. Suggestions will consider files already uploaded in Storage.
                 </p>
 
                 <div style={{ marginBottom: '1rem', display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
@@ -2272,40 +1861,25 @@ export default function CreateJob() {
                   })}
                 </div>
 
-                <div style={{ marginBottom: '1rem' }}>
-                  <label className="btn-secondary" style={{ cursor: 'pointer', display: 'inline-block' }}>
-                    Select Candidate File(s)
-                    <input
-                      type="file"
-                      onChange={handleFileUpload}
-                      disabled={creating}
-                      multiple
-                      style={{ display: 'none' }}
-                      accept=".fastq,.fasta,.fq,.fa,.gz"
-                    />
-                  </label>
-                </div>
-
                 {loadingDataTree ? (
-                  <p style={{ color: '#666', fontStyle: 'italic' }}>Loading candidate files...</p>
+                  <p style={{ color: '#666', fontStyle: 'italic' }}>Loading Storage files...</p>
                 ) : (
                   <div style={{ marginBottom: '1rem' }}>
                     <div style={sharedRequirementCardStyle}>
-                      {getCombinedSelectableFiles().map(file => {
-                        const isSelected = recommendationFileIds.includes(file.id)
-                        return (
-                          <button
-                            key={`rec-file-${file.id}`}
-                            type="button"
-                            onClick={() => handleRecommendationFileToggle(file.id)}
-                            className={isSelected ? 'btn-primary' : 'btn-secondary'}
-                            style={{ padding: '0.4rem 0.75rem' }}
-                            title={file.folderPath ? `${file.folderPath}/${file.filename}` : file.filename}
-                          >
-                            {file.filename}
-                          </button>
-                        )
-                      })}
+                      {getCombinedSelectableFiles().length === 0 ? (
+                        <p style={{ margin: 0, color: '#666', fontStyle: 'italic' }}>
+                          No Storage files found yet. Upload inputs from Storage before using them in a job.
+                        </p>
+                      ) : getCombinedSelectableFiles().map(file => (
+                        <span
+                          key={`rec-file-${file.id}`}
+                          className="builder-file-chip"
+                          title={file.folderPath ? `${file.folderPath}/${file.filename}` : file.filename}
+                        >
+                          <strong>{file.filename}</strong>
+                          {file.folderPath && <span>{file.folderPath}</span>}
+                        </span>
+                      ))}
                     </div>
                   </div>
                 )}
@@ -2314,7 +1888,7 @@ export default function CreateJob() {
                   type="button"
                   onClick={handleGenerateRecommendations}
                   className="btn-primary"
-                  disabled={loadingRecommendations || selectedIntentIds.length === 0 || recommendationFileIds.length === 0}
+                  disabled={loadingRecommendations || selectedIntentIds.length === 0}
                 >
                   {loadingRecommendations ? 'Generating Suggestions...' : 'Suggest Pipelines'}
                 </button>
@@ -2514,7 +2088,7 @@ export default function CreateJob() {
             </>
           )}
 
-          {currentLevel === 4 && (
+          {currentLevel === 3 && (
             <>
           <div className="form-group">
             <label htmlFor="vm">Virtual Machine *</label>
@@ -2588,60 +2162,6 @@ export default function CreateJob() {
               <>
             {selectionMode === 'pipeline' && selectedPipelineId && (
               <div className="form-group">
-                <label>Pipeline Files</label>
-                <div className="builder-section-card">
-                  <p style={{ marginBottom: '1rem', color: '#666', fontSize: '0.875rem' }}>
-                    Choose the files you want available for this pipeline. In the next step you will assign them to the explicit tool blocks.
-                  </p>
-
-                  {renderFileSourceControls()}
-
-                  {loadingDataTree ? (
-                    <p style={{ color: '#666', fontStyle: 'italic' }}>Loading data library...</p>
-                  ) : combinedSelectableFiles.length === 0 ? (
-                    <p style={{ color: '#666', fontStyle: 'italic', margin: 0 }}>
-                      No files available yet. Upload files now, then map them to pipeline tool blocks in the next step.
-                    </p>
-                  ) : (
-                    <div className="builder-file-chip-grid">
-                      {combinedSelectableFiles.map((file) => renderSelectableFileChip(file, 'pipeline-file'))}
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {selectionMode === 'tools' && (
-              <div className="form-group">
-                <label>Input Files</label>
-                <div className="builder-section-card">
-                  <p style={{ marginBottom: '1rem', color: '#666', fontSize: '0.875rem' }}>
-                    Add or review the files you want available. In the next step, you will assign them into named tool blocks.
-                  </p>
-
-                  {renderFileSourceControls()}
-
-                  {loadingDataTree ? (
-                    <p style={{ color: '#666', fontStyle: 'italic' }}>Loading data library...</p>
-                  ) : combinedSelectableFiles.length === 0 ? (
-                    <p style={{ color: '#666', fontStyle: 'italic', margin: 0 }}>
-                      No input files available yet. Upload files here, then map them to tool blocks in the next step.
-                    </p>
-                  ) : (
-                    <div className="builder-file-chip-grid">
-                      {combinedSelectableFiles.map((file) => renderSelectableFileChip(file, 'tool-file'))}
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-              </>
-            )}
-
-            {currentLevel === 3 && (
-              <>
-            {selectionMode === 'pipeline' && selectedPipelineId && (
-              <div className="form-group">
                 <label>Pipeline Inputs *</label>
                 {loadingRequirements ? (
                   <p style={{ color: '#666', fontStyle: 'italic' }}>Loading pipeline inputs...</p>
@@ -2661,7 +2181,7 @@ export default function CreateJob() {
                       <>
                       {combinedSelectableFiles.length > 0 && (
                         <div className="builder-section-card builder-input-file-context">
-                          <p className="builder-card-kicker">Selected Files</p>
+                          <p className="builder-card-kicker">Storage Files</p>
                       <div className="builder-file-chip-grid">
                             {combinedSelectableFiles.map((file) => renderSelectableFileChip(
                               file,
@@ -2708,7 +2228,7 @@ export default function CreateJob() {
                             )}
                             {compatibleFiles.length === 0 ? (
                               <p style={{ color: '#666', fontStyle: 'italic', fontSize: '0.875rem' }}>
-                                No compatible files found. Upload files with formats: {inputReq.formats.join(', ').toUpperCase()}
+                                No compatible files found in Storage. Upload files with formats: {inputReq.formats.join(', ').toUpperCase()}
                               </p>
                             ) : (
                               <div className="builder-file-chip-grid">
@@ -2755,7 +2275,7 @@ export default function CreateJob() {
                     <>
                   {combinedSelectableFiles.length > 0 && (
                     <div className="builder-section-card builder-input-file-context">
-                      <p className="builder-card-kicker">Selected Files</p>
+                      <p className="builder-card-kicker">Storage Files</p>
                       <div className="builder-file-chip-grid">
                         {combinedSelectableFiles.map((file) => renderSelectableFileChip(
                           file,
@@ -2768,7 +2288,7 @@ export default function CreateJob() {
 
                   {combinedSelectableFiles.length === 0 ? (
                     <p style={{ color: '#666', fontStyle: 'italic' }}>
-                      No input files available yet. Go back and add files first, then connect them to the tool blocks here.
+                      No input files available yet. Upload input files from the Storage page, then return to connect them to the tool blocks here.
                     </p>
                   ) : null}
 
@@ -2883,7 +2403,7 @@ export default function CreateJob() {
                                       </p>
                                     ) : compatibleFiles.length === 0 ? (
                                       <p style={{ color: '#666', fontStyle: 'italic', fontSize: '0.875rem', margin: 0 }}>
-                                        No compatible files found. Upload files with formats: {req.formats.join(', ').toUpperCase()}
+                                        No compatible files found in Storage. Upload files with formats: {req.formats.join(', ').toUpperCase()}
                                         {req.filename_example ? ` and names like ${req.filename_example}` : ''}
                                       </p>
                                     ) : (
@@ -2923,7 +2443,7 @@ export default function CreateJob() {
               </>
             )}
 
-          {currentLevel === 5 && (
+          {currentLevel === 4 && (
             <div className="form-group">
               <label>Submit Job</label>
               <div className="builder-submit-layout">
@@ -3160,7 +2680,7 @@ export default function CreateJob() {
           <div className="form-actions">
             <button
               type="button"
-              onClick={() => navigate('/')}
+              onClick={handleCancelCreateJob}
               className="btn-secondary"
               disabled={creating}
             >
@@ -3176,7 +2696,7 @@ export default function CreateJob() {
                 Back
               </button>
             )}
-            {currentLevel < 5 ? (
+            {currentLevel < 4 ? (
               <button
                 key={`builder-next-${currentLevel}`}
                 type="button"
@@ -3185,15 +2705,14 @@ export default function CreateJob() {
                   creating ||
                   (currentLevel === 1 && !canAdvanceFromLevelOne) ||
                   (currentLevel === 2 && !canAdvanceFromLevelTwo) ||
-                  (currentLevel === 3 && !canAdvanceFromLevelThree) ||
-                  (currentLevel === 4 && !canAdvanceFromLevelFour)
+                  (currentLevel === 3 && !canAdvanceFromLevelThree)
                 }
                 onClick={(event) => {
                   event.preventDefault()
                   goToNextLevel()
                 }}
               >
-                {currentLevel === 4 ? 'Review Job' : 'Continue'}
+                {currentLevel === 3 ? 'Review Job' : 'Continue'}
               </button>
             ) : (
               <button
@@ -3209,6 +2728,10 @@ export default function CreateJob() {
         </form>
         </div>
       </div>
+      <CatCornerCard
+        config={getCreateJobCatConfig(currentLevel)}
+        className="cat-corner-card--job-builder"
+      />
     </div>
   )
 }

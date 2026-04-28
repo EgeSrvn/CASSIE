@@ -1,5 +1,29 @@
 import apiClient from './apiClient'
 
+export const getUploadResponseTimeoutMs = (sizeBytes?: number | null): number => {
+  const baseTimeoutMs = 5 * 60 * 1000
+  const bytesPerGiB = 1024 * 1024 * 1024
+  if (!sizeBytes || sizeBytes <= 0) {
+    return baseTimeoutMs
+  }
+
+  const extraGiB = Math.ceil(sizeBytes / bytesPerGiB)
+  return baseTimeoutMs + (extraGiB * 2 * 60 * 1000)
+}
+
+const extractApiErrorMessage = (errorData: any, fallback: string): string => {
+  const candidate = (
+    errorData?.message ||
+    errorData?.detail ||
+    errorData?.error?.message ||
+    errorData?.error
+  )
+
+  return typeof candidate === 'string' && candidate.trim().length > 0
+    ? candidate
+    : fallback
+}
+
 export interface File {
   id: number
   job_id: number | null
@@ -11,6 +35,11 @@ export interface File {
   checksum: string
   uploaded_at: string
   created_at: string
+}
+
+export interface StorageFileUpdatePayload {
+  filename?: string
+  file_format?: string
 }
 
 export interface FileListResponse {
@@ -38,7 +67,8 @@ export const uploadFile = async (
   fileType: 'input' | 'output' | 'intermediate' | 'log',
   fileFormat?: string,
   onProgress?: (progress: number) => void,
-  authToken?: string
+  authToken?: string,
+  signal?: AbortSignal
 ): Promise<File> => {
   try {
     const formData = new FormData()
@@ -57,10 +87,12 @@ export const uploadFile = async (
           'Content-Type': 'multipart/form-data',
           ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
         },
+        timeout: getUploadResponseTimeoutMs(file.size),
+        signal,
         onUploadProgress: (progressEvent) => {
           if (onProgress && progressEvent.total) {
             const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total)
-            onProgress(percentCompleted)
+            onProgress(Math.min(percentCompleted, 100))
           }
         },
       }
@@ -85,8 +117,28 @@ export const uploadFile = async (
       uploadError.code = errorData.error?.code || errorData.code
       throw uploadError
     }
+    if (error.code === 'ECONNABORTED') {
+      throw new Error('Upload reached the server, but storage did not confirm in time. Please retry after checking that MinIO is healthy.')
+    }
     throw error
   }
+}
+
+export interface StorageSummary {
+  used_bytes: number
+  max_storage_bytes: number
+  remaining_bytes: number | null
+  usage_ratio: number | null
+  subscription_upgrade_available: boolean
+  subscription_period: 'weekly' | string
+}
+
+export const getStorageSummary = async (): Promise<StorageSummary> => {
+  const response = await apiClient.get<{ success: boolean; data: StorageSummary; message?: string }>('/api/storage/summary')
+  if (response.data.success) {
+    return response.data.data
+  }
+  throw new Error(response.data.message || 'Failed to get storage summary')
 }
 
 export interface GoogleDriveJobImportPayload {
@@ -98,16 +150,23 @@ export interface GoogleDriveJobImportPayload {
 }
 
 export const importGoogleDriveFileToJob = async (
-  jobId: number,
+  jobId: number | null,
   payload: GoogleDriveJobImportPayload,
-  authToken?: string
+  authToken?: string,
+  signal?: AbortSignal
 ): Promise<File> => {
+  const params: { job_id?: number } = {}
+  if (jobId !== null) {
+    params.job_id = jobId
+  }
+
   const response = await apiClient.post<{ success: boolean; data: File; message?: string }>(
     '/api/storage/import-google-drive',
     payload,
     {
-      params: { job_id: jobId },
+      params,
       headers: authToken ? { Authorization: `Bearer ${authToken}` } : undefined,
+      signal,
     }
   )
 
@@ -210,6 +269,25 @@ export const getFileViewUrl = async (fileId: number): Promise<string> => {
 
 export const deleteFile = async (fileId: number): Promise<void> => {
   await apiClient.delete(`/api/storage/files/${fileId}`)
+}
+
+export const updateStorageFile = async (fileId: number, payload: StorageFileUpdatePayload): Promise<File> => {
+  try {
+    const response = await apiClient.put<{ success: boolean; data: File; message?: string }>(
+      `/api/storage/files/${fileId}`,
+      payload
+    )
+    if (response.data.success) {
+      return response.data.data
+    }
+    throw new Error(response.data.message || 'Failed to update file')
+  } catch (error: any) {
+    if (error.response?.data) {
+      const errorData = error.response.data
+      throw new Error(extractApiErrorMessage(errorData, 'Failed to update file'))
+    }
+    throw error
+  }
 }
 
 export const requestJobOutputsZip = async (jobId: number): Promise<JobOutputsZipStatus> => {

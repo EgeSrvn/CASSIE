@@ -6,9 +6,10 @@ This module provides endpoints for managing files in folders.
 
 import os
 import re
+import shutil
 import tempfile
 from urllib.parse import parse_qs, unquote, urlparse
-from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, status, Query, Form
+from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, status, Query, Form, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
@@ -17,10 +18,13 @@ from typing import Optional
 from backend.api.routes.auth import get_current_user
 from backend.api.models.user_model import UserResponse
 from backend.api.services.data_file_service import (
-    upload_data_file,
     upload_data_file_from_path,
+    create_data_file_record_for_existing_object,
+    build_data_s3_key,
     get_data_files_by_folder,
     get_data_file_by_id,
+    make_storage_data_filename,
+    prune_missing_data_file_records,
     rename_data_file,
     move_data_file,
     delete_data_file,
@@ -28,6 +32,7 @@ from backend.api.services.data_file_service import (
 )
 from backend.api.services.minio_client import get_minio_client
 from backend.api.services.user_service import get_user_by_id
+from backend.api.services.user_limit_service import validate_user_storage_capacity
 from backend.api.utils.response_builder import (
     success_response,
     error_response,
@@ -41,6 +46,177 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/data-files", tags=["data-files"])
 
 minio_client = get_minio_client()
+
+
+def _write_upload_chunk(temp_file, chunk: bytes) -> None:
+    temp_file.write(chunk)
+
+
+def _parse_content_length(request: Request) -> Optional[int]:
+    raw_value = request.headers.get("content-length")
+    if not raw_value:
+        return None
+    try:
+        return max(int(raw_value), 0)
+    except ValueError:
+        return None
+
+
+class DirectUploadPrepareRequest(BaseModel):
+    filename: str = Field(..., min_length=1, max_length=255)
+    size_bytes: int = Field(..., ge=1)
+    folder_id: Optional[int] = None
+    file_format: Optional[str] = Field(None, max_length=50)
+
+
+class DirectUploadCompleteRequest(BaseModel):
+    filename: str = Field(..., min_length=1, max_length=255)
+    s3_key: str = Field(..., min_length=1, max_length=500)
+    size_bytes: int = Field(..., ge=1)
+    folder_id: Optional[int] = None
+    file_format: Optional[str] = Field(None, max_length=50)
+
+
+@router.post("/direct-upload/prepare", status_code=status.HTTP_200_OK)
+async def prepare_direct_data_file_upload(
+    payload: DirectUploadPrepareRequest,
+    current_user: UserResponse = Depends(get_current_user),
+):
+    """Create a presigned URL so the browser can upload directly to object storage."""
+    try:
+        filename = _safe_cloud_filename(payload.filename)
+
+        storage_ok, storage_error = await run_in_threadpool(
+            validate_user_storage_capacity,
+            current_user.id,
+            current_user.username,
+            payload.size_bytes,
+            None,
+        )
+        if not storage_ok:
+            return JSONResponse(
+                content=error_response(
+                    error_code=ErrorCode.VALIDATION_ERROR,
+                    message=storage_error,
+                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                ),
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            )
+
+        await run_in_threadpool(minio_client.ensure_user_bucket, current_user.id, current_user.username)
+        storage_filename = make_storage_data_filename(filename)
+        s3_key = build_data_s3_key(current_user.id, storage_filename, payload.folder_id)
+        upload_url = await run_in_threadpool(
+            minio_client.generate_presigned_url,
+            current_user.id,
+            s3_key,
+            24 * 60 * 60,
+            current_user.username,
+            "PUT",
+        )
+
+        return success_response(
+            data={
+                "upload_url": upload_url,
+                "s3_key": s3_key,
+                "filename": filename,
+                "expires_in": 24 * 60 * 60,
+            },
+            message="Direct upload URL prepared",
+        )
+    except ValueError as e:
+        return JSONResponse(
+            content=error_response(
+                error_code=ErrorCode.VALIDATION_ERROR,
+                message=str(e),
+                status_code=status.HTTP_400_BAD_REQUEST,
+            ),
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    except Exception as e:
+        logger.error(f"Error preparing direct data upload: {e}", exc_info=True)
+        return JSONResponse(
+            content=error_response(
+                error_code=ErrorCode.INTERNAL_ERROR,
+                message="Failed to prepare direct upload",
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            ),
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+
+@router.post("/direct-upload/complete", status_code=status.HTTP_201_CREATED)
+async def complete_direct_data_file_upload(
+    payload: DirectUploadCompleteRequest,
+    current_user: UserResponse = Depends(get_current_user),
+):
+    """Confirm direct object upload and register it in the data library."""
+    try:
+        expected_prefix = f"data/{current_user.id}/"
+        if not payload.s3_key.startswith(expected_prefix):
+            raise ValueError("Upload key does not belong to the current user")
+
+        object_info = await run_in_threadpool(
+            minio_client.get_file_info,
+            current_user.id,
+            payload.s3_key,
+            current_user.username,
+        )
+        if not object_info:
+            raise ValueError("Storage has not confirmed this uploaded file yet")
+
+        actual_size = int(object_info.get("size") or 0)
+        if actual_size != payload.size_bytes:
+            raise ValueError(
+                f"Uploaded object size mismatch: expected {payload.size_bytes} bytes, storage has {actual_size} bytes"
+            )
+
+        filename = _safe_cloud_filename(payload.filename)
+        file_record = await run_in_threadpool(
+            create_data_file_record_for_existing_object,
+            current_user.id,
+            filename,
+            payload.s3_key,
+            payload.folder_id,
+            payload.file_format,
+            actual_size,
+            object_info.get("etag"),
+        )
+
+        return success_response(
+            data={
+                "id": file_record.id,
+                "filename": file_record.filename,
+                "s3_key": file_record.s3_key,
+                "file_type": file_record.file_type.value,
+                "file_format": file_record.file_format,
+                "size_bytes": file_record.size_bytes,
+                "checksum": file_record.checksum,
+                "uploaded_at": file_record.uploaded_at.isoformat() if file_record.uploaded_at else None,
+                "created_at": file_record.created_at.isoformat() if file_record.created_at else None,
+            },
+            message="File uploaded successfully",
+            status_code=status.HTTP_201_CREATED,
+        )
+    except ValueError as e:
+        return JSONResponse(
+            content=error_response(
+                error_code=ErrorCode.VALIDATION_ERROR,
+                message=str(e),
+                status_code=status.HTTP_400_BAD_REQUEST,
+            ),
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    except Exception as e:
+        logger.error(f"Error completing direct data upload: {e}", exc_info=True)
+        return JSONResponse(
+            content=error_response(
+                error_code=ErrorCode.INTERNAL_ERROR,
+                message="Failed to complete direct upload",
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            ),
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
 
 
 class CloudImportRequest(BaseModel):
@@ -254,6 +430,7 @@ def _download_google_drive_file(
 
 @router.post("/upload", status_code=status.HTTP_201_CREATED)
 async def upload_data_file_endpoint(
+    request: Request,
     file: UploadFile = File(...),
     folder_id: Optional[str] = Form(None, description="Target folder ID (None for root)"),
     file_format: Optional[str] = Form(None, description="File format (fastq, fasta, etc.)"),
@@ -271,25 +448,49 @@ async def upload_data_file_endpoint(
     Returns:
         JSONResponse: Created file record
     """
+    temp_path: Optional[str] = None
     try:
-        # Read file content
-        content = await file.read()
-        
-        # Parse folder_id from form data (can be string or None)
+        request_size = _parse_content_length(request)
+        if request_size is not None:
+            storage_ok, storage_error = await run_in_threadpool(
+                validate_user_storage_capacity,
+                current_user.id,
+                current_user.username,
+                request_size,
+                shutil.disk_usage(tempfile.gettempdir()).free,
+            )
+            if not storage_ok:
+                raise ValueError(storage_error)
+
         folder_id_int = None
         if folder_id and folder_id.strip():
             try:
                 folder_id_int = int(folder_id)
             except ValueError:
                 raise ValueError(f"Invalid folder_id: {folder_id}")
-        
-        # Upload file
-        file_record = upload_data_file(
+
+        file_size = 0
+        chunk_size = 1024 * 1024
+        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as temp_file:
+            temp_path = temp_file.name
+            while True:
+                chunk = await file.read(chunk_size)
+                if not chunk:
+                    break
+                file_size += len(chunk)
+                await run_in_threadpool(_write_upload_chunk, temp_file, chunk)
+            await run_in_threadpool(temp_file.flush)
+
+        if file_size <= 0:
+            raise ValueError("Uploaded file is empty")
+
+        file_record = await run_in_threadpool(
+            upload_data_file_from_path,
             user_id=current_user.id,
-            file_content=content,
+            local_path=temp_path,
             filename=file.filename,
             folder_id=folder_id_int,
-            file_format=file_format
+            file_format=file_format,
         )
         
         return success_response(
@@ -322,6 +523,13 @@ async def upload_data_file_endpoint(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
         return JSONResponse(content=error_data, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    finally:
+        await file.close()
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.unlink(temp_path)
+            except OSError as cleanup_error:
+                logger.warning(f"Failed to delete upload temp file {temp_path}: {cleanup_error}")
 
 
 @router.post("/import-cloud", status_code=status.HTTP_201_CREATED)
@@ -486,6 +694,11 @@ async def list_data_files(
         JSONResponse: List of files
     """
     try:
+        await run_in_threadpool(
+            prune_missing_data_file_records,
+            current_user.id,
+            current_user.username,
+        )
         files = get_data_files_by_folder(folder_id, current_user.id)
         return success_response(
             data=[{
@@ -526,6 +739,11 @@ async def get_data_file_tree(
     """
     try:
         from backend.api.services.folder_service import get_folder_tree
+        await run_in_threadpool(
+            prune_missing_data_file_records,
+            current_user.id,
+            current_user.username,
+        )
         tree = get_folder_tree(current_user.id)
         return success_response(
             data=tree,
