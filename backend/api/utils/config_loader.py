@@ -132,6 +132,7 @@ class KubernetesConfig:
         self.job_timeout_seconds = int(os.getenv("KUBERNETES_JOB_TIMEOUT_SECONDS", "0"))
         self.poll_interval_seconds = int(os.getenv("KUBERNETES_POLL_INTERVAL_SECONDS", "5"))
         self.cluster_check_timeout_seconds = int(os.getenv("KUBERNETES_CLUSTER_CHECK_TIMEOUT_SECONDS", "60"))
+        self.availability_check_timeout_seconds = int(os.getenv("KUBERNETES_AVAILABILITY_CHECK_TIMEOUT_SECONDS", "5"))
         self.minio_endpoint = os.getenv("KUBERNETES_MINIO_ENDPOINT", "")
         self.aws_cli_image = os.getenv("KUBERNETES_AWSCLI_IMAGE", "amazon/aws-cli:2.17.40")
 
@@ -363,6 +364,7 @@ class Config:
                 "job_timeout_seconds": self.kubernetes.job_timeout_seconds,
                 "poll_interval_seconds": self.kubernetes.poll_interval_seconds,
                 "cluster_check_timeout_seconds": self.kubernetes.cluster_check_timeout_seconds,
+                "availability_check_timeout_seconds": self.kubernetes.availability_check_timeout_seconds,
                 "minio_endpoint": self.kubernetes.minio_endpoint,
                 "aws_cli_image": self.kubernetes.aws_cli_image,
             },

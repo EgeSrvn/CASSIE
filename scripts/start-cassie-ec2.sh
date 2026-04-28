@@ -217,9 +217,9 @@ else
   COMPOSE_CMD=(docker-compose --env-file "${COMPOSE_ENV_FILE}")
 fi
 
-export CASSIE_MINIKUBE_CPUS="$(get_env_value_or_default "CASSIE_MINIKUBE_CPUS" "4")"
-export CASSIE_MINIKUBE_MEMORY_MIB="$(get_env_value_or_default "CASSIE_MINIKUBE_MEMORY_MIB" "7800")"
-export CASSIE_MINIKUBE_DISK_SIZE="$(get_env_value_or_default "CASSIE_MINIKUBE_DISK_SIZE" "15g")"
+export CASSIE_MINIKUBE_CPUS="$(get_env_value_or_default "CASSIE_MINIKUBE_CPUS" "6")"
+export CASSIE_MINIKUBE_MEMORY_MIB="$(get_env_value_or_default "CASSIE_MINIKUBE_MEMORY_MIB" "24576")"
+export CASSIE_MINIKUBE_DISK_SIZE="$(get_env_value_or_default "CASSIE_MINIKUBE_DISK_SIZE" "40g")"
 export CASSIE_REBUILD_TOOL_IMAGES="$(get_env_value_or_default "CASSIE_REBUILD_TOOL_IMAGES" "0")"
 export CASSIE_DOCKER_RETRY_ATTEMPTS="$(get_env_value_or_default "CASSIE_DOCKER_RETRY_ATTEMPTS" "3")"
 export CASSIE_DOCKER_RETRY_DELAY_SECONDS="$(get_env_value_or_default "CASSIE_DOCKER_RETRY_DELAY_SECONDS" "5")"

@@ -4361,7 +4361,7 @@ def _kubectl_env() -> Dict[str, str]:
 
 def kubernetes_is_available() -> bool:
     """Return True when kubectl can reach a cluster."""
-    timeout = max(5, int(os.getenv("KUBERNETES_CLUSTER_CHECK_TIMEOUT_SECONDS", "60")))
+    timeout = max(1, int(os.getenv("KUBERNETES_AVAILABILITY_CHECK_TIMEOUT_SECONDS", "5")))
     probes = [
         ["kubectl", "get", "--raw=/readyz?verbose", f"--request-timeout={timeout}s"],
         ["kubectl", "get", "namespace", os.getenv("KUBERNETES_NAMESPACE", "default"), f"--request-timeout={timeout}s"],
