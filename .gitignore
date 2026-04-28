@@ -136,6 +136,7 @@ celerybeat.pid
 
 # Environments
 .env
+.env.cassie-ec2
 .envrc
 .venv
 env/

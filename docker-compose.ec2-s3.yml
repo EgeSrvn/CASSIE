@@ -1,0 +1,144 @@
+services:
+  postgres:
+    image: ${CASSIE_POSTGRES_IMAGE:-postgres:15}
+    container_name: cassie-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER:-admin}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-admin}
+      POSTGRES_DB: postgres
+    volumes:
+      - cassie_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-admin} -d postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - cassie_internal
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+      args:
+        PYTHON_BASE_IMAGE: ${CASSIE_BACKEND_BASE_IMAGE:-python:3.12-slim}
+        KUBECTL_VERSION: ${CASSIE_KUBECTL_VERSION:-v1.35.1}
+    container_name: cassie-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: ${DB_USER:-admin}
+      DB_PASSWORD: ${DB_PASSWORD:-admin}
+      DB_NAME: ${DB_NAME:-cassie_db}
+      # AWS S3 migration change: leave endpoint values blank for native S3 mode.
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-}
+      MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-}
+      # AWS S3 migration change: current code still expects explicit credentials for stage input download.
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-}
+      MINIO_REGION: ${MINIO_REGION:-us-east-1}
+      MINIO_BUCKET_PREFIX: ${MINIO_BUCKET_PREFIX:-cassie}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-me-in-production}
+      EXECUTION_BACKEND: ${EXECUTION_BACKEND:-kubernetes}
+      KUBERNETES_NAMESPACE: ${KUBERNETES_NAMESPACE:-default}
+      KUBERNETES_IMAGE_PULL_POLICY: ${KUBERNETES_IMAGE_PULL_POLICY:-IfNotPresent}
+      KUBERNETES_JOB_TIMEOUT_SECONDS: ${KUBERNETES_JOB_TIMEOUT_SECONDS:-0}
+      KUBERNETES_POLL_INTERVAL_SECONDS: ${KUBERNETES_POLL_INTERVAL_SECONDS:-5}
+      # AWS S3 migration change: no MinIO endpoint is needed inside Kubernetes jobs.
+      KUBERNETES_MINIO_ENDPOINT: ${KUBERNETES_MINIO_ENDPOINT:-}
+      CASSIE_HOST_IP: ${CASSIE_HOST_IP:-}
+      CASSIE_CLUSTER_CPU_MILLIS: ${CASSIE_CLUSTER_CPU_MILLIS:-}
+      CASSIE_CLUSTER_MEMORY_MIB: ${CASSIE_CLUSTER_MEMORY_MIB:-}
+      CASSIE_CLUSTER_STORAGE_MIB: ${CASSIE_CLUSTER_STORAGE_MIB:-}
+      CASSIE_CLUSTER_STORAGE_RESERVE_MIB: ${CASSIE_CLUSTER_STORAGE_RESERVE_MIB:-2048}
+      CASSIE_TOOL_STORAGE_MIB: ${CASSIE_TOOL_STORAGE_MIB:-}
+      CASSIE_RUNTIME_TRAINING_CSV: ${CASSIE_RUNTIME_TRAINING_CSV:-/app/training_data/tool_runtime_training.csv}
+      FASTQC_THREADS: ${FASTQC_THREADS:-auto}
+      GENOMESCOPE2_THREADS: ${GENOMESCOPE2_THREADS:-auto}
+      SPADES_THREADS: ${SPADES_THREADS:-auto}
+      SPADES_MEMORY_GB: ${SPADES_MEMORY_GB:-auto}
+      SPADES_LOW_RESOURCE: ${SPADES_LOW_RESOURCE:-auto}
+      SPADES_KMERS: ${SPADES_KMERS:-auto}
+      SPADES_MEMORY_LIMIT: ${SPADES_MEMORY_LIMIT:-auto}
+      METASPADES_THREADS: ${METASPADES_THREADS:-auto}
+      METASPADES_MEMORY_GB: ${METASPADES_MEMORY_GB:-auto}
+      HIFIASM_THREADS: ${HIFIASM_THREADS:-auto}
+      HIFIASM_MEMORY_GB: ${HIFIASM_MEMORY_GB:-auto}
+      VERKKO_THREADS: ${VERKKO_THREADS:-auto}
+      VERKKO_MEMORY_GB: ${VERKKO_MEMORY_GB:-auto}
+      LIFTOFF_THREADS: ${LIFTOFF_THREADS:-auto}
+      CAT_THREADS: ${CAT_THREADS:-auto}
+      CAT_MEMORY_GB: ${CAT_MEMORY_GB:-auto}
+      BUSCO_THREADS: ${BUSCO_THREADS:-auto}
+      BUSCO_MEMORY_GB: ${BUSCO_MEMORY_GB:-auto}
+      MERQURY_THREADS: ${MERQURY_THREADS:-auto}
+      MERQURY_MEMORY_GB: ${MERQURY_MEMORY_GB:-auto}
+      QUAST_THREADS: ${QUAST_THREADS:-auto}
+      KUBECONFIG: /root/.kube/config
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      NO_PROXY: ${KUBERNETES_NO_PROXY:-localhost,127.0.0.1,host.docker.internal,kubernetes.docker.internal}
+      http_proxy: ""
+      https_proxy: ""
+      no_proxy: ${KUBERNETES_NO_PROXY:-localhost,127.0.0.1,host.docker.internal,kubernetes.docker.internal}
+      ENABLE_LOCAL_INFRA_BOOTSTRAP: "false"
+      DEFAULT_MAX_USER_STORAGE_GB: ${DEFAULT_MAX_USER_STORAGE_GB:-35}
+      MIN_FREE_STORAGE_GB: ${MIN_FREE_STORAGE_GB:-5}
+      EMAIL_ENABLED: ${EMAIL_ENABLED:-false}
+      EMAIL_HOST: ${EMAIL_HOST:-}
+      EMAIL_PORT: ${EMAIL_PORT:-587}
+      EMAIL_USERNAME: ${EMAIL_USERNAME:-}
+      EMAIL_PASSWORD: ${EMAIL_PASSWORD:-}
+      EMAIL_FROM_ADDRESS: ${EMAIL_FROM_ADDRESS:-}
+      EMAIL_FROM_NAME: ${EMAIL_FROM_NAME:-CASSIE}
+      EMAIL_USE_TLS: ${EMAIL_USE_TLS:-true}
+      EMAIL_USE_SSL: ${EMAIL_USE_SSL:-false}
+      VM_POOL_TOTAL_CPU: ${VM_POOL_TOTAL_CPU:-4}
+      VM_POOL_TOTAL_MEMORY_GIB: ${VM_POOL_TOTAL_MEMORY_GIB:-8}
+      VM1_SLOTS: ${VM1_SLOTS:-8}
+      VM2_SLOTS: ${VM2_SLOTS:-4}
+      VM3_SLOTS: ${VM3_SLOTS:-2}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ${DOCKER_SOCK_PATH:-/var/run/docker.sock}:/var/run/docker.sock
+      - ${KUBE_CONFIG_DIR:-/opt/CASSIE/.cassie/kube}:/root/.kube:ro
+      - ./data/runtime_training:/app/training_data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - cassie_internal
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        NODE_BASE_IMAGE: ${CASSIE_FRONTEND_BUILD_BASE_IMAGE:-node:20-alpine}
+        NGINX_BASE_IMAGE: ${CASSIE_FRONTEND_NGINX_BASE_IMAGE:-nginx:1.27-alpine}
+        # AWS migration change: keep blank when frontend nginx should proxy /api internally.
+        VITE_API_URL: ${VITE_API_URL:-}
+        VITE_GOOGLE_DRIVE_CLIENT_ID: ${VITE_GOOGLE_DRIVE_CLIENT_ID:-}
+        VITE_GOOGLE_DRIVE_API_KEY: ${VITE_GOOGLE_DRIVE_API_KEY:-}
+        VITE_GOOGLE_DRIVE_APP_ID: ${VITE_GOOGLE_DRIVE_APP_ID:-}
+    container_name: cassie-frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_started
+    ports:
+      - "3000:80"
+    networks:
+      - cassie_internal
+
+volumes:
+  cassie_postgres_data:
+
+networks:
+  cassie_internal:
