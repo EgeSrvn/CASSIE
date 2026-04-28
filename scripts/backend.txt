@@ -1,0 +1,396 @@
+[
+    {
+        "Id": "1560067bce7a22536ecd42c3f6f7ff628cf1097ef726910e85d176ec61933e62",
+        "Created": "2026-04-28T21:44:21.719080065Z",
+        "Path": "uvicorn",
+        "Args": [
+            "backend.api.main:app",
+            "--host",
+            "0.0.0.0",
+            "--port",
+            "8000"
+        ],
+        "State": {
+            "Status": "running",
+            "Running": true,
+            "Paused": false,
+            "Restarting": false,
+            "OOMKilled": false,
+            "Dead": false,
+            "Pid": 12881,
+            "ExitCode": 0,
+            "Error": "",
+            "StartedAt": "2026-04-28T21:44:23.143591488Z",
+            "FinishedAt": "0001-01-01T00:00:00Z",
+            "Health": {
+                "Status": "healthy",
+                "FailingStreak": 0,
+                "Log": [
+                    {
+                        "Start": "2026-04-28T21:49:09.327888575Z",
+                        "End": "2026-04-28T21:49:09.730372872Z",
+                        "ExitCode": 0,
+                        "Output": ""
+                    },
+                    {
+                        "Start": "2026-04-28T21:49:24.731566623Z",
+                        "End": "2026-04-28T21:49:25.11925185Z",
+                        "ExitCode": 0,
+                        "Output": ""
+                    },
+                    {
+                        "Start": "2026-04-28T21:49:40.120507838Z",
+                        "End": "2026-04-28T21:49:40.509548311Z",
+                        "ExitCode": 0,
+                        "Output": ""
+                    },
+                    {
+                        "Start": "2026-04-28T21:49:55.510815391Z",
+                        "End": "2026-04-28T21:49:55.891955944Z",
+                        "ExitCode": 0,
+                        "Output": ""
+                    },
+                    {
+                        "Start": "2026-04-28T21:50:10.89345113Z",
+                        "End": "2026-04-28T21:50:11.283586476Z",
+                        "ExitCode": 0,
+                        "Output": ""
+                    }
+                ]
+            }
+        },
+        "Image": "sha256:224fc2c4ead461a7c6380c2fd7d4f977a25087e039b0baf096e6a76a721778aa",
+        "ResolvConfPath": "/var/lib/docker/containers/1560067bce7a22536ecd42c3f6f7ff628cf1097ef726910e85d176ec61933e62/resolv.conf",
+        "HostnamePath": "/var/lib/docker/containers/1560067bce7a22536ecd42c3f6f7ff628cf1097ef726910e85d176ec61933e62/hostname",
+        "HostsPath": "/var/lib/docker/containers/1560067bce7a22536ecd42c3f6f7ff628cf1097ef726910e85d176ec61933e62/hosts",
+        "LogPath": "/var/lib/docker/containers/1560067bce7a22536ecd42c3f6f7ff628cf1097ef726910e85d176ec61933e62/1560067bce7a22536ecd42c3f6f7ff628cf1097ef726910e85d176ec61933e62-json.log",
+        "Name": "/cassie-backend",
+        "RestartCount": 0,
+        "Driver": "overlayfs",
+        "Platform": "linux",
+        "MountLabel": "",
+        "ProcessLabel": "",
+        "AppArmorProfile": "docker-default",
+        "ExecIDs": null,
+        "HostConfig": {
+            "Binds": [
+                "/var/run/docker.sock:/var/run/docker.sock:rw",
+                "/opt/CASSIE/.cassie/kube:/root/.kube:ro",
+                "/opt/CASSIE/data/runtime_training:/app/training_data:rw"
+            ],
+            "ContainerIDFile": "",
+            "LogConfig": {
+                "Type": "json-file",
+                "Config": {}
+            },
+            "NetworkMode": "cassie_cassie_internal",
+            "PortBindings": {
+                "8000/tcp": [
+                    {
+                        "HostIp": "",
+                        "HostPort": "8000"
+                    }
+                ]
+            },
+            "RestartPolicy": {
+                "Name": "unless-stopped",
+                "MaximumRetryCount": 0
+            },
+            "AutoRemove": false,
+            "VolumeDriver": "",
+            "VolumesFrom": null,
+            "ConsoleSize": [
+                0,
+                0
+            ],
+            "CapAdd": null,
+            "CapDrop": null,
+            "CgroupnsMode": "private",
+            "Dns": null,
+            "DnsOptions": null,
+            "DnsSearch": null,
+            "ExtraHosts": [
+                "host.docker.internal:host-gateway"
+            ],
+            "GroupAdd": null,
+            "IpcMode": "private",
+            "Cgroup": "",
+            "Links": null,
+            "OomScoreAdj": 0,
+            "PidMode": "",
+            "Privileged": false,
+            "PublishAllPorts": false,
+            "ReadonlyRootfs": false,
+            "SecurityOpt": null,
+            "UTSMode": "",
+            "UsernsMode": "",
+            "ShmSize": 67108864,
+            "Runtime": "runc",
+            "Isolation": "",
+            "CpuShares": 0,
+            "Memory": 0,
+            "NanoCpus": 0,
+            "CgroupParent": "",
+            "BlkioWeight": 0,
+            "BlkioWeightDevice": null,
+            "BlkioDeviceReadBps": null,
+            "BlkioDeviceWriteBps": null,
+            "BlkioDeviceReadIOps": null,
+            "BlkioDeviceWriteIOps": null,
+            "CpuPeriod": 0,
+            "CpuQuota": 0,
+            "CpuRealtimePeriod": 0,
+            "CpuRealtimeRuntime": 0,
+            "CpusetCpus": "",
+            "CpusetMems": "",
+            "Devices": null,
+            "DeviceCgroupRules": null,
+            "DeviceRequests": null,
+            "MemoryReservation": 0,
+            "MemorySwap": 0,
+            "MemorySwappiness": null,
+            "OomKillDisable": null,
+            "PidsLimit": null,
+            "Ulimits": null,
+            "CpuCount": 0,
+            "CpuPercent": 0,
+            "IOMaximumIOps": 0,
+            "IOMaximumBandwidth": 0,
+            "MaskedPaths": [
+                "/proc/acpi",
+                "/proc/asound",
+                "/proc/interrupts",
+                "/proc/kcore",
+                "/proc/keys",
+                "/proc/latency_stats",
+                "/proc/sched_debug",
+                "/proc/scsi",
+                "/proc/timer_list",
+                "/proc/timer_stats",
+                "/sys/devices/virtual/powercap",
+                "/sys/firmware"
+            ],
+            "ReadonlyPaths": [
+                "/proc/bus",
+                "/proc/fs",
+                "/proc/irq",
+                "/proc/sys",
+                "/proc/sysrq-trigger"
+            ]
+        },
+        "Storage": {
+            "RootFS": {
+                "Snapshot": {
+                    "Name": "overlayfs"
+                }
+            }
+        },
+        "Mounts": [
+            {
+                "Type": "bind",
+                "Source": "/opt/CASSIE/.cassie/kube",
+                "Destination": "/root/.kube",
+                "Mode": "ro",
+                "RW": false,
+                "Propagation": "rprivate"
+            },
+            {
+                "Type": "bind",
+                "Source": "/opt/CASSIE/data/runtime_training",
+                "Destination": "/app/training_data",
+                "Mode": "rw",
+                "RW": true,
+                "Propagation": "rprivate"
+            },
+            {
+                "Type": "bind",
+                "Source": "/var/run/docker.sock",
+                "Destination": "/var/run/docker.sock",
+                "Mode": "rw",
+                "RW": true,
+                "Propagation": "rprivate"
+            }
+        ],
+        "Config": {
+            "Hostname": "1560067bce7a",
+            "Domainname": "",
+            "User": "",
+            "AttachStdin": false,
+            "AttachStdout": true,
+            "AttachStderr": true,
+            "ExposedPorts": {
+                "8000/tcp": {}
+            },
+            "Tty": false,
+            "OpenStdin": false,
+            "StdinOnce": false,
+            "Env": [
+                "VM3_SLOTS=2",
+                "https_proxy=",
+                "CAT_THREADS=auto",
+                "VERKKO_MEMORY_GB=auto",
+                "METASPADES_MEMORY_GB=auto",
+                "MERQURY_MEMORY_GB=auto",
+                "MERQURY_THREADS=auto",
+                "VERKKO_THREADS=auto",
+                "HTTP_PROXY=",
+                "MINIO_REGION=eu-north-1",
+                "ENABLE_LOCAL_INFRA_BOOTSTRAP=false",
+                "MINIO_ENDPOINT=",
+                "CASSIE_HOST_IP=",
+                "CASSIE_CLUSTER_STORAGE_MIB=",
+                "DB_NAME=cassie_db",
+                "KUBERNETES_JOB_TIMEOUT_SECONDS=0",
+                "DB_PORT=5432",
+                "EMAIL_ENABLED=true",
+                "EMAIL_FROM_ADDRESS=cassiecloudcnoreply@gmail.com",
+                "CAT_MEMORY_GB=auto",
+                "CASSIE_CLUSTER_MEMORY_MIB=24576",
+                "SPADES_MEMORY_GB=auto",
+                "HIFIASM_THREADS=auto",
+                "CASSIE_CLUSTER_CPU_MILLIS=7000",
+                "DEFAULT_MAX_USER_STORAGE_GB=35",
+                "SPADES_THREADS=auto",
+                "KUBERNETES_NAMESPACE=default",
+                "EMAIL_USERNAME=cassiecloudcnoreply@gmail.com",
+                "SPADES_KMERS=auto",
+                "KUBERNETES_MINIO_ENDPOINT=",
+                "EMAIL_USE_TLS=true",
+                "METASPADES_THREADS=auto",
+                "CASSIE_RUNTIME_TRAINING_CSV=/app/training_data/tool_runtime_training.csv",
+                "MINIO_BUCKET_PREFIX=cassie-prod-cassie-2026",
+                "BUSCO_MEMORY_GB=auto",
+                "MINIO_PUBLIC_ENDPOINT=",
+                "CASSIE_TOOL_STORAGE_MIB=",
+                "VM_POOL_TOTAL_MEMORY_GIB=24",
+                "VM_POOL_TOTAL_CPU=6",
+                "EMAIL_HOST=smtp.gmail.com",
+                "EMAIL_PASSWORD=mlfzltullahuopsg",
+                "LIFTOFF_THREADS=auto",
+                "EXECUTION_BACKEND=kubernetes",
+                "BUSCO_THREADS=auto",
+                "EMAIL_USE_SSL=false",
+                "VM1_SLOTS=2",
+                "EMAIL_PORT=587",
+                "HTTPS_PROXY=",
+                "no_proxy=localhost,127.0.0.1,host.docker.internal,kubernetes.docker.internal",
+                "FASTQC_THREADS=auto",
+                "CASSIE_CLUSTER_STORAGE_RESERVE_MIB=4096",
+                "QUAST_THREADS=auto",
+                "http_proxy=",
+                "NO_PROXY=localhost,127.0.0.1,host.docker.internal,kubernetes.docker.internal",
+                "VM2_SLOTS=2",
+                "SPADES_MEMORY_LIMIT=auto",
+                "KUBECONFIG=/root/.kube/config",
+                "MIN_FREE_STORAGE_GB=5",
+                "MINIO_SECRET_KEY=bbLaPm5ul+a0C2eTQKQWRTROv+4Nx0PyN7k2XPYM",
+                "HIFIASM_MEMORY_GB=auto",
+                "CORS_ORIGINS=http://13.60.98.18:3000",
+                "JWT_SECRET_KEY=2VAq8gpv/sjaL8zu36aiRujmq+elhYDdUNzA0iGFZWXh6mBqi2RNgkjdWilWJ4Ju",
+                "EMAIL_FROM_NAME=CASSIE",
+                "DB_USER=admin",
+                "DB_HOST=postgres",
+                "DB_PASSWORD=admin",
+                "SPADES_LOW_RESOURCE=auto",
+                "GENOMESCOPE2_THREADS=auto",
+                "KUBERNETES_IMAGE_PULL_POLICY=IfNotPresent",
+                "KUBERNETES_POLL_INTERVAL_SECONDS=5",
+                "MINIO_ACCESS_KEY=AKIAYCN26DDGP533TYNC",
+                "PATH=/usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                "LANG=C.UTF-8",
+                "GPG_KEY=7169605F62C751356D054A26A821E680E5FA6305",
+                "PYTHON_VERSION=3.12.13",
+                "PYTHON_SHA256=c08bc65a81971c1dd5783182826503369466c7e67374d1646519adf05207b684",
+                "PYTHONDONTWRITEBYTECODE=1",
+                "PYTHONUNBUFFERED=1"
+            ],
+            "Cmd": [
+                "uvicorn",
+                "backend.api.main:app",
+                "--host",
+                "0.0.0.0",
+                "--port",
+                "8000"
+            ],
+            "Healthcheck": {
+                "Test": [
+                    "CMD-SHELL",
+                    "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/docs', timeout=5)\" >/dev/null 2>&1 || exit 1"
+                ],
+                "Interval": 15000000000,
+                "Timeout": 10000000000,
+                "StartPeriod": 90000000000,
+                "Retries": 12
+            },
+            "Image": "cassie-backend",
+            "Volumes": null,
+            "WorkingDir": "/app",
+            "Entrypoint": null,
+            "Labels": {
+                "com.docker.compose.config-hash": "d82a53d599d93efca5cf5ce062035c608c5bd0d5f2cc29fa0faeb26a288363a9",
+                "com.docker.compose.container-number": "1",
+                "com.docker.compose.depends_on": "postgres:service_healthy:false",
+                "com.docker.compose.image": "sha256:224fc2c4ead461a7c6380c2fd7d4f977a25087e039b0baf096e6a76a721778aa",
+                "com.docker.compose.oneoff": "False",
+                "com.docker.compose.project": "cassie",
+                "com.docker.compose.project.config_files": "/opt/CASSIE/docker-compose.ec2-s3.yml",
+                "com.docker.compose.project.environment_file": "/opt/CASSIE/.env",
+                "com.docker.compose.project.working_dir": "/opt/CASSIE",
+                "com.docker.compose.replace": "cassie-backend",
+                "com.docker.compose.service": "backend",
+                "com.docker.compose.version": "5.1.3"
+            }
+        },
+        "NetworkSettings": {
+            "SandboxID": "439717c5529b6688bfa188519114f742b250f628651e196e165e8ba377474527",
+            "SandboxKey": "/var/run/docker/netns/439717c5529b",
+            "Ports": {
+                "8000/tcp": [
+                    {
+                        "HostIp": "0.0.0.0",
+                        "HostPort": "8000"
+                    },
+                    {
+                        "HostIp": "::",
+                        "HostPort": "8000"
+                    }
+                ]
+            },
+            "Networks": {
+                "cassie_cassie_internal": {
+                    "IPAMConfig": null,
+                    "Links": null,
+                    "Aliases": [
+                        "cassie-backend",
+                        "backend"
+                    ],
+                    "DriverOpts": null,
+                    "GwPriority": 0,
+                    "NetworkID": "fcdceaa7954327e2e51aebf59178a5e04ab4e73babe7b8ce320b9f77d96df645",
+                    "EndpointID": "5a1aa9ef4341608dc10ac087a8c1b4f837b75abd43c0adf7b8f9ddd5146a5974",
+                    "Gateway": "172.18.0.1",
+                    "IPAddress": "172.18.0.2",
+                    "MacAddress": "32:de:08:d4:53:91",
+                    "IPPrefixLen": 16,
+                    "IPv6Gateway": "",
+                    "GlobalIPv6Address": "",
+                    "GlobalIPv6PrefixLen": 0,
+                    "DNSNames": [
+                        "cassie-backend",
+                        "backend",
+                        "1560067bce7a"
+                    ]
+                }
+            }
+        },
+        "ImageManifestDescriptor": {
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "digest": "sha256:7cefbbf257b8c8c04b0a6728a858b6cf076ac8887aeaf828bd9ba128b2722a0c",
+            "size": 2009,
+            "platform": {
+                "architecture": "amd64",
+                "os": "linux"
+            }
+        }
+    }
+]

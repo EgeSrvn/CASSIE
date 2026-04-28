@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT_DIR}"
 
 COMPOSE_FILE="${ROOT_DIR}/docker-compose.ec2-s3.yml"
+COMPOSE_ENV_FILE="${ROOT_DIR}/.env"
 
 load_env_file() {
   local env_file="${ROOT_DIR}/.env"
@@ -210,10 +211,10 @@ require_command "docker" "Docker is required but was not found in PATH."
 require_command "bash" "bash is required but was not found in PATH."
 
 if test_docker_compose_v2; then
-  COMPOSE_CMD=(docker compose)
+  COMPOSE_CMD=(docker compose --env-file "${COMPOSE_ENV_FILE}")
 else
   require_command "docker-compose" "Docker Compose is required but was not found."
-  COMPOSE_CMD=(docker-compose)
+  COMPOSE_CMD=(docker-compose --env-file "${COMPOSE_ENV_FILE}")
 fi
 
 export CASSIE_MINIKUBE_CPUS="$(get_env_value_or_default "CASSIE_MINIKUBE_CPUS" "4")"
