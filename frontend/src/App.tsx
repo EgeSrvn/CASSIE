@@ -7,6 +7,7 @@ import Jobs from './pages/Jobs'
 import CreateJob from './pages/CreateJob'
 import JobDetails from './pages/JobDetails'
 import Storage from './pages/Storage'
+import Balance from './pages/Balance'
 import Pipelines from './pages/Pipelines'
 import StarterTemplates from './pages/StarterTemplates'
 import PipelineBuilder from './pages/PipelineBuilder'
@@ -125,6 +126,10 @@ function App() {
           <Route
             path="/storage"
             element={isAuthenticated ? <Storage /> : <Navigate to="/login" />}
+          />
+          <Route
+            path="/balance"
+            element={isAuthenticated ? <Balance /> : <Navigate to="/login" />}
           />
           <Route
             path="/profile/:userId"

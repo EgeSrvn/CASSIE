@@ -7,7 +7,9 @@ This module provides operations for uploading, managing, and organizing files in
 import os
 import tempfile
 import hashlib
+import re
 import time
+import uuid
 import shutil
 from typing import Optional, List, Dict, Any
 from datetime import datetime
@@ -20,6 +22,54 @@ from backend.api.utils.logger import get_logger
 
 logger = get_logger(__name__)
 minio_client = get_minio_client()
+
+MAX_STORED_FILENAME_LENGTH = 180
+
+
+def _safe_data_filename(filename: str) -> str:
+    raw_name = str(filename or "").strip()
+    clean_name = os.path.basename(raw_name) if raw_name else ""
+    clean_name = re.sub(r'[\\/:*?"<>|]+', "_", clean_name).strip(" .")
+    return (clean_name or "input.dat")[:MAX_STORED_FILENAME_LENGTH]
+
+
+def make_storage_data_filename(filename: str) -> str:
+    """Return a unique internal object basename for storage."""
+    clean_name = _safe_data_filename(filename)
+    prefix = f"{time.time_ns()}_{uuid.uuid4().hex[:10]}"
+    extension = "".join(os.path.splitext(clean_name)[1:])
+    stem = clean_name[:-len(extension)] if extension else clean_name
+    reserved = len(prefix) + 1 + len(extension)
+    max_stem_length = max(MAX_STORED_FILENAME_LENGTH - reserved, 1)
+    return f"{prefix}_{stem[:max_stem_length]}{extension}"
+
+
+def _dedupe_display_filename(filename: str, existing_names: set[str]) -> str:
+    """Return a readable filename that will not collide in a single job workspace."""
+    clean_name = _safe_data_filename(filename)
+    if clean_name.lower() not in existing_names:
+        return clean_name
+
+    extension = "".join(os.path.splitext(clean_name)[1:])
+    stem = clean_name[:-len(extension)] if extension else clean_name
+    index = 2
+    while True:
+        suffix = f" ({index})"
+        max_stem_length = max(MAX_STORED_FILENAME_LENGTH - len(suffix) - len(extension), 1)
+        candidate = f"{stem[:max_stem_length]}{suffix}{extension}"
+        if candidate.lower() not in existing_names:
+            return candidate
+        index += 1
+
+
+def build_data_s3_key(user_id: int, stored_filename: str, folder_id: Optional[int]) -> str:
+    """Build the logical object key for a canonical stored filename."""
+    filename = _safe_data_filename(stored_filename)
+    if folder_id:
+        folder_obj = get_folder_by_id(folder_id, user_id)
+        folder_path = folder_obj.path.replace('/', '_') if folder_obj else f"folder_{folder_id}"
+        return f"data/{user_id}/{folder_path}/{filename}"
+    return f"data/{user_id}/root/{filename}"
 
 
 def upload_data_file(
@@ -61,14 +111,9 @@ def upload_data_file(
             hash_md5.update(file_content)
             checksum = hash_md5.hexdigest()
             
-            # Generate S3 key
-            timestamp = int(time.time())
-            if folder_id:
-                folder_obj = get_folder_by_id(folder_id, user_id)
-                folder_path = folder_obj.path.replace('/', '_') if folder_obj else f"folder_{folder_id}"
-                s3_key = f"data/{user_id}/{folder_path}/{timestamp}_{filename}"
-            else:
-                s3_key = f"data/{user_id}/root/{timestamp}_{filename}"
+            display_filename = _safe_data_filename(filename)
+            stored_filename = make_storage_data_filename(display_filename)
+            s3_key = build_data_s3_key(user_id, stored_filename, folder_id)
             
             # Ensure user bucket exists
             from backend.api.services.user_service import get_user_by_id
@@ -88,7 +133,7 @@ def upload_data_file(
             minio_client.ensure_user_bucket(user_id=user_id, username=user.username)
             
             # Save to temp file and upload
-            with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(filename)[1]) as temp_file:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(stored_filename)[1]) as temp_file:
                 temp_path = temp_file.name
                 temp_file.write(file_content)
                 temp_file.flush()
@@ -109,7 +154,7 @@ def upload_data_file(
                         RETURNING id, job_id, folder_id, filename, s3_key, file_type, file_format, size_bytes, checksum, uploaded_at, created_at
                     """, (
                         folder_id,
-                        filename,
+                        display_filename,
                         s3_key,
                         'input',  # Folder files are always input type
                         file_format,
@@ -180,13 +225,9 @@ def upload_data_file_from_path(
                     hash_md5.update(chunk)
             checksum = hash_md5.hexdigest()
 
-            timestamp = int(time.time())
-            if folder_id:
-                folder_obj = get_folder_by_id(folder_id, user_id)
-                folder_path = folder_obj.path.replace('/', '_') if folder_obj else f"folder_{folder_id}"
-                s3_key = f"data/{user_id}/{folder_path}/{timestamp}_{filename}"
-            else:
-                s3_key = f"data/{user_id}/root/{timestamp}_{filename}"
+            display_filename = _safe_data_filename(filename)
+            stored_filename = make_storage_data_filename(display_filename)
+            s3_key = build_data_s3_key(user_id, stored_filename, folder_id)
 
             from backend.api.services.user_service import get_user_by_id
             user = get_user_by_id(user_id)
@@ -216,7 +257,7 @@ def upload_data_file_from_path(
                 RETURNING id, job_id, folder_id, filename, s3_key, file_type, file_format, size_bytes, checksum, uploaded_at, created_at
             """, (
                 folder_id,
-                filename,
+                display_filename,
                 s3_key,
                 'input',
                 file_format,
@@ -336,6 +377,69 @@ def create_data_file_record_for_existing_object(
         except Exception as e:
             conn.rollback()
             logger.error(f"Error creating direct-upload data file record: {e}", exc_info=True)
+            raise
+        finally:
+            cur.close()
+
+
+def prune_missing_data_file_records(user_id: int, username: Optional[str] = None) -> int:
+    """Remove data-library DB rows whose confirmed object is no longer in storage."""
+    prefix = f"data/{user_id}/"
+
+    try:
+        storage_files = minio_client.list_files(
+            user_id=user_id,
+            prefix=prefix,
+            username=username,
+            max_keys=10000,
+        )
+    except Exception as e:
+        logger.warning(
+            "Skipping stale data-file pruning for user %s because object storage could not be listed: %s",
+            user_id,
+            e,
+        )
+        return 0
+
+    existing_keys = {str(file_info.get("key") or "") for file_info in storage_files}
+
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+
+        try:
+            cur.execute("""
+                SELECT f.id, f.filename, f.s3_key
+                FROM files f
+                LEFT JOIN folders fo ON f.folder_id = fo.id
+                WHERE f.job_id IS NULL
+                  AND (
+                        fo.user_id = %s
+                        OR (f.folder_id IS NULL AND f.s3_key LIKE %s)
+                  )
+            """, (user_id, f"{prefix}%"))
+
+            stale_rows = [
+                (row[0], row[1], row[2])
+                for row in cur.fetchall()
+                if row[2] not in existing_keys
+            ]
+            if not stale_rows:
+                return 0
+
+            stale_ids = [row[0] for row in stale_rows]
+            cur.execute("DELETE FROM files WHERE id = ANY(%s)", (stale_ids,))
+            conn.commit()
+
+            logger.warning(
+                "Pruned %s stale data-file records for user %s: %s",
+                len(stale_rows),
+                user_id,
+                ", ".join(f"{filename} ({s3_key})" for _, filename, s3_key in stale_rows[:10]),
+            )
+            return len(stale_rows)
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Error pruning stale data-file records for user {user_id}: {e}", exc_info=True)
             raise
         finally:
             cur.close()
@@ -677,6 +781,13 @@ def copy_data_file_to_job(file_id: int, user_id: int, job_id: int) -> Optional[F
                 if not job_row or job_row[1] != user_id:
                     raise ValueError(f"Job with id {job_id} not found or doesn't belong to user")
             
+            cur.execute(
+                "SELECT lower(filename) FROM files WHERE job_id = %s",
+                (job_id,),
+            )
+            existing_job_names = {row[0] for row in cur.fetchall() if row[0]}
+            job_filename = _dedupe_display_filename(source_file.filename, existing_job_names)
+
             # Create new file record with job_id (can be NULL initially, updated later)
             cur.execute("""
                 INSERT INTO files (job_id, filename, s3_key, file_type, file_format, size_bytes, checksum, uploaded_at)
@@ -685,7 +796,7 @@ def copy_data_file_to_job(file_id: int, user_id: int, job_id: int) -> Optional[F
                           size_bytes, checksum, uploaded_at, created_at
             """, (
                 job_id,
-                source_file.filename,
+                job_filename,
                 source_file.s3_key,  # Same S3 key (file is shared, not copied)
                 source_file.file_type.value,
                 source_file.file_format,

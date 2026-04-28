@@ -207,9 +207,18 @@ export interface RecommendationResponseData {
   detected_inputs: {
     fastq_count: number
     fasta_count: number
+    annotation_count?: number
+    hal_count?: number
+    meryl_count?: number
+    txt_count?: number
     has_fastq: boolean
     has_paired_fastq: boolean
     has_fasta: boolean
+    has_sequence?: boolean
+    has_annotation?: boolean
+    has_hal?: boolean
+    has_meryl?: boolean
+    has_txt?: boolean
   }
   pipeline_options: RecommendationOption[]
 }

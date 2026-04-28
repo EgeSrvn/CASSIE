@@ -15,6 +15,8 @@ export default function Navigation({ onLogout }: NavigationProps) {
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false)
   const userMenuRef = useRef<HTMLDivElement | null>(null)
 
+  const formatUsd = (value?: number | null): string => `$${Number(value || 0).toFixed(2)}`
+
   useEffect(() => {
     let isMounted = true
 
@@ -155,6 +157,24 @@ export default function Navigation({ onLogout }: NavigationProps) {
 
         <div className="nav-actions">
           {isAuthenticated ? (
+            <>
+            {user && (
+              <button
+                type="button"
+                className={`nav-balance-chip ${isActive('/balance') ? 'active' : ''}`}
+                onClick={() => navigate('/balance')}
+                title={`Balance ${formatUsd(user.cash_balance_usd)}; reserved ${formatUsd(user.cash_reserved_usd)}`}
+              >
+                <span>
+                  <small>Balance</small>
+                  <strong>{formatUsd(user.cash_balance_usd)}</strong>
+                </span>
+                <span>
+                  <small>Reserved</small>
+                  <strong>{formatUsd(user.cash_reserved_usd)}</strong>
+                </span>
+              </button>
+            )}
             <div className="nav-user-menu-shell" ref={userMenuRef}>
               {user && (
                 <button
@@ -198,6 +218,7 @@ export default function Navigation({ onLogout }: NavigationProps) {
                 </div>
               )}
             </div>
+            </>
           ) : (
             <>
               <button 

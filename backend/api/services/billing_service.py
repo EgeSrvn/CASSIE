@@ -97,11 +97,9 @@ def reserve_job_charge(job_id: int, user_id: int, estimated_price_usd) -> Decima
                 raise ValueError("User not found.")
 
             balance = _money(user_row[0])
-            reserved = _money(user_row[1])
-            available = balance - reserved
-            if available < max_charge:
+            if balance < max_charge:
                 raise ValueError(
-                    f"Insufficient balance. Required hold: ${max_charge:.2f}; available balance: ${available:.2f}."
+                    f"Insufficient balance. Required hold: ${max_charge:.2f}; available balance: ${balance:.2f}."
                 )
 
             cur.execute(
@@ -124,11 +122,12 @@ def reserve_job_charge(job_id: int, user_id: int, estimated_price_usd) -> Decima
             cur.execute(
                 """
                 UPDATE users
-                SET cash_reserved_usd = cash_reserved_usd + %s,
+                SET cash_balance_usd = GREATEST(cash_balance_usd - %s, 0),
+                    cash_reserved_usd = cash_reserved_usd + %s,
                     updated_at = NOW()
                 WHERE id = %s
                 """,
-                (max_charge, user_id),
+                (max_charge, max_charge, user_id),
             )
             cur.execute(
                 """
@@ -214,16 +213,17 @@ def settle_job_charge(job_id: int, user_id: int, execution_id: Optional[int] = N
                 completed_at=completed_at,
                 max_charge_usd=max_charge,
             )
+            refund = _money(max_charge - charge)
 
             cur.execute(
                 """
                 UPDATE users
                 SET cash_reserved_usd = GREATEST(cash_reserved_usd - %s, 0),
-                    cash_balance_usd = GREATEST(cash_balance_usd - %s, 0),
+                    cash_balance_usd = cash_balance_usd + %s,
                     updated_at = NOW()
                 WHERE id = %s
                 """,
-                (max_charge, charge, user_id),
+                (max_charge, refund, user_id),
             )
             cur.execute(
                 """

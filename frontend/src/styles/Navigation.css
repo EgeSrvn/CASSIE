@@ -87,6 +87,54 @@
   flex-shrink: 0;
 }
 
+.nav-balance-chip {
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: var(--radius-full);
+  background: rgba(255, 255, 255, 0.12);
+  color: white;
+  padding: 0.35rem 0.7rem;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.65rem;
+  min-height: 2.6rem;
+  transition: transform 0.2s ease, background 0.2s ease, border-color 0.2s ease;
+}
+
+.nav-balance-chip:hover {
+  transform: translateY(-1px);
+  background: rgba(255, 255, 255, 0.18);
+  border-color: rgba(255, 255, 255, 0.34);
+}
+
+.nav-balance-chip.active {
+  color: var(--gray-900);
+  background: linear-gradient(135deg, var(--secondary-light), var(--secondary));
+}
+
+.nav-balance-chip span {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  line-height: 1.05;
+}
+
+.nav-balance-chip small {
+  font-size: 0.62rem;
+  color: rgba(255, 255, 255, 0.72);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.nav-balance-chip.active small {
+  color: rgba(17, 24, 39, 0.68);
+}
+
+.nav-balance-chip strong {
+  font-size: 0.86rem;
+  font-weight: 800;
+}
+
 .nav-user-chip {
   display: inline-flex;
   align-items: center;
@@ -206,5 +254,13 @@
 
   .nav-user-chip {
     min-width: 0;
+  }
+
+  .nav-balance-chip {
+    order: -1;
+  }
+
+  .nav-balance-chip span:last-child {
+    display: none;
   }
 }

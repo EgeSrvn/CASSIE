@@ -2648,8 +2648,8 @@ exit "$CASSIE_STATUS"
     ) -> Dict[str, Any]:
         """Choose the strongest safe tool profile for the current cluster."""
         capacity = self._detect_effective_cluster_capacity(vm_name=vm_name)
-        cpu_millis = max(250, capacity["cpu_millis"])
-        memory_mib = max(768, capacity["memory_mib"])
+        cpu_millis = max(1, capacity["cpu_millis"])
+        memory_mib = max(1, capacity["memory_mib"])
         tool_memory_budget_mib = memory_mib
         whole_cpus = max(1, cpu_millis // 1000)
         resource_mode = os.getenv("CASSIE_RESOURCE_MODE", "adaptive").strip().lower()
@@ -2692,7 +2692,7 @@ exit "$CASSIE_STATUS"
                 threads=threads,
                 memory_gb=memory_gb,
                 memory_limit_mib=memory_limit,
-                cpu_limit_millis=min(max(250, threads * 500), max(250, cpu_millis)),
+                cpu_limit_millis=min(max(250, threads * 500), max(1, cpu_millis)),
                 low_resource=low_resource,
                 kmers=kmers,
                 input_size_mib=input_size_mib,
@@ -2713,7 +2713,7 @@ exit "$CASSIE_STATUS"
                 threads=threads,
                 memory_gb=memory_gb,
                 memory_limit_mib=memory_limit,
-                cpu_limit_millis=min(max(250, threads * 500), max(250, cpu_millis)),
+                cpu_limit_millis=min(max(250, threads * 500), max(1, cpu_millis)),
                 low_resource=low_resource,
                 kmers="",
                 input_size_mib=input_size_mib,
@@ -2731,7 +2731,7 @@ exit "$CASSIE_STATUS"
                 threads=requested_threads,
                 memory_gb=requested_memory_gb,
                 memory_limit_mib=memory_limit,
-                cpu_limit_millis=min(max(250, requested_threads * 500), max(250, cpu_millis)),
+                cpu_limit_millis=min(max(250, requested_threads * 500), max(1, cpu_millis)),
                 low_resource=memory_mib < 4096,
                 kmers="",
                 input_size_mib=input_size_mib,
@@ -2750,7 +2750,7 @@ exit "$CASSIE_STATUS"
                 threads=requested_threads,
                 memory_gb=requested_memory_gb,
                 memory_limit_mib=memory_limit,
-                cpu_limit_millis=min(max(250, requested_threads * 500), max(250, cpu_millis)),
+                cpu_limit_millis=min(max(250, requested_threads * 500), max(1, cpu_millis)),
                 low_resource=memory_mib < 4096,
                 kmers="",
                 input_size_mib=input_size_mib,
@@ -2771,7 +2771,7 @@ exit "$CASSIE_STATUS"
                 threads=threads,
                 memory_gb=memory_gb,
                 memory_limit_mib=memory_limit,
-                cpu_limit_millis=min(max(500, threads * 750), max(250, cpu_millis)),
+                cpu_limit_millis=min(max(500, threads * 750), max(1, cpu_millis)),
                 low_resource=low_resource,
                 kmers="",
                 input_size_mib=input_size_mib,
@@ -2792,7 +2792,7 @@ exit "$CASSIE_STATUS"
                 threads=threads,
                 memory_gb=memory_gb,
                 memory_limit_mib=memory_limit,
-                cpu_limit_millis=min(max(500, threads * 750), max(250, cpu_millis)),
+                cpu_limit_millis=min(max(500, threads * 750), max(1, cpu_millis)),
                 low_resource=low_resource,
                 kmers="",
                 input_size_mib=input_size_mib,
@@ -2809,7 +2809,7 @@ exit "$CASSIE_STATUS"
                 threads=threads,
                 memory_gb=memory_gb,
                 memory_limit_mib=memory_limit,
-                cpu_limit_millis=min(max(250, threads * 500), max(250, cpu_millis)),
+                cpu_limit_millis=min(max(250, threads * 500), max(1, cpu_millis)),
                 low_resource=memory_mib < 4096,
                 kmers="",
                 input_size_mib=input_size_mib,
@@ -2830,7 +2830,7 @@ exit "$CASSIE_STATUS"
                 threads=threads,
                 memory_gb=memory_gb,
                 memory_limit_mib=memory_limit,
-                cpu_limit_millis=min(max(500, threads * 500), max(250, cpu_millis)),
+                cpu_limit_millis=min(max(500, threads * 500), max(1, cpu_millis)),
                 low_resource=low_resource,
                 kmers="",
                 input_size_mib=input_size_mib,
@@ -2847,7 +2847,7 @@ exit "$CASSIE_STATUS"
                 threads=threads,
                 memory_gb=memory_gb,
                 memory_limit_mib=memory_limit,
-                cpu_limit_millis=min(max(250, threads * 500), max(250, cpu_millis)),
+                cpu_limit_millis=min(max(250, threads * 500), max(1, cpu_millis)),
                 low_resource=memory_mib < 4096,
                 kmers="",
                 input_size_mib=input_size_mib,
@@ -2864,7 +2864,7 @@ exit "$CASSIE_STATUS"
                 threads=threads,
                 memory_gb=memory_gb,
                 memory_limit_mib=memory_limit,
-                cpu_limit_millis=min(max(250, threads * 500), max(250, cpu_millis)),
+                cpu_limit_millis=min(max(250, threads * 500), max(1, cpu_millis)),
                 low_resource=memory_mib < 4096,
                 kmers="",
                 input_size_mib=input_size_mib,
@@ -2881,7 +2881,7 @@ exit "$CASSIE_STATUS"
             threads=requested_threads,
             memory_gb=requested_memory_gb,
             memory_limit_mib=memory_limit,
-            cpu_limit_millis=min(max(250, requested_threads * 500), max(250, cpu_millis)),
+            cpu_limit_millis=min(max(250, requested_threads * 500), max(1, cpu_millis)),
             low_resource=False,
             kmers="",
             input_size_mib=input_size_mib,
@@ -3024,8 +3024,7 @@ exit "$CASSIE_STATUS"
         if cluster_storage_mib <= 0:
             return max(required_mib, 4096)
 
-        reserve_mib = self._env_int("CASSIE_CLUSTER_STORAGE_RESERVE_MIB") or 2048
-        max_workspace_mib = max(1024, cluster_storage_mib - reserve_mib)
+        max_workspace_mib = max(1024, cluster_storage_mib)
         return min(max_workspace_mib, max(required_mib, 1024))
 
     def _init_memory_request_mib(
@@ -3108,16 +3107,33 @@ exit "$CASSIE_STATUS"
             return cluster_capacity
 
         selected_partition = get_vm_partition(vm_name) or partitions[0]
-        partition_count = max(1, len(partitions))
-        max_jobs = max(1, selected_partition.max_jobs)
+        vm_count = max(1, len(partitions))
+        partition_count = max(1, selected_partition.max_jobs)
+
+        cluster_storage_mib = max(0, cluster_capacity.get("storage_mib", 0))
+        storage_reserve_mib = min(
+            cluster_storage_mib,
+            self._env_int("CASSIE_CLUSTER_STORAGE_RESERVE_MIB") or 2048,
+        )
+        usable_storage_mib = max(0, cluster_storage_mib - storage_reserve_mib)
+
+        vm_cpu_millis = max(0, cluster_capacity["cpu_millis"] // vm_count)
+        vm_memory_mib = max(0, cluster_capacity["memory_mib"] // vm_count)
+        vm_storage_mib = usable_storage_mib // vm_count if usable_storage_mib > 0 else 0
 
         partition_capacity = dict(cluster_capacity)
-        partition_capacity["cpu_millis"] = max(250, cluster_capacity["cpu_millis"] // partition_count // max_jobs)
-        partition_capacity["memory_mib"] = max(768, cluster_capacity["memory_mib"] // partition_count // max_jobs)
+        partition_capacity["vm_count"] = vm_count
+        partition_capacity["vm_cpu_millis"] = vm_cpu_millis
+        partition_capacity["vm_memory_mib"] = vm_memory_mib
+        partition_capacity["vm_storage_mib"] = vm_storage_mib
+        partition_capacity["partition_count"] = partition_count
+        partition_capacity["cpu_millis"] = max(1, vm_cpu_millis // partition_count)
+        partition_capacity["memory_mib"] = max(1, vm_memory_mib // partition_count)
 
-        storage_mib = cluster_capacity.get("storage_mib", 0)
-        if storage_mib > 0:
-            partition_capacity["storage_mib"] = max(1024, storage_mib // partition_count // max_jobs)
+        if usable_storage_mib > 0:
+            partition_capacity["storage_mib"] = max(1, vm_storage_mib // partition_count)
+        else:
+            partition_capacity["storage_mib"] = 0
         return partition_capacity
 
     def get_vm_capacity_summary(self) -> List[Dict[str, Any]]:
@@ -3138,6 +3154,11 @@ exit "$CASSIE_STATUS"
                     "running_jobs": slot_usage["running_jobs"],
                     "active_jobs": slot_usage.get("active_jobs", slot_usage["running_jobs"]),
                     "available_job_slots": slot_usage["available_job_slots"],
+                    "vm_count": capacity.get("vm_count", len(get_vm_partitions())),
+                    "partition_count": capacity.get("partition_count", partition.max_jobs),
+                    "vm_cpu_millis": capacity.get("vm_cpu_millis", 0),
+                    "vm_memory_mib": capacity.get("vm_memory_mib", 0),
+                    "vm_storage_mib": capacity.get("vm_storage_mib", 0),
                     "available_cpu_millis": capacity["cpu_millis"],
                     "available_memory_mib": capacity["memory_mib"],
                     "available_storage_mib": capacity.get("storage_mib", 0),

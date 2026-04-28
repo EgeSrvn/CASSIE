@@ -28,11 +28,6 @@ import { getPipelines, getPipeline, Pipeline, getPipelineRequirements, PipelineR
 import { getDataFileTree } from '../services/dataFileService'
 import { FolderTreeItem, FileItem } from '../services/folderService'
 import { getToken } from '../services/authService'
-import {
-  PendingGoogleDriveJobImportFile,
-  PendingJobUploadFile,
-} from '../services/pendingJobUploadService'
-import { deleteFile, importGoogleDriveFileToJob, uploadFile } from '../services/fileService'
 import { getCreateJobCatConfig } from '../../cats/config_cat_job_builder'
 import CatCornerCard from '../components/CatCornerCard'
 import Navigation from '../components/Navigation'
@@ -90,68 +85,6 @@ const getManualInputBlockDefaultName = (block: ManualToolInputBlock): string => 
 
 const PIPELINE_STAGE_NODE_TYPES = new Set(['tool', 'checkpoint'])
 const CREATE_JOB_DRAFT_STORAGE_KEY = 'cassie:create-job-draft:v3'
-const GOOGLE_DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.readonly'
-const GOOGLE_API_SCRIPT_ID = 'cassie-google-api-script'
-const GOOGLE_GSI_SCRIPT_ID = 'cassie-google-gsi-script'
-
-const loadExternalScript = (id: string, src: string): Promise<void> => {
-  if (typeof document === 'undefined') {
-    return Promise.reject(new Error('Browser document is unavailable'))
-  }
-
-  const existing = document.getElementById(id) as HTMLScriptElement | null
-  if (existing) {
-    if (existing.dataset.loaded === 'true') {
-      return Promise.resolve()
-    }
-    return new Promise((resolve, reject) => {
-      existing.addEventListener('load', () => resolve(), { once: true })
-      existing.addEventListener('error', () => reject(new Error(`Failed to load ${src}`)), { once: true })
-    })
-  }
-
-  return new Promise((resolve, reject) => {
-    const script = document.createElement('script')
-    script.id = id
-    script.src = src
-    script.async = true
-    script.defer = true
-    script.onload = () => {
-      script.dataset.loaded = 'true'
-      resolve()
-    }
-    script.onerror = () => reject(new Error(`Failed to load ${src}`))
-    document.head.appendChild(script)
-  })
-}
-
-const loadGoogleDriveScripts = async () => {
-  await Promise.all([
-    loadExternalScript(GOOGLE_API_SCRIPT_ID, 'https://apis.google.com/js/api.js'),
-    loadExternalScript(GOOGLE_GSI_SCRIPT_ID, 'https://accounts.google.com/gsi/client'),
-  ])
-}
-
-const loadGooglePicker = (): Promise<void> => {
-  return new Promise((resolve, reject) => {
-    if (!window.gapi) {
-      reject(new Error('Google API script is not available'))
-      return
-    }
-    window.gapi.load('picker', {
-      callback: () => resolve(),
-      onerror: () => reject(new Error('Failed to load Google Picker')),
-      timeout: 10000,
-      ontimeout: () => reject(new Error('Timed out loading Google Picker')),
-    })
-  })
-}
-
-const deriveGoogleDriveAppId = (clientId: string): string => (
-  import.meta.env.VITE_GOOGLE_DRIVE_APP_ID ||
-  clientId.split('-')[0] ||
-  ''
-)
 
 interface CreateJobDraft {
   version: 3
@@ -165,7 +98,6 @@ interface CreateJobDraft {
   pipelineInputMappings: Record<string, number[]>
   requirementSourceSelections: Record<string, 'external' | 'upstream'>
   selectedIntentIds: string[]
-  recommendationFileIds: number[]
   priorityGroups: PriorityGroup[]
   openPriorityGroups: number[]
   currentLevel: BuilderLevel
@@ -302,13 +234,6 @@ export default function CreateJob() {
   const [error, setError] = useState<string>('')
   const [dataFileTree, setDataFileTree] = useState<FolderTreeItem[]>([])
   const [loadingDataTree, setLoadingDataTree] = useState(false)
-  const [pendingLocalFiles, setPendingLocalFiles] = useState<PendingJobUploadFile[]>([])
-  const [pendingGoogleDriveFiles, setPendingGoogleDriveFiles] = useState<PendingGoogleDriveJobImportFile[]>([])
-  const uploadAbortControllersRef = useRef<Map<number, AbortController>>(new Map())
-  const uploadProgressTimersRef = useRef<Map<number, number>>(new Map())
-  const pendingLocalFilesRef = useRef<PendingJobUploadFile[]>([])
-  const pendingGoogleDriveFilesRef = useRef<PendingGoogleDriveJobImportFile[]>([])
-  const [importingGoogleDriveFile, setImportingGoogleDriveFile] = useState(false)
   const [submitStatus, setSubmitStatus] = useState<string>('')
   const [availableVMs, setAvailableVMs] = useState<VM[]>([])
   const [loadingVMs, setLoadingVMs] = useState(false)
@@ -323,7 +248,6 @@ export default function CreateJob() {
   const [requirementSourceSelections, setRequirementSourceSelections] = useState<Record<string, 'external' | 'upstream'>>(() => storedDraftRef.current?.requirementSourceSelections || {})
   const [recommendationIntents, setRecommendationIntents] = useState<RecommendationIntent[]>([])
   const [selectedIntentIds, setSelectedIntentIds] = useState<string[]>(() => storedDraftRef.current?.selectedIntentIds || [])
-  const [recommendationFileIds, setRecommendationFileIds] = useState<number[]>(() => storedDraftRef.current?.recommendationFileIds || [])
   const [recommendationOptions, setRecommendationOptions] = useState<RecommendationOption[]>([])
   const [loadingRecommendations, setLoadingRecommendations] = useState(false)
   const [appliedRecommendationFileIds, setAppliedRecommendationFileIds] = useState<number[] | null>(null)
@@ -367,14 +291,6 @@ export default function CreateJob() {
   }, [])
 
   useEffect(() => {
-    pendingLocalFilesRef.current = pendingLocalFiles
-  }, [pendingLocalFiles])
-
-  useEffect(() => {
-    pendingGoogleDriveFilesRef.current = pendingGoogleDriveFiles
-  }, [pendingGoogleDriveFiles])
-
-  useEffect(() => {
     const markDocumentUnloading = () => {
       isDocumentUnloadingRef.current = true
     }
@@ -393,7 +309,6 @@ export default function CreateJob() {
       if (!shouldPersistDraftRef.current || isDocumentUnloadingRef.current) {
         return
       }
-      cancelSelectedUploads({ clearState: false })
       clearCreateJobDraft()
     }
   ), [])
@@ -492,7 +407,7 @@ export default function CreateJob() {
     return () => {
       cancelled = true
     }
-  }, [selectedVM, selectionMode, selectedPipelineId, selectedTools, toolFileMappings, pendingLocalFiles, pendingGoogleDriveFiles, dataFileTree])
+  }, [selectedVM, selectionMode, selectedPipelineId, selectedTools, toolFileMappings, dataFileTree])
 
   useEffect(() => {
     const fetchIntents = async () => {
@@ -894,7 +809,7 @@ export default function CreateJob() {
 
     setToolFileMappings(suggestedMappings)
     setAppliedRecommendationFileIds(null)
-  }, [selectionMode, appliedRecommendationFileIds, toolRequirements, pendingLocalFiles, pendingGoogleDriveFiles, dataFileTree])
+  }, [selectionMode, appliedRecommendationFileIds, toolRequirements, dataFileTree])
 
   useEffect(() => {
     if (selectionMode !== 'tools') {
@@ -1065,7 +980,7 @@ export default function CreateJob() {
     setSelectedPipelineId(null)
     setSelectedTools(option.tool_indices)
     setToolFileMappings({})
-    setAppliedRecommendationFileIds([...recommendationFileIds])
+    setAppliedRecommendationFileIds(getCombinedSelectableFiles().map(file => file.id))
   }
 
   // Helper function to flatten file tree into a list of files with folder paths
@@ -1100,27 +1015,6 @@ export default function CreateJob() {
     }
     traverse(tree)
     return files
-  }
-
-  const inferFileFormat = (filename: string): string | null => {
-    const lower = filename.toLowerCase()
-    if (lower.endsWith('.fastq') || lower.endsWith('.fastq.gz') || lower.endsWith('.fq') || lower.endsWith('.fq.gz')) return 'fastq'
-    if (lower.endsWith('.fasta') || lower.endsWith('.fasta.gz') || lower.endsWith('.fa') || lower.endsWith('.fa.gz') || lower.endsWith('.fna') || lower.endsWith('.fna.gz')) return 'fasta'
-    if (lower.endsWith('.gff3')) return 'gff3'
-    if (lower.endsWith('.gff')) return 'gff'
-    if (lower.endsWith('.gtf')) return 'gtf'
-    if (lower.endsWith('.hal')) return 'hal'
-    if (lower.endsWith('.gfa')) return 'gfa'
-    if (lower.endsWith('.meryl') || lower.endsWith('.meryl.tar') || lower.endsWith('.meryl.tar.gz') || lower.endsWith('.meryl.tgz')) return 'meryl'
-    if (lower.endsWith('.cfg')) return 'cfg'
-    if (lower.endsWith('.conf')) return 'conf'
-    if (lower.endsWith('.ini')) return 'ini'
-    if (lower.endsWith('.json')) return 'json'
-    if (lower.endsWith('.tsv')) return 'tsv'
-    if (lower.endsWith('.csv')) return 'csv'
-    if (lower.endsWith('.txt')) return 'txt'
-    if (lower.endsWith('.html')) return 'html'
-    return null
   }
 
   const normalizeFileFormats = (file: FileItem & { folderPath?: string }): string[] => {
@@ -1176,33 +1070,7 @@ export default function CreateJob() {
   }
 
   const getCombinedSelectableFiles = (): Array<FileItem & { folderPath?: string }> => {
-    const libraryFiles = flattenFiles(dataFileTree)
-    const pendingFilesAsItems: Array<FileItem & { folderPath?: string }> = pendingLocalFiles.map(file => ({
-      id: file.tempId,
-      filename: file.filename,
-      s3_key: `pending://${file.tempId}/${file.filename}`,
-      file_type: 'input',
-      file_format: file.file_format,
-      size_bytes: file.size_bytes,
-      checksum: '',
-      uploaded_at: null,
-      created_at: file.created_at,
-      folderPath: 'Selected Files',
-    }))
-    const pendingGoogleDriveFilesAsItems: Array<FileItem & { folderPath?: string }> = pendingGoogleDriveFiles.map(file => ({
-      id: file.tempId,
-      filename: file.filename,
-      s3_key: `gdrive://${file.googleFileId}/${file.filename}`,
-      file_type: 'input',
-      file_format: file.file_format,
-      size_bytes: file.size_bytes,
-      checksum: '',
-      uploaded_at: null,
-      created_at: file.created_at,
-      folderPath: 'Selected Google Drive Files',
-    }))
-
-    return [...pendingGoogleDriveFilesAsItems, ...pendingFilesAsItems, ...libraryFiles]
+    return flattenFiles(dataFileTree)
   }
 
   const getRuntimeInputAssignments = (): RuntimeInputAssignment[] => {
@@ -1265,389 +1133,7 @@ export default function CreateJob() {
     return compatibleFiles.map(file => file.id)
   }
 
-  const isCanceledUploadError = (err: any): boolean => (
-    err?.code === 'ERR_CANCELED' ||
-    err?.name === 'CanceledError' ||
-    String(err?.message || '').toLowerCase().includes('canceled')
-  )
-
-  const stopUploadProgressTimer = (tempId: number) => {
-    const timerId = uploadProgressTimersRef.current.get(tempId)
-    if (timerId !== undefined) {
-      window.clearInterval(timerId)
-      uploadProgressTimersRef.current.delete(tempId)
-    }
-  }
-
-  const startUploadProgressTimer = (
-    tempId: number,
-    updateProgress: (updater: (progress: number) => number) => void
-  ) => {
-    stopUploadProgressTimer(tempId)
-    updateProgress(progress => Math.max(progress, 1))
-    const timerId = window.setInterval(() => {
-      updateProgress(progress => {
-        if (progress >= 95) {
-          return progress
-        }
-        if (progress < 30) {
-          return progress + 3
-        }
-        if (progress < 70) {
-          return progress + 2
-        }
-        return progress + 1
-      })
-    }, 700)
-    uploadProgressTimersRef.current.set(tempId, timerId)
-  }
-
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const selectedFiles = Array.from(e.target.files || [])
-    if (selectedFiles.length === 0) return
-
-    try {
-      setError('')
-      const existingKeys = new Set(pendingLocalFilesRef.current.map(file => `${file.file.name}:${file.size_bytes}:${file.file.lastModified}`))
-      const uploadCandidates = selectedFiles
-        .filter(file => !existingKeys.has(`${file.name}:${file.size}:${file.lastModified}`))
-        .map((file, index) => ({
-          tempId: -(Date.now() + index + Math.floor(Math.random() * 1000)),
-          file,
-          filename: file.name,
-          original_filename: file.name,
-          size_bytes: file.size,
-          file_format: inferFileFormat(file.name),
-          uploaded_at: null,
-          created_at: new Date().toISOString(),
-          folderPath: 'Selected Files',
-          upload_status: 'uploading' as const,
-          upload_progress: 1,
-        }))
-
-      if (uploadCandidates.length === 0) {
-        e.target.value = ''
-        return
-      }
-
-      setPendingLocalFiles(prev => [...uploadCandidates, ...prev])
-      e.target.value = '' // Reset input
-
-      uploadCandidates.forEach((pendingFile) => {
-        void (async () => {
-          const abortController = new AbortController()
-          uploadAbortControllersRef.current.set(pendingFile.tempId, abortController)
-          const updateProgress = (updater: (progress: number) => number) => {
-            setPendingLocalFiles(prev => prev.map(file => (
-              file.tempId === pendingFile.tempId
-                ? { ...file, upload_status: 'uploading', upload_progress: Math.min(99, updater(file.upload_progress || 0)) }
-                : file
-            )))
-          }
-          startUploadProgressTimer(pendingFile.tempId, updateProgress)
-          try {
-            const uploadedFile = await uploadFile(
-              pendingFile.file,
-              null,
-              'input',
-              pendingFile.file_format || undefined,
-              (progress) => {
-                updateProgress(current => Math.max(current, progress))
-              },
-              undefined,
-              abortController.signal
-            )
-
-            stopUploadProgressTimer(pendingFile.tempId)
-            setPendingLocalFiles(prev => prev.map(file => (
-              file.tempId === pendingFile.tempId
-                ? {
-                    ...file,
-                    staged_file_id: uploadedFile.id,
-                    upload_status: 'uploaded',
-                    upload_progress: 100,
-                    uploaded_at: null,
-                    size_bytes: uploadedFile.size_bytes,
-                    file_format: uploadedFile.file_format || file.file_format,
-                  }
-                : file
-            )))
-          } catch (err: any) {
-            stopUploadProgressTimer(pendingFile.tempId)
-            if (isCanceledUploadError(err)) {
-              return
-            }
-            setPendingLocalFiles(prev => prev.map(file => (
-              file.tempId === pendingFile.tempId
-                ? {
-                    ...file,
-                    upload_status: 'failed',
-                    upload_error: err?.message || 'Failed to upload file',
-                  }
-                : file
-            )))
-          } finally {
-            stopUploadProgressTimer(pendingFile.tempId)
-            uploadAbortControllersRef.current.delete(pendingFile.tempId)
-          }
-        })()
-      })
-    } catch (err: any) {
-      setError(err.response?.data?.message || err.message || 'Failed to select file')
-    }
-  }
-
-  const addPickedGoogleDriveFiles = (
-    accessToken: string,
-    docs: Array<{ id: string; name?: string; mimeType?: string; sizeBytes?: string | number; size?: string | number }>
-  ) => {
-    const selectedAt = Date.now()
-    const existingIds = new Set(pendingGoogleDriveFilesRef.current.map(file => file.googleFileId))
-    const importCandidates = docs
-      .filter(doc => doc.id && !existingIds.has(doc.id))
-      .map((doc, index) => {
-        const filename = sanitizeSelectedFilename(doc.name || `google-drive-${doc.id}`)
-        const rawSize = doc.sizeBytes ?? doc.size
-        const parsedSize = rawSize !== undefined && rawSize !== null ? Number(rawSize) : 0
-
-        return {
-          tempId: -(selectedAt + index + Math.floor(Math.random() * 1000)),
-          googleFileId: doc.id,
-          accessToken,
-          filename,
-          original_filename: doc.name || filename,
-          size_bytes: Number.isFinite(parsedSize) && parsedSize > 0 ? parsedSize : null,
-          file_format: inferFileFormat(filename),
-          mime_type: doc.mimeType,
-          created_at: new Date().toISOString(),
-          folderPath: 'Selected Google Drive Files',
-          upload_status: 'uploading' as const,
-          upload_progress: 1,
-        }
-      })
-
-    if (importCandidates.length === 0) {
-      return
-    }
-
-    setPendingGoogleDriveFiles(prev => [...importCandidates, ...prev])
-
-    importCandidates.forEach((pendingFile) => {
-      void (async () => {
-        const abortController = new AbortController()
-        uploadAbortControllersRef.current.set(pendingFile.tempId, abortController)
-        const updateProgress = (updater: (progress: number) => number) => {
-          setPendingGoogleDriveFiles(prev => prev.map(file => (
-            file.tempId === pendingFile.tempId
-              ? { ...file, upload_status: 'uploading', upload_progress: Math.min(99, updater(file.upload_progress || 0)) }
-              : file
-          )))
-        }
-        startUploadProgressTimer(pendingFile.tempId, updateProgress)
-        try {
-          const importedFile = await importGoogleDriveFileToJob(
-            null,
-            {
-              file_id: pendingFile.googleFileId,
-              access_token: pendingFile.accessToken,
-              filename: pendingFile.filename,
-              mime_type: pendingFile.mime_type,
-              file_format: pendingFile.file_format,
-            },
-            undefined,
-            abortController.signal
-          )
-
-          stopUploadProgressTimer(pendingFile.tempId)
-          setPendingGoogleDriveFiles(prev => prev.map(file => (
-            file.tempId === pendingFile.tempId
-              ? {
-                  ...file,
-                  staged_file_id: importedFile.id,
-                  upload_status: 'uploaded',
-                  upload_progress: 100,
-                  size_bytes: importedFile.size_bytes,
-                  file_format: importedFile.file_format || file.file_format,
-                }
-              : file
-          )))
-        } catch (err: any) {
-          stopUploadProgressTimer(pendingFile.tempId)
-          if (isCanceledUploadError(err)) {
-            return
-          }
-          setPendingGoogleDriveFiles(prev => prev.map(file => (
-            file.tempId === pendingFile.tempId
-              ? {
-                  ...file,
-                  upload_status: 'failed',
-                  upload_error: err?.message || 'Failed to import Google Drive file',
-                }
-              : file
-          )))
-        } finally {
-          stopUploadProgressTimer(pendingFile.tempId)
-          uploadAbortControllersRef.current.delete(pendingFile.tempId)
-        }
-      })()
-    })
-  }
-
-  const openGoogleDrivePicker = async () => {
-    const clientId = import.meta.env.VITE_GOOGLE_DRIVE_CLIENT_ID
-    const apiKey = import.meta.env.VITE_GOOGLE_DRIVE_API_KEY
-    const appId = clientId ? deriveGoogleDriveAppId(clientId) : ''
-
-    if (!clientId || !apiKey || !appId) {
-      setError(
-        'Google Drive sign-in is not configured. CASSIE needs Google OAuth app credentials, but files still come from each user\'s own Drive account.'
-      )
-      return
-    }
-
-    try {
-      setError('')
-      setImportingGoogleDriveFile(true)
-      await loadGoogleDriveScripts()
-      await loadGooglePicker()
-
-      await new Promise<void>((resolve, reject) => {
-        const tokenClient = window.google?.accounts?.oauth2?.initTokenClient({
-          client_id: clientId,
-          scope: GOOGLE_DRIVE_SCOPE,
-          callback: async (tokenResponse: any) => {
-            if (tokenResponse?.error) {
-              reject(new Error(tokenResponse.error_description || tokenResponse.error))
-              return
-            }
-
-            const accessToken = tokenResponse?.access_token
-            if (!accessToken) {
-              reject(new Error('Google did not return an access token.'))
-              return
-            }
-
-            const picker = new window.google.picker.PickerBuilder()
-              .setDeveloperKey(apiKey)
-              .setAppId(appId)
-              .setOAuthToken(accessToken)
-              .addView(
-                new window.google.picker.DocsView(window.google.picker.ViewId.DOCS)
-                  .setIncludeFolders(false)
-                  .setSelectFolderEnabled(false)
-              )
-              .enableFeature(window.google.picker.Feature.SUPPORT_DRIVES)
-              .enableFeature(window.google.picker.Feature.MULTISELECT_ENABLED)
-              .setCallback((data: any) => {
-                if (data.action === window.google.picker.Action.CANCEL) {
-                  resolve()
-                  return
-                }
-                if (data.action !== window.google.picker.Action.PICKED) {
-                  return
-                }
-
-                const docs = (data.docs || []).filter((doc: any) => doc?.id)
-                if (docs.length === 0) {
-                  reject(new Error('No Google Drive file was selected.'))
-                  return
-                }
-
-                addPickedGoogleDriveFiles(accessToken, docs)
-                resolve()
-              })
-              .build()
-
-            picker.setVisible(true)
-          },
-        })
-
-        if (!tokenClient) {
-          reject(new Error('Google Identity Services could not be initialized.'))
-          return
-        }
-
-        tokenClient.requestAccessToken({ prompt: 'consent' })
-      })
-    } catch (err: any) {
-      setError(
-        err.response?.data?.error?.message ||
-        err.response?.data?.message ||
-        err.message ||
-        'Failed to import from Google Drive'
-      )
-    } finally {
-      setImportingGoogleDriveFile(false)
-    }
-  }
-
-  const renderFileSourceControls = () => (
-    <div className="job-file-source-controls">
-      <label className="btn-secondary" style={{ cursor: 'pointer', display: 'inline-block' }}>
-        Select New File(s)
-        <input
-          type="file"
-          onChange={handleFileUpload}
-          disabled={creating}
-          multiple
-          style={{ display: 'none' }}
-          accept=".fastq,.fastq.gz,.fq,.fq.gz,.fasta,.fasta.gz,.fa,.fa.gz,.fna,.fna.gz,.gff,.gff3,.gtf,.hal,.gfa,.meryl,.meryl.tar,.meryl.tar.gz,.meryl.tgz,.cfg,.conf,.ini,.json,.txt,.tsv,.csv,.gz"
-        />
-      </label>
-      <button
-        type="button"
-        className="btn-secondary"
-        onClick={() => void openGoogleDrivePicker()}
-        disabled={creating || importingGoogleDriveFile}
-      >
-        {importingGoogleDriveFile ? 'Opening Your Drive...' : 'Choose from Your Google Drive'}
-      </button>
-      {pendingLocalFiles.length > 0 && (
-        <div style={{ width: '100%', marginTop: '0.85rem', color: '#475569', fontSize: '0.9rem' }}>
-          {pendingLocalFiles.filter(file => file.upload_status === 'uploaded').length}/{pendingLocalFiles.length} PC file{pendingLocalFiles.length !== 1 ? 's' : ''} uploaded for this job.
-          {pendingLocalUploadCount > 0 && ` ${pendingLocalUploadCount} still uploading.`}
-          {failedLocalUploadCount > 0 && ` ${failedLocalUploadCount} failed.`}
-        </div>
-      )}
-      {pendingGoogleDriveFiles.length > 0 && (
-        <div style={{ width: '100%', color: '#475569', fontSize: '0.9rem' }}>
-          {pendingGoogleDriveFiles.filter(file => file.upload_status === 'uploaded').length}/{pendingGoogleDriveFiles.length} Google Drive file{pendingGoogleDriveFiles.length !== 1 ? 's' : ''} imported for this job.
-          {pendingGoogleDriveUploadCount > 0 && ` ${pendingGoogleDriveUploadCount} still importing.`}
-          {failedGoogleDriveUploadCount > 0 && ` ${failedGoogleDriveUploadCount} failed.`}
-        </div>
-      )}
-    </div>
-  )
-
-  const sanitizeSelectedFilename = (value: string): string => (
-    value.replace(/[\\/:*?"<>|]/g, '_').trim()
-  )
-
-  const handleSelectedFileRename = (tempId: number, nextFilename: string) => {
-    const sanitizedName = sanitizeSelectedFilename(nextFilename)
-    setPendingLocalFiles(prev => prev.map(file => (
-      file.tempId === tempId
-        ? {
-            ...file,
-            filename: sanitizedName,
-            file_format: inferFileFormat(sanitizedName),
-          }
-        : file
-    )))
-    setPendingGoogleDriveFiles(prev => prev.map(file => (
-      file.tempId === tempId
-        ? {
-            ...file,
-            filename: sanitizedName,
-            file_format: inferFileFormat(sanitizedName),
-          }
-        : file
-    )))
-  }
-
   const renderSelectableFileChip = (file: FileItem & { folderPath?: string }, keyPrefix: string, selected = false) => {
-    const pendingFile = pendingLocalFiles.find(item => item.tempId === file.id)
-    const pendingGoogleDriveFile = pendingGoogleDriveFiles.find(item => item.tempId === file.id)
     const title = file.folderPath ? `${file.folderPath}/${file.filename}` : file.filename
 
     return (
@@ -1656,84 +1142,14 @@ export default function CreateJob() {
         className={`builder-file-chip ${selected ? 'selected' : ''}`}
         title={title}
       >
-        {pendingFile ? (
-          <>
-            <label style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', width: '100%' }}>
-              <span style={{ fontSize: '0.7rem', color: '#64748b', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-                File name
-              </span>
-              <input
-                type="text"
-                value={pendingFile.filename}
-                onChange={(event) => handleSelectedFileRename(pendingFile.tempId, event.target.value)}
-                disabled={creating || pendingFile.upload_status === 'uploading' || pendingFile.upload_status === 'uploaded'}
-                style={{ minWidth: '220px', fontWeight: 700 }}
-                aria-label={`Rename selected file ${pendingFile.original_filename || pendingFile.file.name}`}
-              />
-            </label>
-            <span>From PC: {pendingFile.original_filename || pendingFile.file.name}</span>
-            {pendingFile.upload_status === 'uploaded' ? (
-              <span>Uploaded and ready</span>
-            ) : pendingFile.upload_status === 'failed' ? (
-              <span style={{ color: '#b91c1c' }}>{pendingFile.upload_error || 'Upload failed'}</span>
-            ) : (
-              <span style={{ width: '100%' }}>
-                <span>Uploading... {pendingFile.upload_progress || 0}%</span>
-                <span style={{ display: 'block', height: '6px', marginTop: '0.35rem', borderRadius: '999px', backgroundColor: '#e5e7eb', overflow: 'hidden' }}>
-                  <span style={{ display: 'block', width: `${pendingFile.upload_progress || 0}%`, height: '100%', backgroundColor: '#2563eb' }} />
-                </span>
-              </span>
-            )}
-          </>
-        ) : pendingGoogleDriveFile ? (
-          <>
-            <label style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', width: '100%' }}>
-              <span style={{ fontSize: '0.7rem', color: '#64748b', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-                File name
-              </span>
-              <input
-                type="text"
-                value={pendingGoogleDriveFile.filename}
-                onChange={(event) => handleSelectedFileRename(pendingGoogleDriveFile.tempId, event.target.value)}
-                disabled={creating || pendingGoogleDriveFile.upload_status === 'uploading' || pendingGoogleDriveFile.upload_status === 'uploaded'}
-                style={{ minWidth: '220px', fontWeight: 700 }}
-                aria-label={`Rename selected Google Drive file ${pendingGoogleDriveFile.original_filename || pendingGoogleDriveFile.filename}`}
-              />
-            </label>
-            <span>From Google Drive: {pendingGoogleDriveFile.original_filename || pendingGoogleDriveFile.filename}</span>
-            {pendingGoogleDriveFile.upload_status === 'uploaded' ? (
-              <span>Imported and ready</span>
-            ) : pendingGoogleDriveFile.upload_status === 'failed' ? (
-              <span style={{ color: '#b91c1c' }}>{pendingGoogleDriveFile.upload_error || 'Import failed'}</span>
-            ) : (
-              <span style={{ width: '100%' }}>
-                <span>Importing... {pendingGoogleDriveFile.upload_progress || 0}%</span>
-                <span style={{ display: 'block', height: '6px', marginTop: '0.35rem', borderRadius: '999px', backgroundColor: '#e5e7eb', overflow: 'hidden' }}>
-                  <span style={{ display: 'block', width: `${pendingGoogleDriveFile.upload_progress || 0}%`, height: '100%', backgroundColor: '#2563eb' }} />
-                </span>
-              </span>
-            )}
-          </>
-        ) : (
-          <>
-            <strong>{file.filename}</strong>
-            {file.folderPath && <span>{file.folderPath}</span>}
-          </>
-        )}
+        <strong>{file.filename}</strong>
+        {file.folderPath && <span>{file.folderPath}</span>}
       </div>
     )
   }
 
-  const handleRecommendationFileToggle = (fileId: number) => {
-    setRecommendationFileIds(prev => (
-      prev.includes(fileId)
-        ? prev.filter(id => id !== fileId)
-        : [...prev, fileId]
-    ))
-  }
-
   const handleGenerateRecommendations = async () => {
-    const selectedFiles = getCombinedSelectableFiles().filter(file => recommendationFileIds.includes(file.id))
+    const selectedFiles = getCombinedSelectableFiles()
     setLoadingRecommendations(true)
     try {
       const response = await getPipelineRecommendations(
@@ -1746,7 +1162,7 @@ export default function CreateJob() {
       const options = response?.pipeline_options || []
       setRecommendationOptions(options)
       if (options.length === 0) {
-        setError('No recommendation could be generated from the selected intentions and candidate files')
+        setError('No recommendation could be generated from the selected intentions and Storage files')
       } else {
         setError('')
       }
@@ -1886,65 +1302,12 @@ export default function CreateJob() {
     setCurrentLevel((current) => Math.min(4, current + 1) as BuilderLevel)
   }
 
-  const cancelSelectedUploads = ({ clearState = true }: { clearState?: boolean } = {}) => {
-    uploadAbortControllersRef.current.forEach(controller => controller.abort())
-    uploadAbortControllersRef.current.clear()
-    uploadProgressTimersRef.current.forEach(timerId => window.clearInterval(timerId))
-    uploadProgressTimersRef.current.clear()
-
-    const currentPendingLocalFiles = pendingLocalFilesRef.current
-    const currentPendingGoogleDriveFiles = pendingGoogleDriveFilesRef.current
-    const pendingTempIds = new Set<number>([
-      ...currentPendingLocalFiles.map(file => file.tempId),
-      ...currentPendingGoogleDriveFiles.map(file => file.tempId),
-    ])
-    const stagedFileIds = [
-      ...currentPendingLocalFiles.map(file => file.staged_file_id),
-      ...currentPendingGoogleDriveFiles.map(file => file.staged_file_id),
-    ].filter((fileId): fileId is number => typeof fileId === 'number' && fileId > 0)
-
-    stagedFileIds.forEach(fileId => {
-      void deleteFile(fileId).catch(() => {
-        // Best effort cleanup. The staged file may already have been removed or never committed.
-      })
-    })
-
-    if (!clearState) {
-      return
-    }
-
-    setPendingLocalFiles([])
-    setPendingGoogleDriveFiles([])
-    setRecommendationFileIds(prev => prev.filter(fileId => !pendingTempIds.has(fileId)))
-    setToolFileMappings(prev => Object.fromEntries(
-      Object.entries(prev).map(([toolKey, requirementMap]) => [
-        toolKey,
-        Object.fromEntries(
-          Object.entries(requirementMap).map(([requirementType, fileIds]) => [
-            requirementType,
-            fileIds.filter(fileId => !pendingTempIds.has(fileId)),
-          ])
-        ),
-      ])
-    ))
-    setPipelineInputMappings(prev => Object.fromEntries(
-      Object.entries(prev).map(([inputKey, fileIds]) => [
-        inputKey,
-        fileIds.filter(fileId => !pendingTempIds.has(fileId)),
-      ])
-    ))
-  }
-
   const goToPreviousLevel = () => {
-    if (currentLevel === 2 && (pendingLocalFilesRef.current.length > 0 || pendingGoogleDriveFilesRef.current.length > 0)) {
-      cancelSelectedUploads()
-    }
     setSlideDirection('backward')
     setCurrentLevel((current) => Math.max(1, current - 1) as BuilderLevel)
   }
 
   const handleCancelCreateJob = () => {
-    cancelSelectedUploads()
     shouldPersistDraftRef.current = false
     clearCreateJobDraft()
     navigate('/')
@@ -1953,15 +1316,9 @@ export default function CreateJob() {
   const shouldShowRuntimeEstimateCard = Boolean(loadingRuntimeEstimate || runtimeEstimate || runtimeEstimateError)
   const combinedSelectableFiles = useMemo(
     () => getCombinedSelectableFiles(),
-    [dataFileTree, pendingGoogleDriveFiles, pendingLocalFiles]
+    [dataFileTree]
   )
-  const pendingLocalUploadCount = pendingLocalFiles.filter(file => file.upload_status === 'queued' || file.upload_status === 'uploading').length
-  const failedLocalUploadCount = pendingLocalFiles.filter(file => file.upload_status === 'failed').length
-  const pendingGoogleDriveUploadCount = pendingGoogleDriveFiles.filter(file => file.upload_status === 'queued' || file.upload_status === 'uploading').length
-  const failedGoogleDriveUploadCount = pendingGoogleDriveFiles.filter(file => file.upload_status === 'failed').length
-  const pendingFileUploadCount = pendingLocalUploadCount + pendingGoogleDriveUploadCount
-  const failedFileUploadCount = failedLocalUploadCount + failedGoogleDriveUploadCount
-  const canAdvanceFromLevelTwo = pendingFileUploadCount === 0 && failedFileUploadCount === 0 && inputStepMappingsComplete
+  const canAdvanceFromLevelTwo = inputStepMappingsComplete
 
   const selectedLibraryFiles = useMemo(() => combinedSelectableFiles.filter((file) => {
     if (selectionMode === 'pipeline') {
@@ -2000,7 +1357,7 @@ export default function CreateJob() {
             file_format: file.file_format || null,
             size_bytes: file.size_bytes || 0,
             s3_key: file.s3_key,
-            source: file.id < 0 ? 'pending-local' : 'library',
+            source: 'library',
           }))
       })
 
@@ -2047,7 +1404,7 @@ export default function CreateJob() {
             file_format: file.file_format || null,
             size_bytes: file.size_bytes || 0,
             s3_key: file.s3_key,
-            source: file.id < 0 ? 'pending-local' : 'library',
+            source: 'library',
           }))
       })
     })
@@ -2191,7 +1548,6 @@ export default function CreateJob() {
       pipelineInputMappings,
       requirementSourceSelections,
       selectedIntentIds,
-      recommendationFileIds,
       priorityGroups,
       openPriorityGroups,
       currentLevel,
@@ -2211,7 +1567,6 @@ export default function CreateJob() {
     pipelineInputMappings,
     pipelineRequirements,
     priorityGroups,
-    recommendationFileIds,
     requirementSourceSelections,
     selectedIntentIds,
     selectedPipelineDetails,
@@ -2335,60 +1690,11 @@ export default function CreateJob() {
         estimated_price_usd: runtimeEstimate.estimated_price_usd,
       }
       
-      const selectedPendingGoogleDriveFiles = pendingGoogleDriveFiles.filter(file => uploadedFileIds.includes(file.tempId))
-      const blankPendingGoogleDriveFile = selectedPendingGoogleDriveFiles.find(file => !file.filename.trim())
-      if (blankPendingGoogleDriveFile) {
-        setError(`Please give every selected Google Drive file a name before starting the job. Original file: ${blankPendingGoogleDriveFile.original_filename || blankPendingGoogleDriveFile.googleFileId}`)
-        return
-      }
-      const duplicatePendingGoogleDriveName = selectedPendingGoogleDriveFiles.find((file, index, allFiles) => (
-        allFiles.findIndex(candidate => candidate.filename.trim().toLowerCase() === file.filename.trim().toLowerCase()) !== index
-      ))
-      if (duplicatePendingGoogleDriveName) {
-        setError(`Selected Google Drive files must have unique names before import. Duplicate name: ${duplicatePendingGoogleDriveName.filename}`)
-        return
-      }
-      const unimportedGoogleDriveFile = selectedPendingGoogleDriveFiles.find(file => file.upload_status !== 'uploaded' || !file.staged_file_id)
-      if (unimportedGoogleDriveFile) {
-        setError(`Please wait for every selected Google Drive file to finish importing before submitting. Still waiting on: ${unimportedGoogleDriveFile.filename}`)
-        return
-      }
-      const selectedGoogleDriveStagedFileIds = selectedPendingGoogleDriveFiles
-        .map(file => file.staged_file_id)
-        .filter((fileId): fileId is number => typeof fileId === 'number' && fileId > 0)
-
-      const selectedPendingLocalFiles = pendingLocalFiles.filter(file => uploadedFileIds.includes(file.tempId))
-      const unuploadedPendingFile = selectedPendingLocalFiles.find(file => file.upload_status !== 'uploaded' || !file.staged_file_id)
-      if (unuploadedPendingFile) {
-        setError(`Please wait for every selected PC file to finish uploading before submitting. Still waiting on: ${unuploadedPendingFile.filename}`)
-        return
-      }
-      const selectedStagedFileIds = selectedPendingLocalFiles
-        .map(file => file.staged_file_id)
-        .filter((fileId): fileId is number => typeof fileId === 'number' && fileId > 0)
-      const selectedNewStagedFileIds = [...selectedStagedFileIds, ...selectedGoogleDriveStagedFileIds]
-      const pendingLocalTempIds = new Set(selectedPendingLocalFiles.map(file => file.tempId))
-      const pendingGoogleDriveTempIds = new Set(selectedPendingGoogleDriveFiles.map(file => file.tempId))
-      const existingLibraryFileIds = uploadedFileIds.filter(id => id > 0 && !pendingLocalTempIds.has(id) && !pendingGoogleDriveTempIds.has(id))
-      const blankPendingFile = selectedPendingLocalFiles.find(file => !file.filename.trim())
-      if (blankPendingFile) {
-        setError(`Please give every selected PC file a name before starting the job. Original file: ${blankPendingFile.original_filename || blankPendingFile.file.name}`)
-        return
-      }
-      const duplicatePendingName = selectedPendingLocalFiles.find((file, index, allFiles) => (
-        allFiles.findIndex(candidate => candidate.filename.trim().toLowerCase() === file.filename.trim().toLowerCase()) !== index
-      ))
-      if (duplicatePendingName) {
-        setError(`Selected PC files must have unique names before upload. Duplicate name: ${duplicatePendingName.filename}`)
-        return
-      }
+      const existingLibraryFileIds = uploadedFileIds.filter(id => id > 0)
 
       // Only include already-uploaded library files at create time
       if (existingLibraryFileIds.length > 0) {
         jobData.input_file_ids = existingLibraryFileIds
-      }
-      if (selectedNewStagedFileIds.length > 0) {
-        jobData.staged_input_file_ids = selectedNewStagedFileIds
       }
 
       const inputSourceOverrides = selectionMode === 'tools'
@@ -2534,7 +1840,7 @@ export default function CreateJob() {
               <label>Intent-Based Suggestions</label>
               <div className="builder-section-card">
                 <p style={{ marginBottom: '1rem', color: '#666', fontSize: '0.875rem' }}>
-                  Choose what you want to achieve, provide candidate input files, and the system will suggest a few possible pipelines.
+                  Choose what you want to achieve. Suggestions will consider files already uploaded in Storage.
                 </p>
 
                 <div style={{ marginBottom: '1rem', display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
@@ -2555,40 +1861,25 @@ export default function CreateJob() {
                   })}
                 </div>
 
-                <div style={{ marginBottom: '1rem' }}>
-                  <label className="btn-secondary" style={{ cursor: 'pointer', display: 'inline-block' }}>
-                    Select Candidate File(s)
-                    <input
-                      type="file"
-                      onChange={handleFileUpload}
-                      disabled={creating}
-                      multiple
-                      style={{ display: 'none' }}
-                      accept=".fastq,.fasta,.fq,.fa,.gz"
-                    />
-                  </label>
-                </div>
-
                 {loadingDataTree ? (
-                  <p style={{ color: '#666', fontStyle: 'italic' }}>Loading candidate files...</p>
+                  <p style={{ color: '#666', fontStyle: 'italic' }}>Loading Storage files...</p>
                 ) : (
                   <div style={{ marginBottom: '1rem' }}>
                     <div style={sharedRequirementCardStyle}>
-                      {getCombinedSelectableFiles().map(file => {
-                        const isSelected = recommendationFileIds.includes(file.id)
-                        return (
-                          <button
-                            key={`rec-file-${file.id}`}
-                            type="button"
-                            onClick={() => handleRecommendationFileToggle(file.id)}
-                            className={isSelected ? 'btn-primary' : 'btn-secondary'}
-                            style={{ padding: '0.4rem 0.75rem' }}
-                            title={file.folderPath ? `${file.folderPath}/${file.filename}` : file.filename}
-                          >
-                            {file.filename}
-                          </button>
-                        )
-                      })}
+                      {getCombinedSelectableFiles().length === 0 ? (
+                        <p style={{ margin: 0, color: '#666', fontStyle: 'italic' }}>
+                          No Storage files found yet. Upload inputs from Storage before using them in a job.
+                        </p>
+                      ) : getCombinedSelectableFiles().map(file => (
+                        <span
+                          key={`rec-file-${file.id}`}
+                          className="builder-file-chip"
+                          title={file.folderPath ? `${file.folderPath}/${file.filename}` : file.filename}
+                        >
+                          <strong>{file.filename}</strong>
+                          {file.folderPath && <span>{file.folderPath}</span>}
+                        </span>
+                      ))}
                     </div>
                   </div>
                 )}
@@ -2597,7 +1888,7 @@ export default function CreateJob() {
                   type="button"
                   onClick={handleGenerateRecommendations}
                   className="btn-primary"
-                  disabled={loadingRecommendations || selectedIntentIds.length === 0 || recommendationFileIds.length === 0}
+                  disabled={loadingRecommendations || selectedIntentIds.length === 0}
                 >
                   {loadingRecommendations ? 'Generating Suggestions...' : 'Suggest Pipelines'}
                 </button>
@@ -2871,60 +2162,6 @@ export default function CreateJob() {
               <>
             {selectionMode === 'pipeline' && selectedPipelineId && (
               <div className="form-group">
-                <label>Pipeline Files</label>
-                <div className="builder-section-card">
-                  <p style={{ marginBottom: '1rem', color: '#666', fontSize: '0.875rem' }}>
-                    Choose the files you want available for this pipeline, then assign them below to the explicit tool blocks.
-                  </p>
-
-                  {renderFileSourceControls()}
-
-                  {loadingDataTree ? (
-                    <p style={{ color: '#666', fontStyle: 'italic' }}>Loading data library...</p>
-                  ) : combinedSelectableFiles.length === 0 ? (
-                    <p style={{ color: '#666', fontStyle: 'italic', margin: 0 }}>
-                      No files available yet. Upload files now, then map them to the pipeline tool blocks here.
-                    </p>
-                  ) : (
-                    <div className="builder-file-chip-grid">
-                      {combinedSelectableFiles.map((file) => renderSelectableFileChip(file, 'pipeline-file'))}
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {selectionMode === 'tools' && (
-              <div className="form-group">
-                <label>Input Files</label>
-                <div className="builder-section-card">
-                  <p style={{ marginBottom: '1rem', color: '#666', fontSize: '0.875rem' }}>
-                    Add or review the files you want available, then assign them here into named tool blocks.
-                  </p>
-
-                  {renderFileSourceControls()}
-
-                  {loadingDataTree ? (
-                    <p style={{ color: '#666', fontStyle: 'italic' }}>Loading data library...</p>
-                  ) : combinedSelectableFiles.length === 0 ? (
-                    <p style={{ color: '#666', fontStyle: 'italic', margin: 0 }}>
-                      No input files available yet. Upload files here, then map them to the tool blocks below.
-                    </p>
-                  ) : (
-                    <div className="builder-file-chip-grid">
-                      {combinedSelectableFiles.map((file) => renderSelectableFileChip(file, 'tool-file'))}
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-              </>
-            )}
-
-            {currentLevel === 2 && (
-              <>
-            {selectionMode === 'pipeline' && selectedPipelineId && (
-              <div className="form-group">
                 <label>Pipeline Inputs *</label>
                 {loadingRequirements ? (
                   <p style={{ color: '#666', fontStyle: 'italic' }}>Loading pipeline inputs...</p>
@@ -2944,7 +2181,7 @@ export default function CreateJob() {
                       <>
                       {combinedSelectableFiles.length > 0 && (
                         <div className="builder-section-card builder-input-file-context">
-                          <p className="builder-card-kicker">Selected Files</p>
+                          <p className="builder-card-kicker">Storage Files</p>
                       <div className="builder-file-chip-grid">
                             {combinedSelectableFiles.map((file) => renderSelectableFileChip(
                               file,
@@ -2991,7 +2228,7 @@ export default function CreateJob() {
                             )}
                             {compatibleFiles.length === 0 ? (
                               <p style={{ color: '#666', fontStyle: 'italic', fontSize: '0.875rem' }}>
-                                No compatible files found. Upload files with formats: {inputReq.formats.join(', ').toUpperCase()}
+                                No compatible files found in Storage. Upload files with formats: {inputReq.formats.join(', ').toUpperCase()}
                               </p>
                             ) : (
                               <div className="builder-file-chip-grid">
@@ -3038,7 +2275,7 @@ export default function CreateJob() {
                     <>
                   {combinedSelectableFiles.length > 0 && (
                     <div className="builder-section-card builder-input-file-context">
-                      <p className="builder-card-kicker">Selected Files</p>
+                      <p className="builder-card-kicker">Storage Files</p>
                       <div className="builder-file-chip-grid">
                         {combinedSelectableFiles.map((file) => renderSelectableFileChip(
                           file,
@@ -3051,7 +2288,7 @@ export default function CreateJob() {
 
                   {combinedSelectableFiles.length === 0 ? (
                     <p style={{ color: '#666', fontStyle: 'italic' }}>
-                      No input files available yet. Go back and add files first, then connect them to the tool blocks here.
+                      No input files available yet. Upload input files from the Storage page, then return to connect them to the tool blocks here.
                     </p>
                   ) : null}
 
@@ -3166,7 +2403,7 @@ export default function CreateJob() {
                                       </p>
                                     ) : compatibleFiles.length === 0 ? (
                                       <p style={{ color: '#666', fontStyle: 'italic', fontSize: '0.875rem', margin: 0 }}>
-                                        No compatible files found. Upload files with formats: {req.formats.join(', ').toUpperCase()}
+                                        No compatible files found in Storage. Upload files with formats: {req.formats.join(', ').toUpperCase()}
                                         {req.filename_example ? ` and names like ${req.filename_example}` : ''}
                                       </p>
                                     ) : (

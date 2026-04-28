@@ -38,6 +38,11 @@ CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 CREATE INDEX IF NOT EXISTS idx_users_bucket_name ON users(bucket_name);
 
+CREATE TABLE IF NOT EXISTS app_migrations (
+    key VARCHAR(120) PRIMARY KEY,
+    applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 DO $$
 BEGIN
     IF NOT EXISTS (
@@ -171,6 +176,22 @@ BEGIN
         WHERE table_name = 'users' AND column_name = 'suspension_reason'
     ) THEN
         ALTER TABLE users ADD COLUMN suspension_reason VARCHAR(255);
+    END IF;
+END $$;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM app_migrations
+        WHERE key = 'split_reserved_balance_20260428'
+    ) THEN
+        UPDATE users
+        SET cash_balance_usd = GREATEST(cash_balance_usd - cash_reserved_usd, 0),
+            updated_at = NOW()
+        WHERE cash_reserved_usd > 0;
+
+        INSERT INTO app_migrations (key)
+        VALUES ('split_reserved_balance_20260428');
     END IF;
 END $$;
 

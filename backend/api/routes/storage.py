@@ -34,6 +34,7 @@ from backend.api.services.storage_service import (
     get_file_by_id,
     get_files_by_user,
     get_total_file_bytes_by_user,
+    prune_missing_file_records_by_user,
     update_file,
     delete_file_record,
     count_files_by_user
@@ -99,6 +100,11 @@ async def get_storage_summary(
     """Return storage quota and usage for the current user."""
     try:
         limits = await run_in_threadpool(get_user_limits, current_user.username)
+        await run_in_threadpool(
+            prune_missing_file_records_by_user,
+            current_user.id,
+            current_user.username,
+        )
         used_bytes = await run_in_threadpool(get_total_file_bytes_by_user, current_user.id)
         max_storage_bytes = max(int(limits.get("max_storage_bytes", 0)), 0)
         remaining_bytes = max(max_storage_bytes - used_bytes, 0) if max_storage_bytes > 0 else None

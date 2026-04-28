@@ -8,8 +8,6 @@ import os
 import re
 import shutil
 import tempfile
-import time
-import uuid
 from urllib.parse import parse_qs, unquote, urlparse
 from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, status, Query, Form, Request
 from fastapi.concurrency import run_in_threadpool
@@ -22,8 +20,11 @@ from backend.api.models.user_model import UserResponse
 from backend.api.services.data_file_service import (
     upload_data_file_from_path,
     create_data_file_record_for_existing_object,
+    build_data_s3_key,
     get_data_files_by_folder,
     get_data_file_by_id,
+    make_storage_data_filename,
+    prune_missing_data_file_records,
     rename_data_file,
     move_data_file,
     delete_data_file,
@@ -103,7 +104,8 @@ async def prepare_direct_data_file_upload(
             )
 
         await run_in_threadpool(minio_client.ensure_user_bucket, current_user.id, current_user.username)
-        s3_key = _build_data_s3_key(current_user.id, filename, payload.folder_id)
+        storage_filename = make_storage_data_filename(filename)
+        s3_key = build_data_s3_key(current_user.id, storage_filename, payload.folder_id)
         upload_url = await run_in_threadpool(
             minio_client.generate_presigned_url,
             current_user.id,
@@ -242,16 +244,6 @@ def _safe_cloud_filename(value: Optional[str]) -> str:
     if not filename:
         filename = "cloud_import.dat"
     return filename[:180]
-
-
-def _build_data_s3_key(user_id: int, filename: str, folder_id: Optional[int]) -> str:
-    upload_id = f"{time.time_ns()}_{uuid.uuid4().hex[:10]}"
-    if folder_id:
-        from backend.api.services.folder_service import get_folder_by_id
-        folder_obj = get_folder_by_id(folder_id, user_id)
-        folder_path = folder_obj.path.replace('/', '_') if folder_obj else f"folder_{folder_id}"
-        return f"data/{user_id}/{folder_path}/{upload_id}_{filename}"
-    return f"data/{user_id}/root/{upload_id}_{filename}"
 
 
 def _extract_google_drive_file_id(source_url: str) -> Optional[str]:
@@ -702,6 +694,11 @@ async def list_data_files(
         JSONResponse: List of files
     """
     try:
+        await run_in_threadpool(
+            prune_missing_data_file_records,
+            current_user.id,
+            current_user.username,
+        )
         files = get_data_files_by_folder(folder_id, current_user.id)
         return success_response(
             data=[{
@@ -742,6 +739,11 @@ async def get_data_file_tree(
     """
     try:
         from backend.api.services.folder_service import get_folder_tree
+        await run_in_threadpool(
+            prune_missing_data_file_records,
+            current_user.id,
+            current_user.username,
+        )
         tree = get_folder_tree(current_user.id)
         return success_response(
             data=tree,

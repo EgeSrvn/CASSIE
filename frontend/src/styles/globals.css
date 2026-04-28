@@ -2774,6 +2774,148 @@ body {
   margin-bottom: 0;
 }
 
+.balance-page {
+  display: flex;
+  flex-direction: column;
+  gap: 1.4rem;
+}
+
+.balance-header-card,
+.balance-checkout-card,
+.balance-metric-card {
+  border-radius: 24px;
+  background:
+    linear-gradient(180deg, rgba(245, 238, 220, 0.98), rgba(241, 229, 207, 0.94)),
+    linear-gradient(135deg, rgba(39, 84, 138, 0.04), rgba(221, 168, 83, 0.08));
+  border: 1px solid rgba(221, 168, 83, 0.24);
+  box-shadow: var(--shadow-md);
+}
+
+.balance-header-card {
+  padding: 2rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.5rem;
+}
+
+.balance-header-card h1 {
+  margin: 0.1rem 0 0.35rem;
+}
+
+.balance-header-card p {
+  margin: 0;
+  color: var(--gray-600);
+}
+
+.balance-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.balance-metric-card {
+  padding: 1.4rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.balance-metric-card span {
+  color: var(--gray-600);
+  font-size: 0.86rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.balance-metric-card strong {
+  color: var(--primary-dark);
+  font-size: 2rem;
+  line-height: 1;
+}
+
+.balance-checkout-card {
+  padding: 1.5rem;
+  display: grid;
+  grid-template-columns: minmax(320px, 0.82fr) minmax(0, 1.18fr);
+  gap: 1.5rem;
+  align-items: start;
+}
+
+.balance-card-preview {
+  aspect-ratio: 1.586 / 1;
+  width: 100%;
+  max-width: 430px;
+  min-height: 0;
+  border-radius: 18px;
+  padding: 1.25rem 1.35rem;
+  color: white;
+  background: linear-gradient(135deg, rgba(15, 23, 42, 0.96), rgba(39, 84, 138, 0.94));
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  box-shadow: 0 18px 38px rgba(15, 23, 42, 0.22);
+}
+
+.balance-card-chip {
+  width: 3.2rem;
+  height: 2.25rem;
+  border-radius: 0.45rem;
+  background:
+    linear-gradient(90deg, transparent 30%, rgba(15, 23, 42, 0.2) 30%, rgba(15, 23, 42, 0.2) 34%, transparent 34%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.52), rgba(244, 196, 106, 0.82));
+  border: 1px solid rgba(255, 255, 255, 0.5);
+}
+
+.balance-card-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.balance-card-row small {
+  display: block;
+  margin-bottom: 0.18rem;
+  color: rgba(255, 255, 255, 0.68);
+  font-size: 0.58rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.balance-card-number {
+  font-size: 1.28rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  overflow-wrap: anywhere;
+}
+
+.balance-checkout-form {
+  min-width: 0;
+}
+
+.balance-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.balance-form-wide {
+  grid-column: 1 / -1;
+}
+
+.balance-checkout-actions {
+  margin-top: 1rem;
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
 .profile-info-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -3970,6 +4112,23 @@ body {
 
   .profile-entry-list-main {
     grid-template-columns: 1fr;
+  }
+
+  .balance-header-card,
+  .balance-checkout-card {
+    grid-template-columns: 1fr;
+    flex-direction: column;
+    align-items: stretch;
+    padding: 1.35rem;
+  }
+
+  .balance-summary-grid,
+  .balance-form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .balance-metric-card strong {
+    font-size: 1.65rem;
   }
 
   .button-row.compact-actions {

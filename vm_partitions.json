@@ -2,8 +2,18 @@
   "vms": [
     {
       "name": "vm1",
-      "display_name": "VM1",
+      "display_name": "High",
       "max_jobs": 1
+    },
+    {
+      "name": "vm2",
+      "display_name": "Medium",
+      "max_jobs": 2
+    },
+    {
+      "name": "vm3",
+      "display_name": "Low",
+      "max_jobs": 4
     }
   ]
 }
