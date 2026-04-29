@@ -16,7 +16,7 @@ import {
   getStorageSummary,
   StorageSummary,
 } from '../services/fileService'
-import { FolderTreeItem, FileItem } from '../services/folderService'
+import { FileItem, FolderTreeItem } from '../services/folderService'
 import { getJobs, Job } from '../services/jobService'
 import {
   dismissStorageUpload,
@@ -30,6 +30,8 @@ import './Storage.css'
 const GOOGLE_DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.readonly'
 const GOOGLE_API_SCRIPT_ID = 'cassie-google-api-script'
 const GOOGLE_GSI_SCRIPT_ID = 'cassie-google-gsi-script'
+const STORAGE_LIBRARY_PER_PAGE = 1000
+const STORAGE_JOB_PER_PAGE = 100
 
 type StorageTab = 'inputs' | 'outputs'
 type InputLibraryRow = (FileItem & { folderPath?: string }) | StorageUploadItem
@@ -132,6 +134,8 @@ export default function Storage() {
   const navigate = useNavigate()
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const [activeTab, setActiveTab] = useState<StorageTab>('inputs')
+  const [inputSearch, setInputSearch] = useState('')
+  const [outputSearch, setOutputSearch] = useState('')
   const [summary, setSummary] = useState<StorageSummary | null>(null)
   const [dataTree, setDataTree] = useState<FolderTreeItem[]>([])
   const [jobFiles, setJobFiles] = useState<StorageJobFile[]>([])
@@ -143,15 +147,37 @@ export default function Storage() {
   const [success, setSuccess] = useState('')
 
   const inputFiles = useMemo(() => flattenFiles(dataTree), [dataTree])
-  const visibleInputFiles = useMemo<InputLibraryRow[]>(() => [...pendingFiles, ...inputFiles], [inputFiles, pendingFiles])
+  const visibleInputFiles = useMemo<InputLibraryRow[]>(
+    () => [...pendingFiles, ...inputFiles],
+    [inputFiles, pendingFiles]
+  )
+  const normalizedInputSearch = inputSearch.trim().toLowerCase()
+  const normalizedOutputSearch = outputSearch.trim().toLowerCase()
+
+  const filteredInputFiles = useMemo(
+    () =>
+      visibleInputFiles.filter((file) => {
+        const filename = file.filename.toLowerCase()
+        const extension = filename.includes('.') ? filename.split('.').slice(1).join('.') : ''
+        return (
+          !normalizedInputSearch ||
+          filename.includes(normalizedInputSearch) ||
+          extension.includes(normalizedInputSearch)
+        )
+      }),
+    [normalizedInputSearch, visibleInputFiles]
+  )
+
   const outputFiles = useMemo(
     () => jobFiles.filter((file) => file.file_type === 'output' || file.file_type === 'log'),
     [jobFiles]
   )
+
   const jobLookup = useMemo(
     () => new Map(jobs.map((job) => [job.id, job])),
     [jobs]
   )
+
   const groupedOutputs = useMemo(() => {
     const groups = new Map<number, { job: Job | undefined; files: StorageJobFile[] }>()
     outputFiles.forEach((file) => {
@@ -166,18 +192,26 @@ export default function Storage() {
       .map(([jobId, group]) => ({
         jobId,
         job: group.job,
-        files: [...group.files].sort((a, b) => {
-          const aTime = new Date(a.created_at || a.uploaded_at || 0).getTime()
-          const bTime = new Date(b.created_at || b.uploaded_at || 0).getTime()
-          return bTime - aTime
-        }),
+        files: [...group.files]
+          .filter((file) => {
+            if (!normalizedOutputSearch) return true
+            const filename = file.filename.toLowerCase()
+            const extension = filename.includes('.') ? filename.split('.').slice(1).join('.') : ''
+            return filename.includes(normalizedOutputSearch) || extension.includes(normalizedOutputSearch)
+          })
+          .sort((a, b) => {
+            const aTime = new Date(a.created_at || a.uploaded_at || 0).getTime()
+            const bTime = new Date(b.created_at || b.uploaded_at || 0).getTime()
+            return bTime - aTime
+          }),
       }))
+      .filter((group) => group.files.length > 0)
       .sort((a, b) => {
         const aTime = a.job?.updated_at ? new Date(a.job.updated_at).getTime() : 0
         const bTime = b.job?.updated_at ? new Date(b.job.updated_at).getTime() : 0
         return bTime - aTime
       })
-  }, [jobLookup, outputFiles])
+  }, [jobLookup, normalizedOutputSearch, outputFiles])
 
   const usageRatio = summary?.usage_ratio ?? (
     summary?.max_storage_bytes ? summary.used_bytes / summary.max_storage_bytes : null
@@ -211,8 +245,8 @@ export default function Storage() {
       const [nextSummary, nextTree, storageResponse, jobsResponse] = await Promise.all([
         getStorageSummary(),
         getDataFileTree(),
-        getFiles(undefined, undefined, 1, 1000),
-        getJobs(undefined, 1, 1000),
+        getFiles(undefined, undefined, 1, STORAGE_LIBRARY_PER_PAGE),
+        getJobs(undefined, 1, STORAGE_JOB_PER_PAGE),
       ])
       setSummary(nextSummary)
       setDataTree(nextTree)
@@ -231,9 +265,13 @@ export default function Storage() {
     void loadStorage()
   }, [])
 
-  useEffect(() => subscribeToStorageUploads((items) => {
-    setPendingFiles(items)
-  }), [])
+  useEffect(
+    () =>
+      subscribeToStorageUploads((items) => {
+        setPendingFiles(items)
+      }),
+    []
+  )
 
   useEffect(() => {
     const handleStorageLibraryChange = (event: Event) => {
@@ -425,7 +463,7 @@ export default function Storage() {
       <article key={file.id} className="storage-file-row storage-file-row-pending">
         <div>
           <strong>{file.filename}</strong>
-          <span>Pending Upload · {formatBytes(file.size_bytes)} · {(file.file_format || 'unknown').toUpperCase()}</span>
+          <span>Pending Upload | {formatBytes(file.size_bytes)} | {(file.file_format || 'unknown').toUpperCase()}</span>
           <div className="storage-row-progress">
             <div className="storage-row-progress-header">
               <span>{progressLabel}</span>
@@ -465,7 +503,7 @@ export default function Storage() {
     <article key={`input-${file.id}`} className="storage-file-row">
       <div>
         <strong>{file.filename}</strong>
-        <span>{file.folderPath || 'Root'} · {formatBytes(file.size_bytes)} · {(file.file_format || 'unknown').toUpperCase()}</span>
+        <span>{file.folderPath || 'Root'} | {formatBytes(file.size_bytes)} | {(file.file_format || 'unknown').toUpperCase()}</span>
       </div>
       <div className="storage-file-actions">
         <button type="button" className="btn-secondary" onClick={() => downloadDataFile(file.id)}>
@@ -508,9 +546,20 @@ export default function Storage() {
             <span style={{ width: `${usagePercent}%` }} />
           </div>
           <div className="storage-usage-footer">
-            <span>{formatBytes(summary?.remaining_bytes)} remaining</span>
-            <button type="button" className="btn-secondary storage-upgrade-link" onClick={() => navigate('/storage/upgrade')}>
-              Weekly Storage Upgrades
+            <div className="storage-usage-subscription">
+              <span>{formatBytes(summary?.remaining_bytes)} remaining</span>
+              <span>
+                {summary?.active_subscription
+                  ? `Active plan: ${summary.active_subscription.plan_name} (+${summary.active_subscription.additional_gb} GB)`
+                  : 'Active plan: Default storage'}
+              </span>
+            </div>
+            <button
+              type="button"
+              className="btn-secondary storage-upgrade-link"
+              onClick={() => navigate('/storage/upgrade')}
+            >
+              {summary?.active_subscription ? 'Change Storage Plan' : 'Weekly Storage Upgrades'}
             </button>
           </div>
         </section>
@@ -545,7 +594,7 @@ export default function Storage() {
             </button>
           </div>
 
-          {activeTab === 'inputs' && (
+          {activeTab === 'inputs' ? (
             <>
               <section className="storage-actions-panel">
                 <input
@@ -563,76 +612,98 @@ export default function Storage() {
                 </button>
               </section>
 
+              <div className="storage-search-row">
+                <input
+                  type="search"
+                  value={inputSearch}
+                  onChange={(event) => setInputSearch(event.target.value)}
+                  className="community-search-input"
+                  placeholder="Search input name or extension, for example: ecoli, fastq, fasta.gz"
+                />
+              </div>
+
               {loading ? (
                 <div className="loading-state">Loading storage...</div>
-              ) : visibleInputFiles.length === 0 ? (
+              ) : filteredInputFiles.length === 0 ? (
                 <div className="empty-state">
-                  <p>No stored inputs yet.</p>
-                  <button type="button" className="btn-primary" onClick={() => fileInputRef.current?.click()}>
-                    Upload First File
-                  </button>
+                  <p>{visibleInputFiles.length === 0 ? 'No stored inputs yet.' : 'No input files matched your search.'}</p>
+                  {visibleInputFiles.length === 0 && (
+                    <button type="button" className="btn-primary" onClick={() => fileInputRef.current?.click()}>
+                      Upload First File
+                    </button>
+                  )}
                 </div>
               ) : (
                 <div className="storage-file-list">
-                  {visibleInputFiles.map((file) => (
+                  {filteredInputFiles.map((file) => (
                     'status' in file ? renderPendingInput(file) : renderInputLibraryFile(file)
                   ))}
                 </div>
               )}
             </>
-          )}
+          ) : (
+            <>
+              <div className="storage-search-row">
+                <input
+                  type="search"
+                  value={outputSearch}
+                  onChange={(event) => setOutputSearch(event.target.value)}
+                  className="community-search-input"
+                  placeholder="Search output name or extension, for example: quast, html, txt"
+                />
+              </div>
 
-          {activeTab === 'outputs' && (
-            loading ? (
-              <div className="loading-state">Loading output files...</div>
-            ) : groupedOutputs.length === 0 ? (
-              <div className="empty-state">
-                <p>No output files are stored yet.</p>
-                <p className="empty-state-secondary">
-                  Successful tool executions will appear here and stay grouped by job.
-                </p>
-              </div>
-            ) : (
-              <div className="storage-output-groups">
-                {groupedOutputs.map((group) => (
-                  <section key={`job-output-${group.jobId}`} className="storage-output-group">
-                    <div className="storage-output-group-header">
-                      <div>
-                        <h3>{buildJobLabel(group.job)}</h3>
-                        <p>
-                          {group.job?.status ? `Status: ${group.job.status.toUpperCase()}` : 'Job details unavailable'} · {group.files.length} file{group.files.length === 1 ? '' : 's'}
-                        </p>
+              {loading ? (
+                <div className="loading-state">Loading output files...</div>
+              ) : groupedOutputs.length === 0 ? (
+                <div className="empty-state">
+                  <p>{outputFiles.length === 0 ? 'No output files are stored yet.' : 'No output files matched your search.'}</p>
+                  <p className="empty-state-secondary">
+                    Successful tool executions will appear here and stay grouped by job.
+                  </p>
+                </div>
+              ) : (
+                <div className="storage-output-groups">
+                  {groupedOutputs.map((group) => (
+                    <section key={`job-output-${group.jobId}`} className="storage-output-group">
+                      <div className="storage-output-group-header">
+                        <div>
+                          <h3>{buildJobLabel(group.job)}</h3>
+                          <p>
+                            {group.job?.status ? `Status: ${group.job.status.toUpperCase()}` : 'Job details unavailable'} | {group.files.length} file{group.files.length === 1 ? '' : 's'}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          className="btn-secondary"
+                          onClick={() => navigate(`/jobs/${group.jobId}`)}
+                        >
+                          Open Job
+                        </button>
                       </div>
-                      <button
-                        type="button"
-                        className="btn-secondary"
-                        onClick={() => navigate(`/jobs/${group.jobId}`)}
-                      >
-                        Open Job
-                      </button>
-                    </div>
-                    <div className="storage-file-list">
-                      {group.files.map((file) => (
-                        <article key={`output-${file.id}`} className="storage-file-row">
-                          <div>
-                            <strong>{file.filename}</strong>
-                            <span>{formatBytes(file.size_bytes)} · {formatStorageFileType(file)}</span>
-                          </div>
-                          <div className="storage-file-actions">
-                            <button type="button" className="btn-secondary" onClick={() => downloadFile(file.id)}>
-                              Download
-                            </button>
-                            <button type="button" className="btn-danger" disabled={busy} onClick={() => handleDeleteOutput(file)}>
-                              Delete
-                            </button>
-                          </div>
-                        </article>
-                      ))}
-                    </div>
-                  </section>
-                ))}
-              </div>
-            )
+                      <div className="storage-file-list">
+                        {group.files.map((file) => (
+                          <article key={`output-${file.id}`} className="storage-file-row">
+                            <div>
+                              <strong>{file.filename}</strong>
+                              <span>{formatBytes(file.size_bytes)} | {formatStorageFileType(file)}</span>
+                            </div>
+                            <div className="storage-file-actions">
+                              <button type="button" className="btn-secondary" onClick={() => downloadFile(file.id)}>
+                                Download
+                              </button>
+                              <button type="button" className="btn-danger" disabled={busy} onClick={() => handleDeleteOutput(file)}>
+                                Delete
+                              </button>
+                            </div>
+                          </article>
+                        ))}
+                      </div>
+                    </section>
+                  ))}
+                </div>
+              )}
+            </>
           )}
         </section>
       </main>

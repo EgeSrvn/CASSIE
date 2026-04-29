@@ -16,6 +16,23 @@ import ReportDialog from '../components/ReportDialog'
 import SortDropdown from '../components/SortDropdown'
 import '../styles/globals.css'
 
+interface ToolFilterOption {
+  key: string
+  name: string
+  type: string
+}
+
+const formatToolTypeLabel = (toolType: string): string => {
+  const normalized = String(toolType || '').trim().toLowerCase()
+  if (!normalized) return 'Unknown'
+  if (normalized === 'qc') return 'Quality Control'
+  if (normalized === 'transform') return 'Assembly'
+  return normalized
+    .split(/[_\s-]+/)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ')
+}
+
 export default function Community() {
   const ITEMS_PER_PAGE = 10
   const navigate = useNavigate()
@@ -27,7 +44,7 @@ export default function Community() {
   const [search, setSearch] = useState('')
   const [selectedTools, setSelectedTools] = useState<string[]>([])
   const [toolFilterOpen, setToolFilterOpen] = useState(false)
-  const [toolCatalog, setToolCatalog] = useState<string[]>([])
+  const [toolCatalog, setToolCatalog] = useState<ToolFilterOption[]>([])
   const [currentPage, setCurrentPage] = useState(1)
   const [reportingPipeline, setReportingPipeline] = useState<Pipeline | null>(null)
   const [submittingReport, setSubmittingReport] = useState(false)
@@ -63,8 +80,12 @@ export default function Community() {
       setToolCatalog(
         tools
           .filter((tool) => tool.enabled)
-          .map((tool) => tool.name)
-          .sort((a, b) => a.localeCompare(b))
+          .map((tool) => ({
+            key: `${tool.id}-${tool.name.toLowerCase()}`,
+            name: tool.name,
+            type: tool.type || 'unknown',
+          }))
+          .sort((a, b) => a.name.localeCompare(b.name))
       )
     } catch (err) {
       console.warn('Failed to load tool catalog for community filters', err)
@@ -72,36 +93,80 @@ export default function Community() {
     }
   }
 
-  const availableTools = useMemo(() => {
-    const labels = new Set<string>()
-    toolCatalog.forEach((toolLabel) => labels.add(toolLabel))
-    allPipelines.forEach((pipeline) => {
-      ;(pipeline.tool_labels || []).forEach((toolLabel) => labels.add(toolLabel))
+  const toolCatalogByName = useMemo(() => {
+    const lookup = new Map<string, ToolFilterOption>()
+    toolCatalog.forEach((tool) => {
+      lookup.set(tool.name.trim().toLowerCase(), tool)
     })
-    return Array.from(labels).sort((a, b) => a.localeCompare(b))
-  }, [allPipelines, toolCatalog])
+    return lookup
+  }, [toolCatalog])
+
+  const availableTools = useMemo<ToolFilterOption[]>(() => {
+    const labels = new Map<string, ToolFilterOption>()
+    toolCatalog.forEach((tool) => labels.set(tool.key, tool))
+    allPipelines.forEach((pipeline) => {
+      ;(pipeline.tool_labels || []).forEach((toolLabel) => {
+        const normalizedLabel = toolLabel.trim().toLowerCase()
+        if (!normalizedLabel) return
+        const matchedTool = Array.from(toolCatalogByName.values()).find((tool) => normalizedLabel.includes(tool.name.trim().toLowerCase()))
+        const option = matchedTool || {
+          key: `pipeline-${normalizedLabel}`,
+          name: toolLabel,
+          type: 'unknown',
+        }
+        labels.set(option.key, option)
+      })
+    })
+    return Array.from(labels.values()).sort((a, b) => {
+      const typeComparison = formatToolTypeLabel(a.type).localeCompare(formatToolTypeLabel(b.type))
+      return typeComparison !== 0 ? typeComparison : a.name.localeCompare(b.name)
+    })
+  }, [allPipelines, toolCatalog, toolCatalogByName])
 
   const pipelines = useMemo(() => {
     const normalizedSearch = search.trim().toLowerCase()
 
     const filtered = allPipelines.filter((pipeline) => {
+      const normalizedPipelineToolLabels = (pipeline.tool_labels || []).map((toolLabel) => toolLabel.toLowerCase())
       const matchesSearch =
         !normalizedSearch ||
         pipeline.name.toLowerCase().includes(normalizedSearch) ||
         (pipeline.description || '').toLowerCase().includes(normalizedSearch) ||
-        (pipeline.tool_labels || []).some((toolLabel) => toolLabel.toLowerCase().includes(normalizedSearch))
+        normalizedPipelineToolLabels.some((toolLabel) => toolLabel.includes(normalizedSearch))
 
       const matchesTool =
         selectedTools.length === 0 ||
-        selectedTools.some((selectedTool) =>
-          (pipeline.tool_labels || []).some((toolLabel) => toolLabel.toLowerCase() === selectedTool.toLowerCase())
-        )
+        selectedTools.some((selectedToolKey) => {
+          const selectedTool = availableTools.find((tool) => tool.key === selectedToolKey)
+          if (!selectedTool) return false
+
+          const normalizedSelectedName = selectedTool.name.toLowerCase()
+          const normalizedSelectedType = selectedTool.type.toLowerCase()
+          return normalizedPipelineToolLabels.some((toolLabel) => {
+            if (
+              toolLabel === normalizedSelectedName ||
+              toolLabel.includes(normalizedSelectedName) ||
+              normalizedSelectedName.includes(toolLabel)
+            ) {
+              return true
+            }
+
+            const matchedCatalogEntry = Array.from(toolCatalogByName.values()).find((tool) =>
+              toolLabel.includes(tool.name.trim().toLowerCase())
+            )
+            return Boolean(
+              matchedCatalogEntry &&
+              matchedCatalogEntry.type.toLowerCase() === normalizedSelectedType &&
+              matchedCatalogEntry.name.toLowerCase() === normalizedSelectedName
+            )
+          })
+        })
 
       return matchesSearch && matchesTool
     })
 
     return filtered
-  }, [allPipelines, search, selectedTools, sortBy])
+  }, [allPipelines, availableTools, search, selectedTools, sortBy, toolCatalogByName])
 
   useEffect(() => {
     setCurrentPage(1)
@@ -126,11 +191,11 @@ export default function Community() {
       .sort((a, b) => a - b)
   }, [currentPageSafe, totalPages])
 
-  const toggleToolFilter = (toolLabel: string) => {
+  const toggleToolFilter = (toolKey: string) => {
     setSelectedTools((current) =>
-      current.includes(toolLabel)
-        ? current.filter((item) => item !== toolLabel)
-        : [...current, toolLabel]
+      current.includes(toolKey)
+        ? current.filter((item) => item !== toolKey)
+        : [...current, toolKey]
     )
   }
 
@@ -284,14 +349,14 @@ export default function Community() {
               </button>
               {toolFilterOpen && availableTools.length > 0 && (
                 <div className="community-tool-dropdown-panel">
-                  {availableTools.map((toolLabel) => (
-                    <label key={toolLabel} className="community-tool-filter-item">
+                  {availableTools.map((tool) => (
+                    <label key={tool.key} className="community-tool-filter-item">
                       <input
                         type="checkbox"
-                        checked={selectedTools.includes(toolLabel)}
-                        onChange={() => toggleToolFilter(toolLabel)}
+                        checked={selectedTools.includes(tool.key)}
+                        onChange={() => toggleToolFilter(tool.key)}
                       />
-                      <span>{toolLabel}</span>
+                      <span>{tool.name} ({formatToolTypeLabel(tool.type)})</span>
                     </label>
                   ))}
                 </div>

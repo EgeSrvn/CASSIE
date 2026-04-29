@@ -131,6 +131,12 @@ export interface StorageSummary {
   usage_ratio: number | null
   subscription_upgrade_available: boolean
   subscription_period: 'weekly' | string
+  active_subscription?: {
+    plan_id: string
+    plan_name: string
+    additional_gb: number
+    weekly_price: number
+  } | null
 }
 
 export interface StorageUpgradePurchaseResult {

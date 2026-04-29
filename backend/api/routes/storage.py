@@ -50,9 +50,10 @@ from backend.api.services.job_launch_service import get_auto_start_payload, star
 from backend.api.services.user_service import get_user_by_id
 from backend.api.services.user_limit_service import (
     can_user_access_job_outputs,
+    get_user_active_storage_subscription,
     get_storage_upgrade_plan,
     get_user_limits,
-    increase_user_max_storage_gb,
+    set_user_storage_subscription,
     validate_user_storage_capacity,
     validate_output_file_access,
 )
@@ -125,6 +126,7 @@ async def get_storage_summary(
                 "usage_ratio": (used_bytes / max_storage_bytes) if max_storage_bytes > 0 else None,
                 "subscription_upgrade_available": True,
                 "subscription_period": "weekly",
+                "active_subscription": get_user_active_storage_subscription(current_user.username),
             },
             message="Storage summary retrieved successfully",
             status_code=status.HTTP_200_OK,
@@ -156,9 +158,9 @@ async def purchase_storage_upgrade(
             return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
 
         charge_user_cash_balance(current_user.id, plan.get("weekly_price", 0))
-        updated_limits = increase_user_max_storage_gb(
+        updated_limits = set_user_storage_subscription(
             current_user.username,
-            float(plan.get("additional_gb", 0) or 0),
+            payload.plan_id,
         )
         updated_user = get_user_by_id(current_user.id)
         used_bytes = get_total_file_bytes_by_user(current_user.id)
@@ -180,6 +182,7 @@ async def purchase_storage_upgrade(
                     "max_storage_bytes": max_storage_bytes,
                     "remaining_bytes": max(max_storage_bytes - used_bytes, 0) if max_storage_bytes > 0 else None,
                     "usage_ratio": (used_bytes / max_storage_bytes) if max_storage_bytes > 0 else None,
+                    "active_subscription": get_user_active_storage_subscription(current_user.username),
                 },
             },
             message="Storage upgrade purchased successfully",

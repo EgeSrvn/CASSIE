@@ -1,4 +1,5 @@
 import { ReactNode, useState, useCallback, useEffect, useMemo } from 'react'
+import { createPortal } from 'react-dom'
 import { useNavigate, useParams, useLocation } from 'react-router-dom'
 import ReactFlow, {
   Background,
@@ -527,6 +528,14 @@ const getPaletteButtonClassName = (toolType: string): string => {
     return 'pipeline-palette-button pipeline-palette-button-transform'
   }
   return 'pipeline-palette-button pipeline-palette-button-generic'
+}
+
+const renderPageModal = (content: ReactNode) => {
+  if (typeof document === 'undefined') {
+    return null
+  }
+
+  return createPortal(content, document.body)
 }
 
 const NodeBox = ({
@@ -1484,7 +1493,7 @@ export default function PipelineBuilder() {
         className="cat-corner-card--pipeline-builder"
       />
 
-      {editingNodeId && (
+      {editingNodeId && renderPageModal(
         <div className="modal-overlay" onClick={closeEditModal}>
           <div className="modal-content pipeline-flag-modal" onClick={(event) => event.stopPropagation()}>
             <div className="modal-header">
@@ -1583,7 +1592,7 @@ export default function PipelineBuilder() {
         </div>
       )}
 
-      {isPriorityModalOpen && (
+      {isPriorityModalOpen && renderPageModal(
         <div className="modal-overlay" onClick={() => setIsPriorityModalOpen(false)}>
           <div className="modal-content pipeline-priority-modal" onClick={(event) => event.stopPropagation()}>
             <div className="modal-header">
@@ -1682,7 +1691,7 @@ export default function PipelineBuilder() {
         </div>
       )}
 
-      {saveValidationPopup && (
+      {saveValidationPopup && renderPageModal(
         <div className="modal-overlay" onClick={() => setSaveValidationPopup(null)}>
           <div className="modal-content pipeline-save-modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">

@@ -122,6 +122,74 @@ def increase_user_max_storage_gb(username: str, additional_gb: float) -> Dict[st
     return set_user_max_storage_gb(username, current_max_storage_gb + float(additional_gb))
 
 
+def get_user_storage_plan_id(username: Optional[str]) -> Optional[str]:
+    normalized_username = str(username or "").strip()
+    if not normalized_username:
+        return None
+    raw_users = get_config().user_limits.raw.get("users", {}) if isinstance(get_config().user_limits.raw, dict) else {}
+    user_overrides = raw_users.get(normalized_username)
+    if not isinstance(user_overrides, dict):
+        return None
+    plan_id = str(user_overrides.get("storage_plan_id") or "").strip()
+    return plan_id or None
+
+
+def set_user_storage_subscription(username: str, plan_id: str) -> Dict[str, Any]:
+    plan = get_storage_upgrade_plan(plan_id)
+    if not plan:
+        raise ValueError("Selected storage plan was not found.")
+
+    normalized_username = str(username or "").strip()
+    if not normalized_username:
+        raise ValueError("Username is required to update storage subscription.")
+
+    default_limits = get_user_limits(None)
+    default_storage_gb = max(float(default_limits.get("max_storage_bytes", 0)) / GIB, 0.0)
+    target_storage_gb = default_storage_gb + float(plan.get("additional_gb", 0) or 0)
+
+    config_payload = _load_json_file(
+        _user_limits_config_path(),
+        {
+            "default": {
+                "max_running_jobs": get_config().user_limits.default_max_running_jobs,
+                "downloadable_finished_jobs": get_config().user_limits.default_downloadable_finished_jobs,
+                "interactive_output_jobs": get_config().user_limits.default_interactive_output_jobs,
+                "max_storage_gb": get_config().user_limits.default_max_storage_gb,
+                "min_free_storage_gb": get_config().user_limits.default_min_free_storage_gb,
+            },
+            "users": {},
+        },
+    )
+
+    if not isinstance(config_payload.get("users"), dict):
+        config_payload["users"] = {}
+
+    user_overrides = config_payload["users"].get(normalized_username)
+    if not isinstance(user_overrides, dict):
+        user_overrides = {}
+
+    user_overrides["max_storage_gb"] = round(target_storage_gb, 3)
+    user_overrides["storage_plan_id"] = str(plan.get("id") or "")
+    config_payload["users"][normalized_username] = user_overrides
+    _write_user_limits_config(config_payload)
+    return get_user_limits(normalized_username)
+
+
+def get_user_active_storage_subscription(username: Optional[str]) -> Optional[Dict[str, Any]]:
+    plan_id = get_user_storage_plan_id(username)
+    if not plan_id:
+        return None
+    plan = get_storage_upgrade_plan(plan_id)
+    if not plan:
+        return None
+    return {
+        "plan_id": str(plan.get("id") or ""),
+        "plan_name": str(plan.get("name") or ""),
+        "additional_gb": float(plan.get("additional_gb", 0) or 0),
+        "weekly_price": float(plan.get("weekly_price", 0) or 0),
+    }
+
+
 def get_user_storage_usage(user_id: int, username: Optional[str]) -> Dict[str, float]:
     limits = get_user_limits(username)
     max_storage_bytes = max(int(limits.get("max_storage_bytes", 0)), 0)

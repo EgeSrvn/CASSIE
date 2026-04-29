@@ -1,8 +1,8 @@
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import Navigation from '../components/Navigation'
 import { getStoredUser, notifyAuthChange, setStoredUser } from '../services/authService'
-import { purchaseStorageUpgrade } from '../services/fileService'
+import { getStorageSummary, purchaseStorageUpgrade, StorageSummary } from '../services/fileService'
 import { extractApiErrorMessage } from '../services/apiClient'
 import storageUpgradeConfig from '../../storage_upgrade_plans.json'
 import '../styles/globals.css'
@@ -26,11 +26,37 @@ const formatCurrency = (amount: number, currency: string) => (
 export default function StorageUpgrade() {
   const navigate = useNavigate()
   const [submittingPlanId, setSubmittingPlanId] = useState<string | null>(null)
+  const [summary, setSummary] = useState<StorageSummary | null>(null)
+  const [loadingSummary, setLoadingSummary] = useState(true)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
   const currency = storageUpgradeConfig.currency || 'USD'
   const billingInterval = storageUpgradeConfig.billing_interval || 'week'
   const plans = storageUpgradeConfig.plans as StorageUpgradePlan[]
+  const activePlanId = summary?.active_subscription?.plan_id || null
+
+  useEffect(() => {
+    const loadSummary = async () => {
+      try {
+        setLoadingSummary(true)
+        const nextSummary = await getStorageSummary()
+        setSummary(nextSummary)
+      } catch (err: any) {
+        setError(extractApiErrorMessage(err, 'Failed to load storage subscription'))
+      } finally {
+        setLoadingSummary(false)
+      }
+    }
+
+    void loadSummary()
+  }, [])
+
+  const activePlanName = useMemo(() => {
+    if (!summary?.active_subscription) {
+      return 'Default storage'
+    }
+    return `${summary.active_subscription.plan_name} (+${summary.active_subscription.additional_gb} GB)`
+  }, [summary])
 
   const handlePurchase = async (plan: StorageUpgradePlan) => {
     try {
@@ -38,6 +64,7 @@ export default function StorageUpgrade() {
       setError('')
       setSuccess('')
       const result = await purchaseStorageUpgrade(plan.id)
+      setSummary(result.storage)
       if (result.user) {
         const currentUser = getStoredUser()
         if (currentUser) {
@@ -51,7 +78,9 @@ export default function StorageUpgrade() {
         }
       }
       setSuccess(
-        `${plan.name} purchased successfully. Your storage increased by ${plan.additional_gb} GB.`
+        activePlanId === plan.id
+          ? `${plan.name} remains your active storage plan.`
+          : `${plan.name} is now your active storage plan.`
       )
       window.dispatchEvent(new Event('storage-library-change'))
     } catch (err: any) {
@@ -81,11 +110,17 @@ export default function StorageUpgrade() {
 
         <section className="storage-upgrade-grid">
           {plans.map((plan) => (
-            <article key={plan.id} className="storage-upgrade-card">
+            <article
+              key={plan.id}
+              className={`storage-upgrade-card ${activePlanId === plan.id ? 'storage-upgrade-card-active' : ''}`}
+            >
               <div>
                 <p className="storage-kicker">{plan.name}</p>
                 <h2>+{plan.additional_gb} GB</h2>
                 <p>Additional cloud storage for uploads, imports, and reusable job inputs.</p>
+                <p className="storage-upgrade-status-copy">
+                  {activePlanId === plan.id ? 'Current active subscription' : 'Available to activate'}
+                </p>
               </div>
               <div className="storage-upgrade-price">
                 <strong>{formatCurrency(plan.weekly_price, currency)}</strong>
@@ -98,7 +133,9 @@ export default function StorageUpgrade() {
                   disabled={submittingPlanId === plan.id}
                   onClick={() => handlePurchase(plan)}
                 >
-                  {submittingPlanId === plan.id ? 'Purchasing...' : 'Buy Upgrade'}
+                  {submittingPlanId === plan.id
+                    ? (activePlanId === plan.id ? 'Refreshing...' : 'Switching...')
+                    : (activePlanId === plan.id ? 'Keep Current Plan' : 'Switch To This Plan')}
                 </button>
                 <button type="button" className="btn-secondary" onClick={() => navigate('/balance')}>
                   Add Balance
@@ -106,6 +143,24 @@ export default function StorageUpgrade() {
               </div>
             </article>
           ))}
+        </section>
+
+        <section className="storage-upgrade-summary-card">
+          <div>
+            <p className="storage-kicker">Current subscription</p>
+            <h2>{loadingSummary ? 'Loading...' : activePlanName}</h2>
+            <p>
+              {summary?.active_subscription
+                ? `Your plan renews on the normal ${billingInterval} billing cycle and replaces the previous add-on.`
+                : 'You are currently using the default included storage plan.'}
+            </p>
+          </div>
+          {summary && (
+            <div className="storage-upgrade-summary-metrics">
+              <span>{(summary.used_bytes / (1024 * 1024 * 1024)).toFixed(2)} GB used</span>
+              <span>{(summary.max_storage_bytes / (1024 * 1024 * 1024)).toFixed(2)} GB total</span>
+            </div>
+          )}
         </section>
       </main>
     </div>
