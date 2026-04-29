@@ -41,11 +41,11 @@ ALLOWED_FILE_TYPES = {"input", "output", "intermediate", "log"}
 # Allowed file extensions for genomic data
 ALLOWED_FILE_EXTENSIONS = {
     ".fastq", ".fastq.gz", ".fq", ".fq.gz",
-    ".fasta", ".fa", ".fa.gz", ".fas",
+    ".fasta", ".fasta.gz", ".fa", ".fa.gz", ".fna", ".fna.gz", ".fas", ".fas.gz",
     ".sam", ".bam", ".cram",
-    ".vcf", ".gff", ".gff3", ".gtf",
-    ".bed", ".gfa", ".hal", ".txt",
-    ".cfg", ".conf", ".ini", ".json",
+    ".vcf", ".vcf.gz", ".gff", ".gff.gz", ".gff3", ".gff3.gz", ".gtf", ".gtf.gz",
+    ".bed", ".bed.gz", ".gfa", ".gfa.gz", ".hal", ".hal.gz", ".txt", ".txt.gz",
+    ".cfg", ".cfg.gz", ".conf", ".conf.gz", ".ini", ".ini.gz", ".json", ".json.gz",
     ".meryl", ".tar", ".tar.gz", ".tgz"
 }
 
@@ -256,11 +256,14 @@ def validate_file_format(file_format: Optional[str]) -> Tuple[bool, str]:
     
     # Common genomic file formats (case-insensitive)
     valid_formats = [
-        'fastq', 'fq', 'fasta', 'fa', 'fa.gz', 'fasta.gz',
-        'sam', 'bam', 'cram', 'vcf', 'bcf', 'gff', 'gtf',
-        'gff3', 'bed', 'wig', 'bigwig', 'bigbed', 'tsv', 'csv',
-        'txt', 'json', 'xml', 'h5', 'hdf5', 'bw', 'bb',
-        'hal', 'gfa', 'cfg', 'conf', 'ini', 'meryl', 'tar', 'tgz'
+        'fastq', 'fastq.gz', 'fq', 'fq.gz',
+        'fasta', 'fasta.gz', 'fa', 'fa.gz', 'fna', 'fna.gz', 'fas', 'fas.gz',
+        'sam', 'bam', 'cram', 'vcf', 'vcf.gz', 'bcf',
+        'gff', 'gff.gz', 'gtf', 'gtf.gz', 'gff3', 'gff3.gz',
+        'bed', 'bed.gz', 'wig', 'bigwig', 'bigbed', 'tsv', 'tsv.gz', 'csv', 'csv.gz',
+        'txt', 'txt.gz', 'json', 'json.gz', 'xml', 'xml.gz', 'h5', 'hdf5', 'bw', 'bb',
+        'hal', 'hal.gz', 'gfa', 'gfa.gz', 'cfg', 'cfg.gz', 'conf', 'conf.gz',
+        'ini', 'ini.gz', 'meryl', 'meryl.tar', 'meryl.tar.gz', 'meryl.tgz', 'tar', 'tar.gz', 'tgz'
     ]
     
     file_format_lower = file_format.lower().strip()

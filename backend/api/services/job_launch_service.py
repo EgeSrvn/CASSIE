@@ -25,23 +25,37 @@ def _infer_file_formats(file_record) -> set[str]:
     filename = str(getattr(file_record, "filename", "") or "").lower()
     if filename.endswith((".fastq.gz", ".fq.gz", ".fastq", ".fq")):
         formats.add("fastq")
-    if filename.endswith((".fasta.gz", ".fa.gz", ".fna.gz", ".fasta", ".fa", ".fna")):
+        if filename.endswith(".gz"):
+            formats.add("fastq.gz")
+    if filename.endswith((".fasta.gz", ".fa.gz", ".fna.gz", ".fas.gz", ".fasta", ".fa", ".fna", ".fas")):
         formats.add("fasta")
-    if filename.endswith(".gff3"):
+        if filename.endswith(".gz"):
+            formats.add("fasta.gz")
+    if filename.endswith((".gff3", ".gff3.gz")):
         formats.update({"gff", "gff3"})
-    if filename.endswith(".gff"):
+        if filename.endswith(".gz"):
+            formats.add("gff3.gz")
+    if filename.endswith((".gff", ".gff.gz")):
         formats.add("gff")
-    if filename.endswith(".gtf"):
+        if filename.endswith(".gz"):
+            formats.add("gff.gz")
+    if filename.endswith((".gtf", ".gtf.gz")):
         formats.add("gtf")
-    if filename.endswith(".hal"):
+        if filename.endswith(".gz"):
+            formats.add("gtf.gz")
+    if filename.endswith((".hal", ".hal.gz")):
         formats.add("hal")
-    if filename.endswith(".gfa"):
+        if filename.endswith(".gz"):
+            formats.add("hal.gz")
+    if filename.endswith((".gfa", ".gfa.gz")):
         formats.add("gfa")
-    if filename.endswith((".cfg", ".conf", ".ini")):
+        if filename.endswith(".gz"):
+            formats.add("gfa.gz")
+    if filename.endswith((".cfg", ".cfg.gz", ".conf", ".conf.gz", ".ini", ".ini.gz")):
         formats.update({"cfg", "conf", "ini"})
-    if filename.endswith(".json"):
+    if filename.endswith((".json", ".json.gz")):
         formats.add("json")
-    if filename.endswith(".txt"):
+    if filename.endswith((".txt", ".txt.gz")):
         formats.add("txt")
     if filename.endswith((".meryl", ".meryl.tar", ".meryl.tar.gz", ".meryl.tgz")):
         formats.add("meryl")

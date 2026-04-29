@@ -1023,24 +1023,52 @@ export default function CreateJob() {
     const declared = (file.file_format || '').toLowerCase().replace(/^\./, '')
     if (declared) formats.add(declared)
 
-    if (filename.endsWith('.fastq') || filename.endsWith('.fastq.gz') || filename.endsWith('.fq') || filename.endsWith('.fq.gz')) formats.add('fastq')
-    if (filename.endsWith('.fasta') || filename.endsWith('.fasta.gz') || filename.endsWith('.fa') || filename.endsWith('.fa.gz') || filename.endsWith('.fna') || filename.endsWith('.fna.gz')) formats.add('fasta')
-    if (filename.endsWith('.gff3')) {
+    if (filename.endsWith('.fastq') || filename.endsWith('.fastq.gz') || filename.endsWith('.fq') || filename.endsWith('.fq.gz')) {
+      formats.add('fastq')
+      if (filename.endsWith('.gz')) formats.add(filename.endsWith('.fq.gz') ? 'fq.gz' : 'fastq.gz')
+    }
+    if (filename.endsWith('.fasta') || filename.endsWith('.fasta.gz') || filename.endsWith('.fa') || filename.endsWith('.fa.gz') || filename.endsWith('.fna') || filename.endsWith('.fna.gz')) {
+      formats.add('fasta')
+      if (filename.endsWith('.fasta.gz')) formats.add('fasta.gz')
+      if (filename.endsWith('.fa.gz')) formats.add('fa.gz')
+      if (filename.endsWith('.fna.gz')) formats.add('fna.gz')
+    }
+    if (filename.endsWith('.gff3') || filename.endsWith('.gff3.gz')) {
       formats.add('gff')
       formats.add('gff3')
+      if (filename.endsWith('.gz')) formats.add('gff3.gz')
     }
-    if (filename.endsWith('.gff')) formats.add('gff')
-    if (filename.endsWith('.gtf')) formats.add('gtf')
-    if (filename.endsWith('.hal')) formats.add('hal')
-    if (filename.endsWith('.gfa')) formats.add('gfa')
+    if (filename.endsWith('.gff') || filename.endsWith('.gff.gz')) {
+      formats.add('gff')
+      if (filename.endsWith('.gz')) formats.add('gff.gz')
+    }
+    if (filename.endsWith('.gtf') || filename.endsWith('.gtf.gz')) {
+      formats.add('gtf')
+      if (filename.endsWith('.gz')) formats.add('gtf.gz')
+    }
+    if (filename.endsWith('.hal') || filename.endsWith('.hal.gz')) {
+      formats.add('hal')
+      if (filename.endsWith('.gz')) formats.add('hal.gz')
+    }
+    if (filename.endsWith('.gfa') || filename.endsWith('.gfa.gz')) {
+      formats.add('gfa')
+      if (filename.endsWith('.gz')) formats.add('gfa.gz')
+    }
     if (filename.endsWith('.meryl') || filename.endsWith('.meryl.tar') || filename.endsWith('.meryl.tar.gz') || filename.endsWith('.meryl.tgz')) formats.add('meryl')
-    if (filename.endsWith('.cfg')) formats.add('cfg')
-    if (filename.endsWith('.conf')) formats.add('conf')
-    if (filename.endsWith('.ini')) formats.add('ini')
-    if (filename.endsWith('.json')) formats.add('json')
-    if (filename.endsWith('.txt')) formats.add('txt')
-    if (filename.endsWith('.tsv')) formats.add('tsv')
-    if (filename.endsWith('.csv')) formats.add('csv')
+    if (filename.endsWith('.cfg') || filename.endsWith('.cfg.gz')) formats.add('cfg')
+    if (filename.endsWith('.cfg.gz')) formats.add('cfg.gz')
+    if (filename.endsWith('.conf') || filename.endsWith('.conf.gz')) formats.add('conf')
+    if (filename.endsWith('.conf.gz')) formats.add('conf.gz')
+    if (filename.endsWith('.ini') || filename.endsWith('.ini.gz')) formats.add('ini')
+    if (filename.endsWith('.ini.gz')) formats.add('ini.gz')
+    if (filename.endsWith('.json') || filename.endsWith('.json.gz')) formats.add('json')
+    if (filename.endsWith('.json.gz')) formats.add('json.gz')
+    if (filename.endsWith('.txt') || filename.endsWith('.txt.gz')) formats.add('txt')
+    if (filename.endsWith('.txt.gz')) formats.add('txt.gz')
+    if (filename.endsWith('.tsv') || filename.endsWith('.tsv.gz')) formats.add('tsv')
+    if (filename.endsWith('.tsv.gz')) formats.add('tsv.gz')
+    if (filename.endsWith('.csv') || filename.endsWith('.csv.gz')) formats.add('csv')
+    if (filename.endsWith('.csv.gz')) formats.add('csv.gz')
     if (filename.endsWith('.tar') || filename.endsWith('.tar.gz')) formats.add('tar')
     if (filename.endsWith('.tgz')) formats.add('tgz')
 

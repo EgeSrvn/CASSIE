@@ -23,6 +23,27 @@ PRODUCED_ARTIFACT_COMPATIBILITY: Dict[str, set[str]] = {
     "annotation": {"annotation", "reference_annotation"},
 }
 
+COMPRESSED_FORMAT_ALIASES: Dict[str, List[str]] = {
+    "fastq": ["fastq.gz", "fq", "fq.gz"],
+    "fq": ["fq.gz", "fastq", "fastq.gz"],
+    "fasta": ["fasta.gz", "fa", "fa.gz", "fna", "fna.gz"],
+    "fa": ["fa.gz", "fasta", "fasta.gz", "fna", "fna.gz"],
+    "fna": ["fna.gz", "fasta", "fasta.gz", "fa", "fa.gz"],
+    "gff": ["gff.gz", "gff3", "gff3.gz"],
+    "gff3": ["gff3.gz", "gff", "gff.gz"],
+    "gtf": ["gtf.gz"],
+    "hal": ["hal.gz"],
+    "gfa": ["gfa.gz"],
+    "txt": ["txt.gz"],
+    "json": ["json.gz"],
+    "cfg": ["cfg.gz"],
+    "conf": ["conf.gz"],
+    "ini": ["ini.gz"],
+    "meryl": ["meryl.tar", "meryl.tar.gz", "meryl.tgz"],
+    "tar": ["tar.gz", "tgz"],
+    "tgz": ["tar.gz", "tar"],
+}
+
 
 TOOL_REGISTRY: List[Dict[str, Any]] = [
     {
@@ -940,6 +961,16 @@ def _build_default_flag_values(flag_definitions: List[Dict[str, Any]]) -> Dict[s
 
 def _enrich_tool(tool: Dict[str, Any]) -> Dict[str, Any]:
     enriched = deepcopy(tool)
+    for requirement in enriched.get("input_requirements", []) or []:
+        formats = []
+        seen_formats = set()
+        for format_name in requirement.get("formats", []) or []:
+            normalized = str(format_name or "").strip().lower().lstrip(".")
+            for candidate in [normalized, *COMPRESSED_FORMAT_ALIASES.get(normalized, [])]:
+                if candidate and candidate not in seen_formats:
+                    formats.append(candidate)
+                    seen_formats.add(candidate)
+        requirement["formats"] = formats
     flag_definitions = deepcopy(TOOL_EDITABLE_FLAGS.get(str(tool.get("id") or ""), []))
     enriched["editable_flags"] = flag_definitions
     enriched["default_flag_values"] = _build_default_flag_values(flag_definitions)

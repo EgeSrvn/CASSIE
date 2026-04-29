@@ -40,13 +40,30 @@ const formatUsagePercent = (ratio?: number | null): string => {
 
 const inferFileFormat = (filename: string): string | undefined => {
   const lower = filename.toLowerCase()
-  if (lower.endsWith('.fastq') || lower.endsWith('.fastq.gz') || lower.endsWith('.fq') || lower.endsWith('.fq.gz')) return 'fastq'
-  if (lower.endsWith('.fasta') || lower.endsWith('.fasta.gz') || lower.endsWith('.fa') || lower.endsWith('.fa.gz') || lower.endsWith('.fna') || lower.endsWith('.fna.gz')) return 'fasta'
+  if (lower.endsWith('.fastq.gz')) return 'fastq.gz'
+  if (lower.endsWith('.fq.gz')) return 'fq.gz'
+  if (lower.endsWith('.fastq') || lower.endsWith('.fq')) return 'fastq'
+  if (lower.endsWith('.fasta.gz')) return 'fasta.gz'
+  if (lower.endsWith('.fa.gz')) return 'fa.gz'
+  if (lower.endsWith('.fna.gz')) return 'fna.gz'
+  if (lower.endsWith('.fasta') || lower.endsWith('.fa') || lower.endsWith('.fna')) return 'fasta'
+  if (lower.endsWith('.gff3.gz')) return 'gff3.gz'
   if (lower.endsWith('.gff3')) return 'gff3'
+  if (lower.endsWith('.gff.gz')) return 'gff.gz'
   if (lower.endsWith('.gff')) return 'gff'
+  if (lower.endsWith('.gtf.gz')) return 'gtf.gz'
   if (lower.endsWith('.gtf')) return 'gtf'
+  if (lower.endsWith('.hal.gz')) return 'hal.gz'
+  if (lower.endsWith('.hal')) return 'hal'
+  if (lower.endsWith('.gfa.gz')) return 'gfa.gz'
+  if (lower.endsWith('.gfa')) return 'gfa'
+  if (lower.endsWith('.json.gz')) return 'json.gz'
+  if (lower.endsWith('.txt.gz')) return 'txt.gz'
+  if (lower.endsWith('.csv.gz')) return 'csv.gz'
+  if (lower.endsWith('.tsv.gz')) return 'tsv.gz'
   if (lower.endsWith('.csv')) return 'csv'
   if (lower.endsWith('.tsv')) return 'tsv'
+  if (lower.endsWith('.json')) return 'json'
   if (lower.endsWith('.txt')) return 'txt'
   return undefined
 }

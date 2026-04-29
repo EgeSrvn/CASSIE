@@ -292,10 +292,15 @@ export default function JobDetails() {
     const normalizedDeclaredFormat = (declaredFormat || '').toLowerCase()
     return formats.some(format => {
       const normalizedFormat = format.toLowerCase()
+      const compressedFormat = normalizedFormat.endsWith('.gz') ? normalizedFormat : `${normalizedFormat}.gz`
+      const baseFormat = normalizedFormat.replace(/\.gz$/, '')
       return (
         normalizedDeclaredFormat === normalizedFormat ||
+        normalizedDeclaredFormat === compressedFormat ||
+        normalizedDeclaredFormat === baseFormat ||
         lowerName.endsWith(`.${normalizedFormat}`) ||
-        lowerName.endsWith(`.${normalizedFormat}.gz`)
+        lowerName.endsWith(`.${compressedFormat}`) ||
+        lowerName.endsWith(`.${baseFormat}`)
       )
     })
   }

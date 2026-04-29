@@ -9,6 +9,7 @@ interface CatCornerCardProps {
 
 export default function CatCornerCard({ config, className = '' }: CatCornerCardProps) {
   const [isOpen, setIsOpen] = useState(false)
+  const [isExpanded, setIsExpanded] = useState(false)
 
   useEffect(() => {
     if (!isOpen) {
@@ -27,22 +28,37 @@ export default function CatCornerCard({ config, className = '' }: CatCornerCardP
 
   return (
     <>
-      <button
-        type="button"
-        className={`cat-corner-card ${className}`.trim()}
-        aria-label={config.title}
-        onClick={() => setIsOpen(true)}
+      <div
+        className={`cat-corner-shell ${isExpanded ? 'cat-corner-shell--expanded' : 'cat-corner-shell--collapsed'} ${className}`.trim()}
       >
-        <img
-          className="cat-corner-card__image"
-          src={config.mediaSrc}
-          alt={config.mediaAlt}
-        />
-        <span className="cat-corner-card__content">
-          <strong className="cat-corner-card__title">{config.title}</strong>
-          <span className="cat-corner-card__description">{config.description}</span>
-        </span>
-      </button>
+        <button
+          type="button"
+          className="cat-corner-card"
+          aria-label={config.title}
+          onClick={() => setIsOpen(true)}
+        >
+          <img
+            className="cat-corner-card__image"
+            src={config.mediaSrc}
+            alt={config.mediaAlt}
+          />
+          {isExpanded && (
+            <span className="cat-corner-card__content">
+              <strong className="cat-corner-card__title">{config.title}</strong>
+              <span className="cat-corner-card__description">{config.description}</span>
+            </span>
+          )}
+        </button>
+        <button
+          type="button"
+          className="cat-corner-toggle"
+          aria-label={isExpanded ? 'Collapse cat card' : 'Expand cat card'}
+          aria-expanded={isExpanded}
+          onClick={() => setIsExpanded((current) => !current)}
+        >
+          {isExpanded ? '<' : '>'}
+        </button>
+      </div>
 
       {isOpen && (
         <div
