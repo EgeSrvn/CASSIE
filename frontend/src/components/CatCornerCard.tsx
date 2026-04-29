@@ -7,6 +7,19 @@ interface CatCornerCardProps {
   className?: string
 }
 
+function CatToggleIcon({ direction }: { direction: 'left' | 'right' }) {
+  return (
+    <svg
+      className="cat-corner-toggle__icon"
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d={direction === 'left' ? 'M15 6l-6 6 6 6' : 'M9 6l6 6-6 6'} />
+    </svg>
+  )
+}
+
 export default function CatCornerCard({ config, className = '' }: CatCornerCardProps) {
   const [isOpen, setIsOpen] = useState(false)
   const [isExpanded, setIsExpanded] = useState(false)
@@ -56,7 +69,7 @@ export default function CatCornerCard({ config, className = '' }: CatCornerCardP
           aria-expanded={isExpanded}
           onClick={() => setIsExpanded((current) => !current)}
         >
-          {isExpanded ? '<' : '>'}
+          <CatToggleIcon direction={isExpanded ? 'left' : 'right'} />
         </button>
       </div>
 
@@ -99,3 +112,4 @@ export default function CatCornerCard({ config, className = '' }: CatCornerCardP
     </>
   )
 }
+
