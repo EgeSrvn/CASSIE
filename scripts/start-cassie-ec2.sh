@@ -67,6 +67,21 @@ retry_command() {
   done
 }
 
+detach_backend_from_minikube_network() {
+  if ! docker network inspect minikube >/dev/null 2>&1; then
+    return
+  fi
+
+  if ! docker inspect cassie-backend >/dev/null 2>&1; then
+    return
+  fi
+
+  if docker inspect -f '{{json .NetworkSettings.Networks}}' cassie-backend 2>/dev/null | grep -q '"minikube"'; then
+    echo "Detaching cassie-backend from stale Minikube Docker network before Minikube starts ..."
+    docker network disconnect minikube cassie-backend >/dev/null 2>&1 || true
+  fi
+}
+
 ensure_minikube_running() {
   local cpu_count="$1"
   local memory_mb="$2"
@@ -241,6 +256,7 @@ export KUBERNETES_NO_PROXY="${NO_PROXY}"
 export CASSIE_CLUSTER_STORAGE_RESERVE_MIB="$(get_env_value_or_default "CASSIE_CLUSTER_STORAGE_RESERVE_MIB" "2048")"
 
 validate_ec2_s3_mode
+detach_backend_from_minikube_network
 ensure_minikube_running "${CASSIE_MINIKUBE_CPUS}" "${CASSIE_MINIKUBE_MEMORY_MIB}" "${CASSIE_MINIKUBE_DISK_SIZE}"
 export KUBE_CONFIG_DIR="$(prepare_container_kubeconfig)"
 ensure_tool_images

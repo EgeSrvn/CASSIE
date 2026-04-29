@@ -643,6 +643,9 @@ body {
   justify-content: space-between;
   align-items: center;
   margin-bottom: var(--spacing-xl);
+  border-radius: var(--radius-lg);
+  overflow: visible;
+  border: 1px solid var(--gray-200);
   border-bottom: 1px solid var(--gray-200);
 }
 
@@ -673,6 +676,8 @@ body {
 .create-job-form {
   max-width: min(94vw, 1240px);
   padding: 1.65rem 1.9rem 8.5rem;
+  border-radius: var(--radius-lg);
+  overflow: visible;
 }
 
 .builder-stepper {
@@ -1710,14 +1715,58 @@ input[type="checkbox"] {
 
 /* Visual Refresh Overrides */
 body {
-  background:
-    radial-gradient(circle at top right, rgba(221, 168, 83, 0.2), transparent 26%),
-    radial-gradient(circle at top left, rgba(39, 84, 138, 0.14), transparent 28%),
-    linear-gradient(180deg, #f8f1e2 0%, #f5eedc 44%, #efe1c2 100%);
+  background: var(--bg-secondary);
+  position: relative;
+}
+
+body::before {
+  display: none;
+}
+
+.page-container,
+.dashboard-container {
+  position: relative;
+  isolation: isolate;
+  background: var(--bg-secondary);
+}
+
+.page-container::before,
+.dashboard-container::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image:
+    radial-gradient(circle, rgba(24, 59, 78, 0.36) 0 1px, transparent 1.3px),
+    linear-gradient(135deg, rgba(24, 59, 78, 0.1) 0 1px, transparent 1px),
+    linear-gradient(45deg, rgba(221, 168, 83, 0.12) 0 1px, transparent 1px);
+  background-size: 18px 18px, 28px 28px, 32px 32px;
+  background-position: 0 0, 0 0, 10px 8px;
+  background-repeat: repeat;
+  opacity: 0.95;
+  mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.28) 0%, rgba(0, 0, 0, 0.42) 52%, rgba(0, 0, 0, 0.76) 100%);
+  -webkit-mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.28) 0%, rgba(0, 0, 0, 0.42) 52%, rgba(0, 0, 0, 0.76) 100%);
+}
+
+#root {
+  position: relative;
+  z-index: 1;
+  background: transparent;
 }
 
 .page-container {
-  background: transparent;
+  background: var(--bg-secondary);
+}
+
+.dashboard-container {
+  background: var(--bg-secondary);
+}
+
+.page-container > *,
+.dashboard-container > * {
+  position: relative;
+  z-index: 1;
 }
 
 .page-content {
@@ -4140,3 +4189,4 @@ body {
     width: 100%;
   }
 }
+

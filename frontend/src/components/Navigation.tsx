@@ -13,7 +13,9 @@ export default function Navigation({ onLogout }: NavigationProps) {
   const [isAuthenticated, setIsAuthenticated] = useState(!!getToken())
   const [user, setUser] = useState<User | null>(() => getStoredUser())
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false)
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false)
   const userMenuRef = useRef<HTMLDivElement | null>(null)
+  const mobileUserMenuRef = useRef<HTMLDivElement | null>(null)
 
   const formatUsd = (value?: number | null): string => `$${Number(value || 0).toFixed(2)}`
 
@@ -69,11 +71,13 @@ export default function Navigation({ onLogout }: NavigationProps) {
 
   useEffect(() => {
     setIsUserMenuOpen(false)
+    setIsMobileMenuOpen(false)
   }, [location.pathname])
 
   useEffect(() => {
     const handlePointerDown = (event: MouseEvent) => {
-      if (!userMenuRef.current?.contains(event.target as Node)) {
+      const target = event.target as Node
+      if (!userMenuRef.current?.contains(target) && !mobileUserMenuRef.current?.contains(target)) {
         setIsUserMenuOpen(false)
       }
     }
@@ -99,34 +103,142 @@ export default function Navigation({ onLogout }: NavigationProps) {
     return location.pathname === path || location.pathname.startsWith(path + '/')
   }
 
+  const navigateAndClose = (path: string) => {
+    setIsUserMenuOpen(false)
+    setIsMobileMenuOpen(false)
+    navigate(path)
+  }
+
+  const renderAvatar = () => {
+    if (!isAuthenticated || !user) {
+      return (
+        <span className="nav-user-avatar nav-user-avatar-empty" aria-hidden="true">
+          <svg viewBox="0 0 24 24" focusable="false">
+            <path d="M12 12.2a4.2 4.2 0 1 0 0-8.4 4.2 4.2 0 0 0 0 8.4Z" />
+            <path d="M4.7 20.2c.95-3.45 3.58-5.25 7.3-5.25s6.35 1.8 7.3 5.25" />
+          </svg>
+        </span>
+      )
+    }
+
+    if (user.avatar_url) {
+      return (
+        <img
+          className="nav-user-avatar nav-user-avatar-image"
+          src={user.avatar_url}
+          alt={user.username}
+        />
+      )
+    }
+
+    return (
+      <span className="nav-user-avatar">
+        {(user.display_name || user.username).slice(0, 1).toUpperCase()}
+      </span>
+    )
+  }
+
+  const renderUserMenu = () => {
+    if (isAuthenticated) {
+      return (
+        <div className="nav-user-menu" role="menu">
+          <button type="button" className="nav-user-menu-item" onClick={() => navigateAndClose('/profile')}>
+            Go Profile
+          </button>
+          <button type="button" className="nav-user-menu-item" onClick={() => navigateAndClose('/about')}>
+            About
+          </button>
+          <button type="button" className="nav-user-menu-item" onClick={() => navigateAndClose('/faq')}>
+            FAQ
+          </button>
+          <button type="button" className="nav-user-menu-item nav-user-menu-item-danger" onClick={handleLogout}>
+            Logout
+          </button>
+        </div>
+      )
+    }
+
+    return (
+      <div className="nav-user-menu" role="menu">
+        <button type="button" className="nav-user-menu-item" onClick={() => navigateAndClose('/register')}>
+          Register
+        </button>
+        <button type="button" className="nav-user-menu-item" onClick={() => navigateAndClose('/login')}>
+          Login
+        </button>
+        <button type="button" className="nav-user-menu-item" onClick={() => navigateAndClose('/about')}>
+          About
+        </button>
+        <button type="button" className="nav-user-menu-item" onClick={() => navigateAndClose('/faq')}>
+          FAQ
+        </button>
+      </div>
+    )
+  }
+
   return (
-    <nav className="top-navigation">
+    <nav className={`top-navigation ${isMobileMenuOpen ? 'top-navigation--mobile-open' : ''}`}>
       <div className="nav-container">
-        <div className="nav-brand" onClick={() => navigate('/')}>
+        <div className="nav-brand" onClick={() => navigateAndClose('/')}>
           <div>
             <h1 className="nav-title">CASSIE</h1>
           </div>
+        </div>
+
+        <button
+          type="button"
+          className="nav-mobile-menu-button"
+          aria-label={isMobileMenuOpen ? 'Close navigation menu' : 'Open navigation menu'}
+          aria-expanded={isMobileMenuOpen}
+          onClick={() => setIsMobileMenuOpen((current) => !current)}
+        >
+          <svg
+            className="nav-mobile-menu-icon"
+            viewBox="0 0 24 24"
+            aria-hidden="true"
+            focusable="false"
+          >
+            {isMobileMenuOpen ? (
+              <path d="M6 6l12 12M18 6L6 18" />
+            ) : (
+              <path d="M5 7h14M5 12h14M5 17h14" />
+            )}
+          </svg>
+        </button>
+
+        <div className="nav-mobile-account" ref={mobileUserMenuRef}>
+          <button
+            type="button"
+            className={`nav-user-chip nav-user-chip-mobile ${!isAuthenticated ? 'nav-user-chip-guest' : ''}`}
+            onClick={() => setIsUserMenuOpen((current) => !current)}
+            aria-haspopup="menu"
+            aria-expanded={isUserMenuOpen}
+            aria-label="Open account menu"
+          >
+            {renderAvatar()}
+          </button>
+          {isUserMenuOpen && renderUserMenu()}
         </div>
         
         <div className="nav-links">
           <button
             type="button"
             className={`nav-link ${isActive('/') && location.pathname === '/' ? 'active' : ''}`}
-            onClick={() => navigate('/')}
+            onClick={() => navigateAndClose('/')}
           >
             Home
           </button>
           <button
             type="button"
             className={`nav-link ${isActive('/jobs') ? 'active' : ''}`}
-            onClick={() => navigate('/jobs')}
+            onClick={() => navigateAndClose('/jobs')}
           >
             Jobs
           </button>
           <button
             type="button"
             className={`nav-link ${isActive('/pipelines') ? 'active' : ''}`}
-            onClick={() => navigate('/pipelines')}
+            onClick={() => navigateAndClose('/pipelines')}
           >
             Pipelines
           </button>
@@ -134,7 +246,7 @@ export default function Navigation({ onLogout }: NavigationProps) {
             <button
               type="button"
               className={`nav-link ${isActive('/storage') ? 'active' : ''}`}
-              onClick={() => navigate('/storage')}
+              onClick={() => navigateAndClose('/storage')}
             >
               Storage
             </button>
@@ -142,27 +254,27 @@ export default function Navigation({ onLogout }: NavigationProps) {
           <button
             type="button"
             className={`nav-link ${isActive('/community') ? 'active' : ''}`}
-            onClick={() => navigate('/community')}
+            onClick={() => navigateAndClose('/community')}
           >
             Community
           </button>
           <button
             type="button"
             className={`nav-link ${isActive('/forum') ? 'active' : ''}`}
-            onClick={() => navigate('/forum')}
+            onClick={() => navigateAndClose('/forum')}
           >
             Forum
           </button>
         </div>
 
-        <div className="nav-actions">
+        <div className={`nav-actions ${!isAuthenticated ? 'nav-actions-account-only' : ''}`}>
           {isAuthenticated ? (
             <>
             {user && (
               <button
                 type="button"
                 className={`nav-balance-chip ${isActive('/balance') ? 'active' : ''}`}
-                onClick={() => navigate('/balance')}
+                onClick={() => navigateAndClose('/balance')}
                 title={`Balance ${formatUsd(user.cash_balance_usd)}; reserved ${formatUsd(user.cash_reserved_usd)}`}
               >
                 <span>
@@ -184,67 +296,34 @@ export default function Navigation({ onLogout }: NavigationProps) {
                   aria-haspopup="menu"
                   aria-expanded={isUserMenuOpen}
                 >
-                  {user.avatar_url ? (
-                    <img
-                      className="nav-user-avatar nav-user-avatar-image"
-                      src={user.avatar_url}
-                      alt={user.username}
-                    />
-                  ) : (
-                    <span className="nav-user-avatar">
-                      {(user.display_name || user.username).slice(0, 1).toUpperCase()}
-                    </span>
-                  )}
+                  {renderAvatar()}
                   <span className="nav-user-text">
                     <strong>{user.display_name || user.username}</strong>
                     <small>@{user.username}</small>
                   </span>
                 </button>
               )}
-              {isUserMenuOpen && (
-                <div className="nav-user-menu" role="menu">
-                  <button type="button" className="nav-user-menu-item" onClick={() => navigate('/profile')}>
-                    Go Profile
-                  </button>
-                  <button type="button" className="nav-user-menu-item" onClick={() => navigate('/about')}>
-                    About
-                  </button>
-                  <button type="button" className="nav-user-menu-item" onClick={() => navigate('/faq')}>
-                    FAQ
-                  </button>
-                  <button type="button" className="nav-user-menu-item nav-user-menu-item-danger" onClick={handleLogout}>
-                    Logout
-                  </button>
-                </div>
-              )}
+              {isUserMenuOpen && renderUserMenu()}
             </div>
             </>
           ) : (
-            <>
-              <button 
+            <div className="nav-user-menu-shell" ref={userMenuRef}>
+              <button
                 type="button"
-                onClick={(e) => {
-                  e.preventDefault()
-                  navigate('/login')
-                }} 
-                className={`nav-link nav-auth-link ${isActive('/login') ? 'active' : ''}`}
+                className="nav-user-chip nav-user-chip-guest"
+                onClick={() => setIsUserMenuOpen((current) => !current)}
+                aria-haspopup="menu"
+                aria-expanded={isUserMenuOpen}
+                aria-label="Open account menu"
               >
-                Login
+                {renderAvatar()}
               </button>
-              <button 
-                type="button"
-                onClick={(e) => {
-                  e.preventDefault()
-                  navigate('/register')
-                }} 
-                className={`nav-link nav-auth-link ${isActive('/register') ? 'active' : ''}`}
-              >
-                Register
-              </button>
-            </>
+              {isUserMenuOpen && renderUserMenu()}
+            </div>
           )}
         </div>
       </div>
     </nav>
   )
 }
+

@@ -13,6 +13,7 @@ import {
   uploadProfileAvatar,
 } from '../services/authService'
 import { extractApiErrorMessage } from '../services/apiClient'
+import { getPasswordRequirementText, validatePasswordComplexity } from '../utils/passwordValidation'
 import '../styles/globals.css'
 
 const emptyForm: ProfileUpdateRequest = {
@@ -164,6 +165,11 @@ export default function Profile() {
     const emailChanged = (formData.email || '').trim() !== (profile?.email || '').trim()
     const isPasswordChangeRequested = Boolean((formData.new_password || '').trim() || (confirmNewPassword || '').trim())
     if (isPasswordChangeRequested) {
+      const passwordFailures = validatePasswordComplexity(formData.new_password || '')
+      if (passwordFailures.length > 0) {
+        setError(`New password must include: ${passwordFailures.join(', ')}.`)
+        return
+      }
       if (!confirmNewPassword.trim()) {
         setError('Please confirm your new password.')
         return
@@ -429,8 +435,9 @@ export default function Profile() {
                         minLength={8}
                         value={formData.new_password || ''}
                         onChange={(e) => handleChange('new_password', e.target.value)}
-                        placeholder="At least 8 characters"
+                        placeholder="Choose a stronger password"
                       />
+                      <small>{getPasswordRequirementText()}.</small>
                     </div>
                     <div className="form-group">
                       <label htmlFor="confirm_new_password">Confirm New Password</label>
@@ -539,3 +546,4 @@ export default function Profile() {
     </div>
   )
 }
+

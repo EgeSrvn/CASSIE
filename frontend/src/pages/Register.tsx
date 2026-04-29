@@ -2,6 +2,7 @@ import { useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { register, RegisterRequest } from '../services/authService'
 import { extractApiErrorMessage } from '../services/apiClient'
+import { getPasswordRequirementText, validatePasswordComplexity } from '../utils/passwordValidation'
 import '../styles/globals.css'
 
 interface RegisterProps {
@@ -15,6 +16,7 @@ export default function Register({ onRegister }: RegisterProps) {
     password: '',
   })
   const [error, setError] = useState<string>('')
+  const [confirmPassword, setConfirmPassword] = useState('')
   const [loading, setLoading] = useState(false)
   const submitLockedRef = useRef(false)
   const navigate = useNavigate()
@@ -29,6 +31,20 @@ export default function Register({ onRegister }: RegisterProps) {
 
     submitLockedRef.current = true
     setError('')
+
+    const passwordFailures = validatePasswordComplexity(formData.password)
+    if (passwordFailures.length > 0) {
+      setError(`Password must include: ${passwordFailures.join(', ')}.`)
+      submitLockedRef.current = false
+      return
+    }
+
+    if (formData.password !== confirmPassword) {
+      setError('Passwords do not match.')
+      submitLockedRef.current = false
+      return
+    }
+
     setLoading(true)
 
     try {
@@ -96,6 +112,23 @@ export default function Register({ onRegister }: RegisterProps) {
               disabled={loading}
               minLength={8}
             />
+            <small>{getPasswordRequirementText()}.</small>
+          </div>
+
+          <div className="form-group">
+            <label htmlFor="confirm-password">Confirm Password</label>
+            <input
+              type="password"
+              id="confirm-password"
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+              required
+              disabled={loading}
+              minLength={8}
+            />
+            {!!confirmPassword && formData.password !== confirmPassword && (
+              <small style={{ color: '#b91c1c' }}>Passwords must match.</small>
+            )}
           </div>
           
           <button type="submit" disabled={loading} className="btn-primary auth-submit">
@@ -110,3 +143,4 @@ export default function Register({ onRegister }: RegisterProps) {
     </div>
   )
 }
+
