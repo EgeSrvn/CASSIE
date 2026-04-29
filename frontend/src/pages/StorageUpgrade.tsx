@@ -1,6 +1,6 @@
 import { useNavigate } from 'react-router-dom'
 import Navigation from '../components/Navigation'
-import storageUpgradeConfig from '../../../storage_upgrade_plans.json'
+import storageUpgradeConfig from '../../storage_upgrade_plans.json'
 import '../styles/globals.css'
 import './Storage.css'
 

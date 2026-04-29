@@ -1,0 +1,24 @@
+{
+  "currency": "USD",
+  "billing_interval": "week",
+  "plans": [
+    {
+      "id": "storage-plus-50",
+      "name": "Storage Plus",
+      "additional_gb": 50,
+      "weekly_price": 2.99
+    },
+    {
+      "id": "storage-pro-150",
+      "name": "Storage Pro",
+      "additional_gb": 150,
+      "weekly_price": 6.99
+    },
+    {
+      "id": "storage-lab-500",
+      "name": "Storage Lab",
+      "additional_gb": 500,
+      "weekly_price": 14.99
+    }
+  ]
+}

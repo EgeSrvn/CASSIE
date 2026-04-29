@@ -20,6 +20,6 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src", "cats", "../storage_upgrade_plans.json"],
+  "include": ["src", "cats", "storage_upgrade_plans.json"],
   "references": [{ "path": "./tsconfig.node.json" }]
 }
