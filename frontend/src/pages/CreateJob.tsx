@@ -1125,12 +1125,35 @@ export default function CreateJob() {
           const sizeBytes = typeof file?.size_bytes === 'number' ? file.size_bytes : 0
           return sum + (sizeBytes > 0 ? sizeBytes / (1024 * 1024) : 0)
         }, 0)
+        const compressedInputSizeMib = mappedFileIds.reduce((sum, fileId) => {
+          const file = fileById.get(fileId)
+          const filename = String(file?.filename || '').toLowerCase()
+          const fileFormat = String(file?.file_format || '').toLowerCase()
+          const isCompressed =
+            filename.endsWith('.gz') ||
+            filename.endsWith('.bz2') ||
+            filename.endsWith('.xz') ||
+            filename.endsWith('.zip') ||
+            fileFormat.includes('gz') ||
+            fileFormat.includes('bz2') ||
+            fileFormat.includes('xz') ||
+            fileFormat.includes('zip')
+          const sizeBytes = typeof file?.size_bytes === 'number' ? file.size_bytes : 0
+          return sum + (isCompressed && sizeBytes > 0 ? sizeBytes / (1024 * 1024) : 0)
+        }, 0)
+        const uniqueFormats = Array.from(new Set(
+          mappedFileIds
+            .map((fileId) => String(fileById.get(fileId)?.file_format || '').trim().toLowerCase())
+            .filter(Boolean)
+        ))
 
         if (totalInputSizeMib > 0) {
           assignments.push({
             tool_id: toolReq.tool_id,
             requirement_type: req.type,
             total_input_size_mib: Number(totalInputSizeMib.toFixed(2)),
+            compressed_input_size_mib: Number(compressedInputSizeMib.toFixed(2)),
+            file_formats: uniqueFormats,
           })
         }
       })

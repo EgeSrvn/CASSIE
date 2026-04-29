@@ -50,6 +50,8 @@ class RuntimeEstimateRequest(BaseModel):
         tool_id: str
         requirement_type: str
         total_input_size_mib: float
+        compressed_input_size_mib: Optional[float] = 0.0
+        file_formats: Optional[List[str]] = None
 
     tool_indices: Optional[List[int]] = None
     pipeline_id: Optional[int] = None
@@ -138,6 +140,8 @@ async def estimate_runtime(
                 tool_id=item.tool_id,
                 requirement_type=item.requirement_type,
                 total_input_size_mib=item.total_input_size_mib,
+                compressed_input_size_mib=item.compressed_input_size_mib or 0.0,
+                file_formats=item.file_formats or [],
             )
             for item in (request.input_assignments or [])
         ]

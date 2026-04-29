@@ -120,6 +120,8 @@ class RuntimeInputAssignment:
     tool_id: str
     requirement_type: str
     total_input_size_mib: float
+    compressed_input_size_mib: float = 0.0
+    file_formats: Optional[List[str]] = None
 
 
 @dataclass(frozen=True)
@@ -227,6 +229,30 @@ def _tool_output_size_multiplier(tool_id: str) -> float:
     return DEFAULT_TOOL_OUTPUT_SIZE_MULTIPLIER.get(tool_id, 0.08)
 
 
+def _compression_penalty_factor(
+    compressed_input_size_mib: float,
+    total_input_size_mib: float,
+    file_formats: Optional[List[str]] = None,
+) -> float:
+    total_size = max(float(total_input_size_mib or 0.0), 0.0)
+    if total_size <= 0:
+        return 1.0
+
+    compressed_size = max(min(float(compressed_input_size_mib or 0.0), total_size), 0.0)
+    compressed_ratio = compressed_size / total_size
+    if compressed_ratio <= 0:
+        return 1.0
+
+    normalized_formats = [str(file_format or '').lower() for file_format in (file_formats or [])]
+    stronger_penalty = any(
+        marker in file_format
+        for file_format in normalized_formats
+        for marker in ('fastq.gz', 'fq.gz', 'fasta.gz', 'fa.gz', 'fna.gz')
+    )
+    base_penalty = 0.22 if stronger_penalty else 0.14
+    return min(1.35, 1.0 + (compressed_ratio * base_penalty))
+
+
 def _fixed_overhead_minutes() -> float:
     config = _load_runtime_config()
     raw = config.get("fixed_overhead_minutes")
@@ -317,6 +343,7 @@ def _build_tool_breakdown(
     tool_ids: List[str],
     partition_factor: float,
     input_size_by_tool: Optional[Dict[str, float]] = None,
+    penalty_summary_by_tool: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
     breakdown: List[Dict[str, Any]] = []
     for tool_id in tool_ids:
@@ -324,7 +351,9 @@ def _build_tool_breakdown(
         base_minutes = _tool_base_minutes(tool_id)
         input_size_mib = (input_size_by_tool or {}).get(tool_id, _tool_reference_input_mib(tool_id))
         size_factor = _size_factor(tool_id, input_size_mib)
-        adjusted_minutes = round(base_minutes * partition_factor * size_factor, 1)
+        penalty_summary = (penalty_summary_by_tool or {}).get(tool_id, {})
+        compression_factor = float(penalty_summary.get("compression_factor", 1.0) or 1.0)
+        adjusted_minutes = round(base_minutes * partition_factor * size_factor * compression_factor, 1)
         breakdown.append(
             {
                 "tool_id": tool_id,
@@ -332,6 +361,7 @@ def _build_tool_breakdown(
                 "base_minutes": round(base_minutes, 1),
                 "input_size_mib": round(input_size_mib, 2),
                 "size_factor": round(size_factor, 3),
+                "compression_factor": round(compression_factor, 3),
                 "adjusted_minutes": adjusted_minutes,
             }
         )
@@ -346,6 +376,34 @@ def _group_input_assignments(assignments: Optional[List[RuntimeInputAssignment]]
         grouped.setdefault(tool_key, {})
         grouped[tool_key][requirement_key] = grouped[tool_key].get(requirement_key, 0.0) + max(0.0, float(assignment.total_input_size_mib))
     return grouped
+
+
+def _summarize_assignment_penalties(assignments: Optional[List[RuntimeInputAssignment]]) -> Dict[str, Dict[str, Any]]:
+    summary: Dict[str, Dict[str, Any]] = {}
+    for assignment in assignments or []:
+        tool_key = str(assignment.tool_id)
+        current = summary.setdefault(
+            tool_key,
+            {
+                "total_input_size_mib": 0.0,
+                "compressed_input_size_mib": 0.0,
+                "file_formats": set(),
+            },
+        )
+        current["total_input_size_mib"] += max(0.0, float(assignment.total_input_size_mib or 0.0))
+        current["compressed_input_size_mib"] += max(0.0, float(assignment.compressed_input_size_mib or 0.0))
+        for file_format in assignment.file_formats or []:
+            normalized = str(file_format or "").strip().lower()
+            if normalized:
+                current["file_formats"].add(normalized)
+
+    for current in summary.values():
+        current["compression_factor"] = _compression_penalty_factor(
+            current["compressed_input_size_mib"],
+            current["total_input_size_mib"],
+            sorted(current["file_formats"]),
+        )
+    return summary
 
 
 def _estimate_tool_input_sizes_for_sequence(
@@ -586,8 +644,14 @@ def estimate_runtime_for_tool_indices(
     resolved_vm_name, display_name, partition_factor = _vm_speed_multiplier(vm_name)
     vm_price_per_minute = _vm_price_per_minute(resolved_vm_name)
     grouped_assignments = _group_input_assignments(input_assignments)
+    penalty_summary_by_tool = _summarize_assignment_penalties(input_assignments)
     effective_input_sizes = _estimate_tool_input_sizes_for_sequence(tool_ids, grouped_assignments)
-    breakdown = _build_tool_breakdown(tool_ids, partition_factor, effective_input_sizes)
+    breakdown = _build_tool_breakdown(
+        tool_ids,
+        partition_factor,
+        effective_input_sizes,
+        penalty_summary_by_tool,
+    )
     total_input_size_mib = _total_explicit_input_size_mib(grouped_assignments)
     fixed_overhead = _effective_fixed_overhead_minutes(
         tool_count=len(tool_ids),
@@ -616,6 +680,7 @@ def estimate_runtime_for_tool_indices(
             "Applies a VM partition multiplier so higher-density partitions predict slower per-job runtimes.",
             "Uses a reduced orchestration overhead for lighter single-tool and small-input jobs.",
             "Scales each tool using total mapped input sizes; downstream intermediate inputs are inferred from upstream output-size multipliers.",
+            "Adds a bounded runtime penalty when mapped inputs are compressed file types such as .gz or .zip.",
         ],
     )
     return _apply_optional_gemini_runtime_prediction(estimate)
@@ -636,6 +701,7 @@ def estimate_runtime_for_pipeline_graph(
     output_sizes_by_node: Dict[str, float] = {}
     input_sizes_by_node: Dict[str, float] = {}
     grouped_assignments = _group_input_assignments(input_assignments)
+    penalty_summary_by_tool = _summarize_assignment_penalties(input_assignments)
 
     incoming_edges: Dict[str, List[str]] = {}
     for edge in edges:
@@ -659,13 +725,20 @@ def estimate_runtime_for_pipeline_graph(
 
         effective_input_size = max(explicit_size + inherited_size, _tool_reference_input_mib(tool_id))
         input_sizes_by_node[node_id] = effective_input_size
-        weighted_node_minutes[node_id] = _tool_base_minutes(tool_id) * partition_factor * _size_factor(tool_id, effective_input_size)
+        compression_factor = float(penalty_summary_by_tool.get(tool_id, {}).get("compression_factor", 1.0) or 1.0)
+        weighted_node_minutes[node_id] = (
+            _tool_base_minutes(tool_id)
+            * partition_factor
+            * _size_factor(tool_id, effective_input_size)
+            * compression_factor
+        )
         output_sizes_by_node[node_id] = max(1.0, effective_input_size * _tool_output_size_multiplier(tool_id))
 
     breakdown = _build_tool_breakdown(
         tool_ids,
         partition_factor,
         {tool_id: sum(grouped_assignments.get(tool_id, {}).values()) or _tool_reference_input_mib(tool_id) for tool_id in tool_ids},
+        penalty_summary_by_tool,
     )
 
     total_input_size_mib = _total_explicit_input_size_mib(grouped_assignments)
@@ -697,6 +770,7 @@ def estimate_runtime_for_pipeline_graph(
             "Adds a small orchestration penalty when the graph branches into parallel stages.",
             "Uses a reduced orchestration overhead for lighter jobs before branch penalties are applied.",
             "Mapped input sizes are propagated through downstream intermediate tools using per-tool output size multipliers.",
+            "Adds a bounded runtime penalty when mapped inputs are compressed file types such as .gz or .zip.",
         ],
     )
     return _apply_optional_gemini_runtime_prediction(estimate)
