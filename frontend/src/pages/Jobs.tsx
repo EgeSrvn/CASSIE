@@ -6,6 +6,7 @@ import { clearPendingJobUploads } from '../services/pendingJobUploadService'
 import { formatLocalDateTime } from '../utils/dateTime'
 import Navigation from '../components/Navigation'
 import VmCapacitySection from '../components/VmCapacitySection'
+import TrashIcon from '../components/TrashIcon'
 import '../styles/globals.css'
 
 export default function Jobs() {
@@ -139,9 +140,11 @@ export default function Jobs() {
                   </button>
                   <button
                     onClick={() => handleDelete(job.id)}
-                    className="btn-danger"
+                    className="icon-button icon-button-danger"
+                    aria-label={`Delete job ${job.name}`}
+                    title="Delete job"
                   >
-                    Delete
+                    <TrashIcon />
                   </button>
                 </div>
               </div>

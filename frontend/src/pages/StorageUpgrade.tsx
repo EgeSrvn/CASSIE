@@ -4,7 +4,7 @@ import Navigation from '../components/Navigation'
 import { getStoredUser, notifyAuthChange, setStoredUser } from '../services/authService'
 import { cancelStorageUpgrade, getStorageSummary, purchaseStorageUpgrade, StorageSummary } from '../services/fileService'
 import { extractApiErrorMessage } from '../services/apiClient'
-import storageUpgradeConfig from '../../storage_upgrade_plans.json'
+import storageUpgradeConfig from '../../../config/storage_upgrade_plans.json'
 import '../styles/globals.css'
 import './Storage.css'
 
@@ -173,7 +173,7 @@ export default function StorageUpgrade() {
             {summary?.active_subscription && (
               <button
                 type="button"
-                className="btn-danger"
+                className="btn-soft-cancel"
                 disabled={submittingPlanId === 'cancel'}
                 onClick={handleCancelSubscription}
               >

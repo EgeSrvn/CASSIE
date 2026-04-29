@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { getPipelines, deletePipeline, sharePipeline, unsharePipeline, Pipeline } from '../services/pipelineService'
 import { getToken } from '../services/authService'
 import Navigation from '../components/Navigation'
+import TrashIcon from '../components/TrashIcon'
 import '../styles/globals.css'
 
 export default function Pipelines() {
@@ -149,11 +150,7 @@ export default function Pipelines() {
                     {isAuthenticated && (
                       <button
                         onClick={() => handleShare(pipeline.id, pipeline.is_shared || false)}
-                        className="btn-secondary"
-                        style={{
-                          backgroundColor: pipeline.is_shared ? 'var(--success)' : 'var(--gray-300)',
-                          color: pipeline.is_shared ? 'white' : 'var(--gray-700)'
-                        }}
+                        className={`btn-secondary pipeline-share-button ${pipeline.is_shared ? 'active' : ''}`}
                         title={pipeline.is_shared ? 'Shared with community' : 'Share with community'}
                       >
                         {pipeline.is_shared ? 'Shared' : 'Share'}
@@ -163,9 +160,11 @@ export default function Pipelines() {
                       <button
                         onClick={() => handleDelete(pipeline.id)}
                         disabled={deleting === pipeline.id}
-                        className="btn-danger"
+                        className="icon-button icon-button-danger"
+                        aria-label={`Delete pipeline ${pipeline.name}`}
+                        title={deleting === pipeline.id ? 'Deleting pipeline' : 'Delete pipeline'}
                       >
-                        {deleting === pipeline.id ? 'Deleting...' : 'Delete'}
+                        <TrashIcon />
                       </button>
                     )}
                   </div>

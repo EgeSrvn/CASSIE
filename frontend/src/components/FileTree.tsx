@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { FolderTreeItem, FileItem } from '../services/folderService'
+import TrashIcon from './TrashIcon'
 import '../styles/FileTree.css'
 
 interface FileTreeProps {
@@ -89,8 +90,9 @@ export default function FileTree({
               className="file-tree-delete-btn"
               onClick={handleDeleteClick}
               title="Delete folder and all contents"
+              aria-label={`Delete folder ${folder.name}`}
             >
-              🗑️
+              <TrashIcon />
             </button>
           )}
         </div>
@@ -160,4 +162,3 @@ export default function FileTree({
     </div>
   )
 }
-

@@ -34,7 +34,7 @@ def _user_limits_config_path() -> Path:
 
 
 def _storage_upgrade_catalog_path() -> Path:
-    return Path(__file__).resolve().parents[3] / "storage_upgrade_plans.json"
+    return Path(__file__).resolve().parents[3] / "config" / "storage_upgrade_plans.json"
 
 
 def _load_json_file(path: Path, fallback: Dict[str, Any]) -> Dict[str, Any]:

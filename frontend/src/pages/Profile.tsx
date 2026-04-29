@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import Navigation from '../components/Navigation'
+import TrashIcon from '../components/TrashIcon'
 import {
   CommunityEntry,
   ProfileUpdateRequest,
@@ -537,6 +538,7 @@ export default function Profile() {
                     />
                   </div>
                   <button className="btn-secondary profile-danger-button" type="button" onClick={handleDeleteAccount} disabled={deletingAccount || !deletionCode.trim()}>
+                    <TrashIcon />
                     {deletingAccount ? 'Deleting Account...' : 'Confirm Delete Account'}
                   </button>
                 </div>

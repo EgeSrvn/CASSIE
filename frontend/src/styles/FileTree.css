@@ -73,22 +73,30 @@
 
 .file-tree-delete-btn {
   margin-left: auto;
-  background: none;
-  border: none;
+  width: 1.9rem;
+  height: 1.9rem;
+  background: #ead0c8;
+  color: #7c4036;
+  border: 1px solid rgba(124, 64, 54, 0.18);
+  border-radius: var(--radius-sm);
   cursor: pointer;
-  font-size: 1em;
-  padding: 2px 6px;
-  opacity: 0.6;
-  transition: opacity 0.2s;
+  padding: 0;
+  opacity: 0.82;
+  transition: opacity 0.2s, background-color 0.2s;
   display: flex;
   align-items: center;
   justify-content: center;
 }
 
+.file-tree-delete-btn svg {
+  width: 0.9rem;
+  height: 0.9rem;
+  display: block;
+}
+
 .file-tree-delete-btn:hover {
   opacity: 1;
-  background-color: var(--danger-light, #fee);
-  border-radius: var(--radius-sm);
+  background-color: #e1beb4;
 }
 
 .file-tree-folder {
@@ -96,4 +104,3 @@
   align-items: center;
   gap: var(--spacing-xs);
 }
-

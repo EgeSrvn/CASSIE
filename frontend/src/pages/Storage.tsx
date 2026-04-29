@@ -18,6 +18,7 @@ import {
 } from '../services/fileService'
 import { FileItem, FolderTreeItem } from '../services/folderService'
 import { getJobs, Job } from '../services/jobService'
+import TrashIcon from '../components/TrashIcon'
 import {
   cancelStorageUpload,
   dismissStorageUpload,
@@ -504,7 +505,7 @@ export default function Storage() {
               <span className="storage-status-pill">{progressLabel}</span>
               <button
                 type="button"
-                className="btn-secondary"
+                className="btn-soft-cancel"
                 onClick={() => cancelStorageUpload(file.id)}
               >
                 Cancel Upload
@@ -526,8 +527,15 @@ export default function Storage() {
         <button type="button" className="btn-secondary" onClick={() => downloadDataFile(file.id)}>
           Download
         </button>
-        <button type="button" className="btn-danger" disabled={busy} onClick={() => handleDeleteInput(file)}>
-          Delete
+        <button
+          type="button"
+          className="icon-button icon-button-danger"
+          disabled={busy}
+          onClick={() => handleDeleteInput(file)}
+          aria-label={`Delete input file ${file.filename}`}
+          title="Delete input file"
+        >
+          <TrashIcon />
         </button>
       </div>
     </article>
@@ -726,8 +734,15 @@ export default function Storage() {
                                   <button type="button" className="btn-secondary" onClick={() => downloadFile(file.id)}>
                                     Download
                                   </button>
-                                  <button type="button" className="btn-danger" disabled={busy} onClick={() => handleDeleteOutput(file)}>
-                                    Delete
+                                  <button
+                                    type="button"
+                                    className="icon-button icon-button-danger"
+                                    disabled={busy}
+                                    onClick={() => handleDeleteOutput(file)}
+                                    aria-label={`Delete output file ${file.filename}`}
+                                    title="Delete output file"
+                                  >
+                                    <TrashIcon />
                                   </button>
                                 </div>
                               </article>

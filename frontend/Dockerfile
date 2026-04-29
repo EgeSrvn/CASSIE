@@ -17,6 +17,7 @@ COPY frontend/package*.json ../
 RUN npm ci --fetch-retries=5 --fetch-retry-mintimeout=5000 --fetch-retry-maxtimeout=60000
 
 COPY frontend/ ./
+COPY config/ /config/
 RUN npm run build
 
 FROM ${NGINX_BASE_IMAGE}

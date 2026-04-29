@@ -28,8 +28,8 @@ from tool_registry import get_tool_by_id, get_tool_by_index, get_tool_id_from_la
 logger = get_logger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
-RUNTIME_ESTIMATOR_CONFIG_PATH = PROJECT_ROOT / "runtime_estimator_profiles.json"
-APP_CONFIG_PATH = PROJECT_ROOT / "config.json"
+RUNTIME_ESTIMATOR_CONFIG_PATH = PROJECT_ROOT / "config" / "runtime_estimator_profiles.json"
+APP_CONFIG_PATH = PROJECT_ROOT / "config" / "config.json"
 
 DEFAULT_TOOL_BASE_MINUTES: Dict[str, float] = {
     "FASTQC": 8.0,
@@ -735,7 +735,7 @@ def _estimate_with_predicted_seconds(estimate: RuntimeEstimate, provider: str, p
         tool_breakdown=estimate.tool_breakdown,
         assumptions=[
             *estimate.assumptions,
-            f"Final runtime seconds were predicted by the configured {provider.title()} predictor in config.json.",
+            f"Final runtime seconds were predicted by the configured {provider.title()} predictor in config/config.json.",
         ],
     )
 
@@ -800,7 +800,7 @@ def estimate_runtime_for_tool_indices(
         execution_shape="sequential-tools",
         tool_breakdown=breakdown,
         assumptions=[
-            "Uses tool-specific baseline runtimes from runtime_estimator_profiles.json.",
+            "Uses tool-specific baseline runtimes from config/runtime_estimator_profiles.json.",
             "Applies a VM partition multiplier so higher-density partitions predict slower per-job runtimes.",
             "Uses a reduced orchestration overhead for lighter single-tool and small-input jobs.",
             "Scales each tool using total mapped input sizes; downstream intermediate inputs are inferred from upstream output-size multipliers.",

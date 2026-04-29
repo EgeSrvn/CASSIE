@@ -1,0 +1,21 @@
+{
+  "title": "About",
+  "description": "",
+  "sections": [
+    {
+      "heading": "About",
+      "body": [
+        "CASSIE is a genomics workflow platform built to help researchers move from raw files to repeatable analyses without juggling disconnected tools, ad hoc scripts, and scattered execution environments.",
+        "The platform combines drag-and-drop pipeline design, step-by-step job configuration, community-shared workflows, discussion spaces, and execution tracking in one workspace.",
+        "Common use cases include read quality control, assembly, annotation transfer, and assembly evaluation, with enough flexibility for advanced users to tune tool settings, rename blocks, and shape reusable workflows."
+      ]
+    },
+    {
+      "heading": "Contact",
+      "body": [
+        "For account, upload, pipeline, or job questions, contact platform support with the job ID, the page involved, and a short description of what happened so the issue can be reproduced quickly.",
+        "Collaboration requests are welcome for benchmarking, teaching use cases, and workflow evaluation. Include your organism, sequencing data type, and expected project scale when reaching out."
+      ]
+    }
+  ]
+}

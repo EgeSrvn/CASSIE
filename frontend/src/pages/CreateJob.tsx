@@ -2519,7 +2519,7 @@ export default function CreateJob() {
                     </p>
                   )}
                   {reviewPipelinePreviewError && (
-                    <p style={{ margin: '0 0 0.75rem', color: '#b91c1c', fontSize: '0.9rem' }}>
+                    <p style={{ margin: '0 0 0.75rem', color: '#7c4036', fontSize: '0.9rem' }}>
                       {reviewPipelinePreviewError}
                     </p>
                   )}

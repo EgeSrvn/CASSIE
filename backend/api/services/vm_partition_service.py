@@ -1,7 +1,7 @@
 """
 VM partition configuration helpers.
 
-Loads VM definitions from a root-level JSON config so job creation and runtime
+Loads VM definitions from the root config directory so job creation and runtime
 resource partitioning share the same source of truth.
 """
 
@@ -17,7 +17,7 @@ from backend.api.utils.logger import get_logger
 logger = get_logger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
-VM_PARTITION_CONFIG_PATH = PROJECT_ROOT / "vm_partitions.json"
+VM_PARTITION_CONFIG_PATH = PROJECT_ROOT / "config" / "vm_partitions.json"
 
 
 @dataclass(frozen=True)

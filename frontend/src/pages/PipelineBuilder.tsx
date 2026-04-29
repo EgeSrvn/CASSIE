@@ -23,6 +23,7 @@ import { EditableFlagDefinition, getAvailableTools, Tool } from '../services/too
 import { configCatPipelineBuilder } from '../../cats/config_cat_pipeline_builder'
 import CatCornerCard from '../components/CatCornerCard'
 import Navigation from '../components/Navigation'
+import TrashIcon from '../components/TrashIcon'
 import {
   applyPipelinePriorityGroupOrder,
   computePipelinePriorityGroups,
@@ -632,14 +633,16 @@ const NodeMenu = ({ data }: { data: NodeData }) => {
           </button>
           <button
             type="button"
-            className="danger"
+            className="danger pipeline-node-menu-icon-button"
             onClick={(event) => {
               event.preventDefault()
               event.stopPropagation()
               data.onDelete?.()
             }}
+            aria-label={`Delete ${data.label}`}
+            title="Delete"
           >
-            Delete
+            <TrashIcon />
           </button>
         </div>
       )}
@@ -680,7 +683,7 @@ const nodeTypes = {
     <NodeBox label={data.label} description={data.description} color="#8b5cf6" className="pipeline-node-box-input" showTarget={false} menuSlot={<NodeMenu data={data} />} />
   ),
   result: ({ data }: { data: NodeData }) => (
-    <NodeBox label={data.label} description={data.description} color="#22c55e" className="pipeline-node-box-result" showSource={false} menuSlot={<NodeMenu data={data} />} />
+    <NodeBox label={data.label} description={data.description} color="#4f46e5" className="pipeline-node-box-result" showSource={false} menuSlot={<NodeMenu data={data} />} />
   ),
   inputNode: ({ data }: { data: NodeData }) => (
     <NodeBox label={data.label} description={data.description} color="#7c3aed" className="pipeline-node-box-input" showTarget={false} menuSlot={<NodeMenu data={data} />} />
@@ -692,7 +695,7 @@ const nodeTypes = {
     <NodeBox label={data.label} description={data.description} color="#ec4899" className="pipeline-node-box-input" showTarget={false} menuSlot={<NodeMenu data={data} />} />
   ),
   end: ({ data }: { data: NodeData }) => (
-    <NodeBox label={data.label} description={data.description} color="#22c55e" className="pipeline-node-box-result" showSource={false} menuSlot={<NodeMenu data={data} />} />
+    <NodeBox label={data.label} description={data.description} color="#4f46e5" className="pipeline-node-box-result" showSource={false} menuSlot={<NodeMenu data={data} />} />
   ),
 }
 

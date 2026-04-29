@@ -1,0 +1,27 @@
+{
+  "title": "FAQ",
+  "description": "",
+  "items": [
+    {
+      "question": "How do I get a job to start correctly?",
+      "answer": [
+        "Make sure every required input block has at least one selected file, that a VM has been chosen, and that the review stage shows the expected pipeline before submission.",
+        "If uploads appear complete but inputs are still missing, refresh the page and confirm that the selected files are attached to the correct tool or pipeline block rather than only sitting in the storage library."
+      ]
+    },
+    {
+      "question": "What should I check if a pipeline preview looks wrong?",
+      "answer": [
+        "Compare the renamed block labels, stage order, and result blocks in the builder with the review visualization to confirm the saved graph still matches the workflow you intended to run.",
+        "If a saved pipeline was edited earlier, reopen it in the builder and verify that each input, tool, checkpoint, and result block is still connected in the way you expect."
+      ]
+    },
+    {
+      "question": "Where should I look when something fails?",
+      "answer": [
+        "Use the job details page for execution tracking, live stage status, logs, required inputs, and output availability. That page should be the first stop for run-specific problems.",
+        "If the issue looks platform-wide rather than job-specific, gather the visible error text, the affected page, and the approximate time, then contact support with that information."
+      ]
+    }
+  ]
+}

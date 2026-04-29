@@ -4,6 +4,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import Navigation from '../components/Navigation'
 import ReportDialog from '../components/ReportDialog'
 import SortDropdown from '../components/SortDropdown'
+import TrashIcon from '../components/TrashIcon'
 import { getCurrentUser, getToken } from '../services/authService'
 import { extractApiErrorMessage } from '../services/apiClient'
 import {
@@ -565,8 +566,10 @@ export default function ForumThread() {
               type="button"
               className={`forum-post-menu-item ${item.danger ? 'forum-post-menu-item-danger' : ''}`}
               onClick={item.onClick}
+              aria-label={item.label}
+              title={item.label}
             >
-              {item.label}
+              {item.danger ? <TrashIcon /> : item.label}
             </button>
           ))}
         </div>

@@ -104,8 +104,8 @@
 }
 
 .pipeline-node-box-result {
-  background: linear-gradient(180deg, rgba(231, 248, 236, 0.99), rgba(211, 241, 219, 0.95));
-  border-color: rgba(34, 197, 94, 0.26);
+  background: linear-gradient(180deg, rgba(235, 238, 255, 0.99), rgba(221, 226, 255, 0.95));
+  border-color: rgba(79, 70, 229, 0.24);
 }
 
 .pipeline-node-header {
@@ -229,11 +229,20 @@
 }
 
 .pipeline-node-menu button.danger {
-  color: #b91c1c;
+  color: #7c4036;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .pipeline-node-menu button.danger:hover {
-  background: #fef2f2;
+  background: #ead0c8;
+}
+
+.pipeline-node-menu-icon-button svg {
+  width: 0.95rem;
+  height: 0.95rem;
+  display: block;
 }
 
 .pipeline-node-config-chip {
@@ -280,7 +289,7 @@
 .pipeline-inline-validation {
   margin: 0;
   max-width: 340px;
-  color: #b91c1c;
+  color: #7c4036;
   font-size: 0.82rem;
   font-weight: 600;
   text-align: right;
@@ -500,7 +509,7 @@
 .pipeline-flag-error {
   margin: 0.35rem 0 0;
   font-size: 0.78rem;
-  color: #dc2626;
+  color: #7c4036;
   line-height: 1.4;
 }
 
@@ -619,13 +628,13 @@
 }
 
 .pipeline-palette-button-result {
-  background: linear-gradient(180deg, rgba(231, 248, 236, 0.99), rgba(211, 241, 219, 0.95));
-  border-color: rgba(34, 197, 94, 0.28);
+  background: linear-gradient(180deg, rgba(235, 238, 255, 0.99), rgba(221, 226, 255, 0.95));
+  border-color: rgba(79, 70, 229, 0.26);
 }
 
 .pipeline-palette-button-transform {
-  background: linear-gradient(180deg, rgba(224, 246, 241, 0.99), rgba(205, 238, 230, 0.96));
-  border-color: rgba(15, 118, 110, 0.3);
+  background: linear-gradient(180deg, rgba(231, 236, 246, 0.99), rgba(213, 223, 239, 0.96));
+  border-color: rgba(39, 84, 138, 0.24);
 }
 
 .pipeline-palette-button-qc {

@@ -828,8 +828,8 @@ export default function JobDetails() {
                     <span
                       className="inline-upload-status"
                       style={{
-                        backgroundColor: jobUploadStatus.stage === 'failed' ? '#fee2e2' : '#dbeafe',
-                        color: jobUploadStatus.stage === 'failed' ? '#b91c1c' : '#1d4ed8',
+                        backgroundColor: jobUploadStatus.stage === 'failed' ? '#f0ded8' : '#dbeafe',
+                        color: jobUploadStatus.stage === 'failed' ? '#7c4036' : '#1d4ed8',
                       }}
                     >
                       {jobUploadStatus.stage === 'starting'
@@ -1087,7 +1087,7 @@ export default function JobDetails() {
                         <span>{resource.display}</span>
                       </div>
                       <div style={{ height: '10px', borderRadius: '999px', backgroundColor: '#eadfca', overflow: 'hidden' }}>
-                        <div style={{ width: `${percent}%`, height: '100%', backgroundColor: percent > 85 ? '#dc2626' : '#2563eb' }} />
+                        <div style={{ width: `${percent}%`, height: '100%', backgroundColor: percent > 85 ? '#b6786d' : '#2563eb' }} />
                       </div>
                       <div style={{ marginTop: '0.4rem', color: '#64748b', fontSize: '0.875rem' }}>{percent}% allocated</div>
                     </div>
