@@ -234,8 +234,29 @@ def _fixed_overhead_minutes() -> float:
         if raw is not None:
             return max(0.0, float(raw))
     except (TypeError, ValueError):
-        pass
+                pass
     return 10.0
+
+
+def _effective_fixed_overhead_minutes(
+    *,
+    tool_count: int,
+    total_input_size_mib: float,
+    execution_shape: str,
+) -> float:
+    base_overhead = _fixed_overhead_minutes()
+    normalized_tool_count = max(int(tool_count or 0), 0)
+    normalized_input_size = max(float(total_input_size_mib or 0.0), 0.0)
+
+    if normalized_tool_count <= 1 and normalized_input_size <= 2048:
+        return min(base_overhead, 2.0)
+    if normalized_tool_count <= 2 and normalized_input_size <= 4096:
+        return min(base_overhead, 4.0)
+    if execution_shape == "pipeline-critical-path" and normalized_tool_count >= 4:
+        return base_overhead
+    if normalized_input_size <= 8192:
+        return min(base_overhead, 6.0)
+    return base_overhead
 
 
 def _vm_speed_multiplier(vm_name: Optional[str]) -> tuple[str, str, float]:
@@ -564,13 +585,17 @@ def estimate_runtime_for_tool_indices(
 
     resolved_vm_name, display_name, partition_factor = _vm_speed_multiplier(vm_name)
     vm_price_per_minute = _vm_price_per_minute(resolved_vm_name)
-    fixed_overhead = _fixed_overhead_minutes()
     grouped_assignments = _group_input_assignments(input_assignments)
     effective_input_sizes = _estimate_tool_input_sizes_for_sequence(tool_ids, grouped_assignments)
     breakdown = _build_tool_breakdown(tool_ids, partition_factor, effective_input_sizes)
+    total_input_size_mib = _total_explicit_input_size_mib(grouped_assignments)
+    fixed_overhead = _effective_fixed_overhead_minutes(
+        tool_count=len(tool_ids),
+        total_input_size_mib=total_input_size_mib,
+        execution_shape="sequential-tools",
+    )
     sequential_minutes = sum(item["adjusted_minutes"] for item in breakdown)
     estimated_minutes = max(1, round(sequential_minutes + fixed_overhead))
-    total_input_size_mib = _total_explicit_input_size_mib(grouped_assignments)
     estimated_price_usd = round(estimated_minutes * vm_price_per_minute, 2)
 
     estimate = RuntimeEstimate(
@@ -589,6 +614,7 @@ def estimate_runtime_for_tool_indices(
         assumptions=[
             "Uses tool-specific baseline runtimes from runtime_estimator_profiles.json.",
             "Applies a VM partition multiplier so higher-density partitions predict slower per-job runtimes.",
+            "Uses a reduced orchestration overhead for lighter single-tool and small-input jobs.",
             "Scales each tool using total mapped input sizes; downstream intermediate inputs are inferred from upstream output-size multipliers.",
         ],
     )
@@ -605,8 +631,6 @@ def estimate_runtime_for_pipeline_graph(
 
     resolved_vm_name, display_name, partition_factor = _vm_speed_multiplier(vm_name)
     vm_price_per_minute = _vm_price_per_minute(resolved_vm_name)
-    fixed_overhead = _fixed_overhead_minutes()
-
     tool_ids: List[str] = []
     weighted_node_minutes: Dict[str, float] = {}
     output_sizes_by_node: Dict[str, float] = {}
@@ -644,10 +668,15 @@ def estimate_runtime_for_pipeline_graph(
         {tool_id: sum(grouped_assignments.get(tool_id, {}).values()) or _tool_reference_input_mib(tool_id) for tool_id in tool_ids},
     )
 
+    total_input_size_mib = _total_explicit_input_size_mib(grouped_assignments)
+    fixed_overhead = _effective_fixed_overhead_minutes(
+        tool_count=len(tool_ids),
+        total_input_size_mib=total_input_size_mib,
+        execution_shape="pipeline-critical-path",
+    )
     critical_path_minutes, branch_factor = _topological_layers(nodes, edges, weighted_node_minutes)
     orchestration_penalty = max(0.0, (branch_factor - 1) * 4.0)
     estimated_minutes = max(1, round(critical_path_minutes + fixed_overhead + orchestration_penalty))
-    total_input_size_mib = _total_explicit_input_size_mib(grouped_assignments)
     estimated_price_usd = round(estimated_minutes * vm_price_per_minute, 2)
 
     estimate = RuntimeEstimate(
@@ -666,6 +695,7 @@ def estimate_runtime_for_pipeline_graph(
         assumptions=[
             "Uses tool baseline runtimes and estimates total runtime from the pipeline DAG critical path.",
             "Adds a small orchestration penalty when the graph branches into parallel stages.",
+            "Uses a reduced orchestration overhead for lighter jobs before branch penalties are applied.",
             "Mapped input sizes are propagated through downstream intermediate tools using per-tool output size multipliers.",
         ],
     )
