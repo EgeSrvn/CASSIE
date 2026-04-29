@@ -133,12 +133,36 @@ export interface StorageSummary {
   subscription_period: 'weekly' | string
 }
 
+export interface StorageUpgradePurchaseResult {
+  plan_id: string
+  plan_name: string
+  additional_gb: number
+  weekly_price: number
+  user?: {
+    cash_balance_usd: number
+    cash_reserved_usd: number
+    cash_available_usd: number
+  } | null
+  storage: StorageSummary
+}
+
 export const getStorageSummary = async (): Promise<StorageSummary> => {
   const response = await apiClient.get<{ success: boolean; data: StorageSummary; message?: string }>('/api/storage/summary')
   if (response.data.success) {
     return response.data.data
   }
   throw new Error(response.data.message || 'Failed to get storage summary')
+}
+
+export const purchaseStorageUpgrade = async (planId: string): Promise<StorageUpgradePurchaseResult> => {
+  const response = await apiClient.post<{ success: boolean; data: StorageUpgradePurchaseResult; message?: string }>(
+    '/api/storage/upgrade/purchase',
+    { plan_id: planId }
+  )
+  if (response.data.success) {
+    return response.data.data
+  }
+  throw new Error(response.data.message || 'Failed to purchase storage upgrade')
 }
 
 export interface GoogleDriveJobImportPayload {

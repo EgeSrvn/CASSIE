@@ -40,15 +40,19 @@ from backend.api.services.storage_service import (
     count_files_by_user
 )
 from backend.api.services.minio_client import MinIOClient, get_minio_client
+from backend.api.services.billing_service import charge_user_cash_balance
 from backend.api.services.job_archive_service import (
     get_zip_download_status_payload,
     request_job_outputs_zip_generation,
 )
 from backend.api.services.job_service import get_job_by_id
 from backend.api.services.job_launch_service import get_auto_start_payload, start_job_execution_task
+from backend.api.services.user_service import get_user_by_id
 from backend.api.services.user_limit_service import (
     can_user_access_job_outputs,
+    get_storage_upgrade_plan,
     get_user_limits,
+    increase_user_max_storage_gb,
     validate_user_storage_capacity,
     validate_output_file_access,
 )
@@ -93,6 +97,10 @@ class StorageFileUpdateRequest(BaseModel):
     file_format: Optional[str] = Field(None, max_length=50)
 
 
+class StorageUpgradePurchaseRequest(BaseModel):
+    plan_id: str = Field(..., min_length=1, max_length=120)
+
+
 @router.get("/summary", status_code=status.HTTP_200_OK)
 async def get_storage_summary(
     current_user: UserResponse = Depends(get_current_user),
@@ -126,6 +134,69 @@ async def get_storage_summary(
         error_data = error_response(
             error_code=ErrorCode.INTERNAL_ERROR,
             message="Failed to retrieve storage summary",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@router.post("/upgrade/purchase", status_code=status.HTTP_200_OK)
+async def purchase_storage_upgrade(
+    payload: StorageUpgradePurchaseRequest,
+    current_user: UserResponse = Depends(get_current_user),
+):
+    """Charge the user balance and increase their storage quota."""
+    try:
+        plan = get_storage_upgrade_plan(payload.plan_id)
+        if not plan:
+            error_data = error_response(
+                error_code=ErrorCode.VALIDATION_ERROR,
+                message="Selected storage plan was not found.",
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+            return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+
+        charge_user_cash_balance(current_user.id, plan.get("weekly_price", 0))
+        updated_limits = increase_user_max_storage_gb(
+            current_user.username,
+            float(plan.get("additional_gb", 0) or 0),
+        )
+        updated_user = get_user_by_id(current_user.id)
+        used_bytes = get_total_file_bytes_by_user(current_user.id)
+        max_storage_bytes = max(int(updated_limits.get("max_storage_bytes", 0)), 0)
+
+        return success_response(
+            data={
+                "plan_id": str(plan.get("id") or ""),
+                "plan_name": str(plan.get("name") or "Storage upgrade"),
+                "additional_gb": float(plan.get("additional_gb", 0) or 0),
+                "weekly_price": float(plan.get("weekly_price", 0) or 0),
+                "user": {
+                    "cash_balance_usd": float(getattr(updated_user, "cash_balance_usd", 0) or 0),
+                    "cash_reserved_usd": float(getattr(updated_user, "cash_reserved_usd", 0) or 0),
+                    "cash_available_usd": max(float(getattr(updated_user, "cash_balance_usd", 0) or 0), 0.0),
+                } if updated_user else None,
+                "storage": {
+                    "used_bytes": used_bytes,
+                    "max_storage_bytes": max_storage_bytes,
+                    "remaining_bytes": max(max_storage_bytes - used_bytes, 0) if max_storage_bytes > 0 else None,
+                    "usage_ratio": (used_bytes / max_storage_bytes) if max_storage_bytes > 0 else None,
+                },
+            },
+            message="Storage upgrade purchased successfully",
+            status_code=status.HTTP_200_OK,
+        )
+    except ValueError as exc:
+        error_data = error_response(
+            error_code=ErrorCode.VALIDATION_ERROR,
+            message=str(exc),
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+    except Exception as exc:
+        logger.error(f"Error purchasing storage upgrade: {exc}", exc_info=True)
+        error_data = error_response(
+            error_code=ErrorCode.INTERNAL_ERROR,
+            message="Failed to purchase storage upgrade",
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
         return JSONResponse(content=error_data, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)

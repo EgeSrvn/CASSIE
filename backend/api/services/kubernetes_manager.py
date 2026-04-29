@@ -40,6 +40,8 @@ from backend.api.services.billing_service import settle_job_charge
 from backend.api.services.minio_client import get_minio_client
 from backend.api.services.runtime_training_logger import append_successful_tool_training_rows
 from backend.api.services.storage_service import create_file_record, get_file_by_id, get_files_by_user
+from backend.api.services.user_limit_service import validate_user_storage_headroom
+from backend.api.services.user_service import get_user_by_id
 from backend.api.services.vm_partition_service import get_vm_partition, get_vm_partitions
 from backend.api.utils.config_loader import get_config
 from backend.api.utils.logger import get_logger
@@ -185,6 +187,11 @@ class KubernetesPipelineRunner:
                 self._metadata_executor,
                 lambda: get_job_by_id(job_id, user_id=user_id),
             )
+            user = await loop.run_in_executor(
+                self._metadata_executor,
+                lambda: get_user_by_id(user_id),
+            )
+            username = getattr(user, "username", None)
             workflow = await loop.run_in_executor(
                 self._metadata_executor,
                 lambda: self._get_workflow(workflow_id, user_id),
@@ -319,6 +326,7 @@ class KubernetesPipelineRunner:
                                     job_id=job_id,
                                     execution_id=execution_id,
                                     user_id=user_id,
+                                    username=username,
                                     stage_number=spec["stage_number"],
                                     tool=spec["tool"],
                                     stage_job_name=stage_job_name,
@@ -1839,6 +1847,7 @@ class KubernetesPipelineRunner:
         job_id: int,
         execution_id: int,
         user_id: int,
+        username: Optional[str],
         stage_number: int,
         tool: Dict[str, Any],
         stage_job_name: str,
@@ -1891,6 +1900,7 @@ class KubernetesPipelineRunner:
                 job_id=job_id,
                 execution_id=execution_id,
                 user_id=user_id,
+                username=username,
                 stage_number=stage_number,
                 tool=tool,
                 current_inputs=current_inputs,
@@ -1901,6 +1911,7 @@ class KubernetesPipelineRunner:
                 job_id=job_id,
                 execution_id=execution_id,
                 user_id=user_id,
+                username=username,
                 stage_number=stage_number,
                 tool=tool,
             )
@@ -1915,6 +1926,7 @@ class KubernetesPipelineRunner:
                 job_id=job_id,
                 execution_id=execution_id,
                 user_id=user_id,
+                username=username,
                 stage_number=stage_number,
                 tool=tool,
             )
@@ -3683,6 +3695,7 @@ exit "$CASSIE_STATUS"
         job_id: int,
         execution_id: int,
         user_id: int,
+        username: Optional[str],
         stage_number: int,
         tool: Dict[str, Any],
         current_inputs: List[Dict[str, Any]],
@@ -3705,6 +3718,14 @@ exit "$CASSIE_STATUS"
                         f"jobs/{job_id}/executions/{execution_id}/"
                         f"stage_{stage_number:02d}_{tool['id'].lower()}/{rel_path}"
                     )
+                    has_storage_headroom, storage_error = validate_user_storage_headroom(
+                        user_id,
+                        username,
+                        os.path.getsize(local_path),
+                        action_label=f"Saving outputs for {tool.get('name', 'this tool')}",
+                    )
+                    if not has_storage_headroom:
+                        raise RuntimeError(storage_error)
 
                     upload_result = minio_client.upload_file(
                         user_id=user_id,
@@ -3746,6 +3767,7 @@ exit "$CASSIE_STATUS"
         job_id: int,
         execution_id: int,
         user_id: int,
+        username: Optional[str],
         stage_number: int,
         tool: Dict[str, Any],
     ) -> List[Dict[str, Any]]:
@@ -3770,6 +3792,14 @@ exit "$CASSIE_STATUS"
                 local_path = temp_dir / artifact_name
                 local_path.write_text(log_content + "\n", encoding="utf-8")
                 s3_key = f"jobs/{job_id}/executions/{execution_id}/{artifact_name}"
+                has_storage_headroom, storage_error = validate_user_storage_headroom(
+                    user_id,
+                    username,
+                    local_path.stat().st_size,
+                    action_label=f"Saving logs for {tool.get('name', 'this tool')}",
+                )
+                if not has_storage_headroom:
+                    raise RuntimeError(storage_error)
                 upload_result = minio_client.upload_file(
                     user_id=user_id,
                     local_path=str(local_path),

@@ -93,7 +93,9 @@ export default function Community() {
 
       const matchesTool =
         selectedTools.length === 0 ||
-        selectedTools.every((selectedTool) => (pipeline.tool_labels || []).some((toolLabel) => toolLabel === selectedTool))
+        selectedTools.some((selectedTool) =>
+          (pipeline.tool_labels || []).some((toolLabel) => toolLabel.toLowerCase() === selectedTool.toLowerCase())
+        )
 
       return matchesSearch && matchesTool
     })

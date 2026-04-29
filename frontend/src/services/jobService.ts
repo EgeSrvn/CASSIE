@@ -189,8 +189,8 @@ export const createJob = async (jobData: JobCreate): Promise<Job> => {
   }
 }
 
-export const getJobs = async (status?: string, page: number = 1): Promise<JobListResponse> => {
-  const params: any = { page, per_page: 20 }
+export const getJobs = async (status?: string, page: number = 1, perPage: number = 20): Promise<JobListResponse> => {
+  const params: any = { page, per_page: perPage }
   if (status) params.status = status
   
   const response = await apiClient.get<JobListResponse>('/api/jobs', { params })

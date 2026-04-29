@@ -43,7 +43,11 @@ from backend.api.services.job_launch_service import (
     start_job_execution_task,
 )
 from backend.api.services.output_retention_service import purge_expired_finished_job_outputs_for_user
-from backend.api.services.user_limit_service import can_user_start_more_jobs, can_user_interact_with_job_outputs
+from backend.api.services.user_limit_service import (
+    can_user_start_more_jobs,
+    can_user_interact_with_job_outputs,
+    validate_user_storage_headroom,
+)
 from backend.api.services.vm_queue_service import get_vm_slot_usage, queue_or_start_job, reserve_vm_slot_for_job
 from backend.api.services.job_execution_service import get_executions_by_job
 from backend.api.services.billing_service import reserve_job_charge, settle_job_charge
@@ -536,6 +540,20 @@ async def create_job_endpoint(
     )
 
     if should_reserve_vm_slot:
+        has_storage_headroom, storage_error = validate_user_storage_headroom(
+            current_user.id,
+            current_user.username,
+            1,
+            action_label="Job start",
+        )
+        if not has_storage_headroom:
+            error_data = error_response(
+                error_code=ErrorCode.VALIDATION_ERROR,
+                message=storage_error,
+                status_code=status.HTTP_400_BAD_REQUEST
+            )
+            return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+
         can_start_more, current_active_jobs, max_active_jobs = can_user_start_more_jobs(
             user_id=current_user.id,
             username=current_user.username,
@@ -947,6 +965,20 @@ async def execute_job(
             error_data = error_response(
                 error_code=ErrorCode.VALIDATION_ERROR,
                 message=f"Job must be in PENDING status to execute. Current status: {job.status.value}",
+                status_code=status.HTTP_400_BAD_REQUEST
+            )
+            return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+
+        has_storage_headroom, storage_error = validate_user_storage_headroom(
+            current_user.id,
+            current_user.username,
+            1,
+            action_label="Job start",
+        )
+        if not has_storage_headroom:
+            error_data = error_response(
+                error_code=ErrorCode.VALIDATION_ERROR,
+                message=storage_error,
                 status_code=status.HTTP_400_BAD_REQUEST
             )
             return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)

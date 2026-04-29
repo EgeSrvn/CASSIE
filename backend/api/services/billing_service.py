@@ -76,6 +76,51 @@ def deposit_user_cash(user_id: int, amount_usd) -> None:
             cur.close()
 
 
+def charge_user_cash_balance(user_id: int, amount_usd) -> Decimal:
+    amount = _money(amount_usd)
+    if amount <= 0:
+        raise ValueError("Charge amount must be greater than 0.")
+
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                """
+                SELECT cash_balance_usd
+                FROM users
+                WHERE id = %s
+                FOR UPDATE
+                """,
+                (user_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                raise ValueError("User not found.")
+
+            balance = _money(row[0])
+            if balance < amount:
+                raise ValueError(
+                    f"Insufficient balance. Required: ${amount:.2f}; available balance: ${balance:.2f}."
+                )
+
+            cur.execute(
+                """
+                UPDATE users
+                SET cash_balance_usd = cash_balance_usd - %s,
+                    updated_at = NOW()
+                WHERE id = %s
+                """,
+                (amount, user_id),
+            )
+            conn.commit()
+            return amount
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            cur.close()
+
+
 def reserve_job_charge(job_id: int, user_id: int, estimated_price_usd) -> Decimal:
     estimate = _money(estimated_price_usd)
     max_charge = _money(estimate * Decimal("1.5"))
