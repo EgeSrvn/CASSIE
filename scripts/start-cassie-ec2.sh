@@ -99,7 +99,9 @@ prepare_container_kubeconfig() {
   local runtime_dir="${ROOT_DIR}/.cassie/kube"
   local runtime_config="${runtime_dir}/config"
   local cluster_server=""
+  local minikube_ip=""
   local server_port=""
+  local target_server=""
   local runtime_contents=""
 
   mkdir -p "${runtime_dir}"
@@ -110,18 +112,22 @@ prepare_container_kubeconfig() {
   fi
 
   cluster_server="$(kubectl config view --raw --minify -o jsonpath='{.clusters[0].cluster.server}' | tr -d '\r')"
+  minikube_ip="$(minikube ip 2>/dev/null | tr -d '\r' || true)"
   if [[ "${cluster_server}" =~ :([0-9]+)$ ]]; then
     server_port="${BASH_REMATCH[1]}"
   fi
 
-  if [[ -n "${server_port}" ]]; then
+  if [[ -n "${minikube_ip}" ]]; then
+    target_server="https://${minikube_ip}:8443"
+  elif [[ -n "${server_port}" ]]; then
+    target_server="https://host.docker.internal:${server_port}"
+  fi
+
+  if [[ -n "${target_server}" ]]; then
     runtime_contents="$(cat "${runtime_config}")"
-    runtime_contents="$(printf '%s\n' "${runtime_contents}" | sed -E "s#server: https://(127\\.0\\.0\\.1|localhost):[0-9]+#server: https://host.docker.internal:${server_port}#")"
-    if ! grep -Eq '^[[:space:]]*tls-server-name:[[:space:]]+localhost[[:space:]]*$' <<<"${runtime_contents}"; then
-      runtime_contents="$(printf '%s\n' "${runtime_contents}" | sed -E "/^[[:space:]]*server: https:\/\/host\.docker\.internal:${server_port}[[:space:]]*$/a\\
-    tls-server-name: localhost")"
-    fi
+    runtime_contents="$(printf '%s\n' "${runtime_contents}" | sed -E "s#server: https://[^[:space:]]+#server: ${target_server}#")"
     printf '%s\n' "${runtime_contents}" > "${runtime_config}"
+    echo "Prepared backend kubeconfig for Kubernetes API at ${target_server}" >&2
   fi
 
   printf '%s\n' "${runtime_dir}"
@@ -245,3 +251,4 @@ retry_command "${CASSIE_DOCKER_RETRY_ATTEMPTS}" "${CASSIE_DOCKER_RETRY_DELAY_SEC
   "${COMPOSE_CMD[@]}" -f "${COMPOSE_FILE}" up -d --build --remove-orphans
 
 print_summary
+

@@ -328,6 +328,16 @@ def _merge_runtime_stage_details(runtime_details: Optional[Dict[str, Any]]) -> D
     return merged
 
 
+def _purge_expired_outputs_safely(user_id: int, username: Optional[str]) -> None:
+    try:
+        purge_expired_finished_job_outputs_for_user(user_id, username)
+    except Exception as cleanup_error:
+        logger.warning(
+            f"Failed to reconcile expired output retention for user {user_id}: {cleanup_error}",
+            exc_info=True,
+        )
+
+
 @router.get("/vms")
 async def list_available_vms(
     current_user: UserResponse = Depends(get_current_user)
@@ -687,6 +697,7 @@ async def create_job_endpoint(
 
 @router.get("")
 async def list_jobs(
+    background_tasks: BackgroundTasks,
     status_filter: Optional[JobStatus] = Query(None, alias="status", description="Filter by job status"),
     page: int = Query(1, ge=1, description="Page number"),
     per_page: int = Query(20, ge=1, le=100, description="Items per page"),
@@ -705,13 +716,11 @@ async def list_jobs(
         Paginated response with list of jobs
     """
     try:
-        try:
-            purge_expired_finished_job_outputs_for_user(current_user.id, current_user.username)
-        except Exception as cleanup_error:
-            logger.warning(
-                f"Failed to reconcile expired output retention for user {current_user.id}: {cleanup_error}",
-                exc_info=True,
-            )
+        background_tasks.add_task(
+            _purge_expired_outputs_safely,
+            current_user.id,
+            current_user.username,
+        )
 
         offset = (page - 1) * per_page
         jobs = get_jobs_by_user(
@@ -1391,3 +1400,4 @@ async def delete_job_endpoint(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
         return JSONResponse(content=error_data, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+

@@ -2621,6 +2621,8 @@ exit "$CASSIE_STATUS"
         return hifi_reads, nano_reads
 
     def _tool_threads(self, tool_id: str, default: int) -> int:
+        if not self._resource_env_overrides_enabled():
+            return max(1, default)
         raw_value = os.getenv(f"{tool_id}_THREADS", os.getenv("CASSIE_TOOL_THREADS", str(default))).strip()
         try:
             return max(1, int(raw_value))
@@ -2628,11 +2630,29 @@ exit "$CASSIE_STATUS"
             return default
 
     def _tool_memory_gb(self, tool_id: str, default: int) -> int:
+        if not self._resource_env_overrides_enabled():
+            return max(1, default)
         raw_value = os.getenv(f"{tool_id}_MEMORY_GB", os.getenv("CASSIE_TOOL_MEMORY_GB", str(default))).strip()
         try:
             return max(1, int(raw_value))
         except ValueError:
             return default
+
+    def _resource_env_overrides_enabled(self) -> bool:
+        return os.getenv("CASSIE_ALLOW_RESOURCE_ENV_OVERRIDES", "false").strip().lower() in {"1", "true", "yes", "on"}
+
+    def _dynamic_threads(self, whole_cpus: int, ratio: float = 0.8) -> int:
+        """Size tool threads from the selected VM partition CPU budget."""
+        return max(1, min(whole_cpus, int(max(1, whole_cpus * ratio))))
+
+    def _dynamic_memory_gb(self, memory_mib: int, ratio: float = 0.75, reserve_mib: int = 0) -> int:
+        """Size tool memory from the selected VM partition memory budget."""
+        usable_mib = max(1024, memory_mib - max(0, reserve_mib))
+        return max(1, int((usable_mib * ratio) // 1024))
+
+    def _cpu_limit_for_threads(self, threads: int, cpu_millis: int) -> int:
+        """Give a multithreaded tool enough CPU to use its planned thread count."""
+        return min(max(250, threads * 1000), max(1, cpu_millis))
 
     def _tool_flag(self, env_name: str, default: bool) -> bool:
         raw_value = os.getenv(env_name)
@@ -2654,6 +2674,8 @@ exit "$CASSIE_STATUS"
         whole_cpus = max(1, cpu_millis // 1000)
         resource_mode = os.getenv("CASSIE_RESOURCE_MODE", "adaptive").strip().lower()
         input_size_mib = self._estimate_input_size_mib(current_inputs or [])
+        default_threads = self._dynamic_threads(whole_cpus, ratio=0.85)
+        default_memory_gb = self._dynamic_memory_gb(tool_memory_budget_mib, ratio=0.85)
 
         if tool_id == "SPADES":
             forced_low_resource = self._env_bool_or_none("SPADES_LOW_RESOURCE")
@@ -2666,8 +2688,8 @@ exit "$CASSIE_STATUS"
             else:
                 low_resource = memory_mib < 6144 or whole_cpus < 4
 
-            default_threads = 1 if low_resource else min(4, whole_cpus)
-            default_memory_gb = 2 if low_resource else min(12, max(4, (tool_memory_budget_mib - 512) // 1024))
+            default_threads = 1 if low_resource else self._dynamic_threads(whole_cpus, ratio=0.9)
+            default_memory_gb = 2 if low_resource else self._dynamic_memory_gb(tool_memory_budget_mib, ratio=0.85, reserve_mib=512)
             default_kmers = "21" if low_resource else ""
             profile = "low-resource" if low_resource else "full"
 
@@ -2692,7 +2714,7 @@ exit "$CASSIE_STATUS"
                 threads=threads,
                 memory_gb=memory_gb,
                 memory_limit_mib=memory_limit,
-                cpu_limit_millis=min(max(250, threads * 500), max(1, cpu_millis)),
+                cpu_limit_millis=self._cpu_limit_for_threads(threads, cpu_millis),
                 low_resource=low_resource,
                 kmers=kmers,
                 input_size_mib=input_size_mib,
@@ -2701,9 +2723,9 @@ exit "$CASSIE_STATUS"
 
         if tool_id == "METASPADES":
             low_resource = memory_mib < 6144 or whole_cpus < 4
-            threads = self._tool_threads(tool_id, 1 if low_resource else min(4, whole_cpus))
+            threads = self._tool_threads(tool_id, 1 if low_resource else self._dynamic_threads(whole_cpus, ratio=0.9))
             memory_gb = min(
-                self._tool_memory_gb(tool_id, 2 if low_resource else min(10, max(4, tool_memory_budget_mib // 1024))),
+                self._tool_memory_gb(tool_id, 2 if low_resource else self._dynamic_memory_gb(tool_memory_budget_mib, ratio=0.8, reserve_mib=512)),
                 max(1, tool_memory_budget_mib // 1024),
             )
             memory_limit = min(tool_memory_budget_mib, max((memory_gb * 1024) + 512, 2560 if low_resource else 5120))
@@ -2713,7 +2735,7 @@ exit "$CASSIE_STATUS"
                 threads=threads,
                 memory_gb=memory_gb,
                 memory_limit_mib=memory_limit,
-                cpu_limit_millis=min(max(250, threads * 500), max(1, cpu_millis)),
+                cpu_limit_millis=self._cpu_limit_for_threads(threads, cpu_millis),
                 low_resource=low_resource,
                 kmers="",
                 input_size_mib=input_size_mib,
@@ -2721,9 +2743,8 @@ exit "$CASSIE_STATUS"
             )
 
         if tool_id == "GENOMESCOPE2":
-            default_threads = min(2, whole_cpus) if memory_mib >= 4096 else 1
-            requested_threads = self._tool_threads(tool_id, default_threads)
-            requested_memory_gb = max(1, min(tool_memory_budget_mib // 1024, 4 if memory_mib >= 4096 else 2))
+            requested_threads = self._tool_threads(tool_id, self._dynamic_threads(whole_cpus, ratio=0.7) if memory_mib >= 4096 else 1)
+            requested_memory_gb = self._dynamic_memory_gb(tool_memory_budget_mib, ratio=0.65 if memory_mib >= 4096 else 0.5)
             memory_limit = min(tool_memory_budget_mib, max(2048, requested_memory_gb * 1024))
             return self._resource_plan(
                 tool_id=tool_id,
@@ -2731,7 +2752,7 @@ exit "$CASSIE_STATUS"
                 threads=requested_threads,
                 memory_gb=requested_memory_gb,
                 memory_limit_mib=memory_limit,
-                cpu_limit_millis=min(max(250, requested_threads * 500), max(1, cpu_millis)),
+                cpu_limit_millis=self._cpu_limit_for_threads(requested_threads, cpu_millis),
                 low_resource=memory_mib < 4096,
                 kmers="",
                 input_size_mib=input_size_mib,
@@ -2740,9 +2761,8 @@ exit "$CASSIE_STATUS"
             )
 
         if tool_id == "QUAST":
-            default_threads = min(2, whole_cpus) if memory_mib >= 4096 else 1
-            requested_threads = self._tool_threads(tool_id, default_threads)
-            requested_memory_gb = max(1, min(tool_memory_budget_mib // 1024, 3 if memory_mib >= 4096 else 2))
+            requested_threads = self._tool_threads(tool_id, self._dynamic_threads(whole_cpus, ratio=0.75) if memory_mib >= 4096 else 1)
+            requested_memory_gb = self._dynamic_memory_gb(tool_memory_budget_mib, ratio=0.6 if memory_mib >= 4096 else 0.5)
             memory_limit = min(tool_memory_budget_mib, max(1536, requested_memory_gb * 1024))
             return self._resource_plan(
                 tool_id=tool_id,
@@ -2750,7 +2770,24 @@ exit "$CASSIE_STATUS"
                 threads=requested_threads,
                 memory_gb=requested_memory_gb,
                 memory_limit_mib=memory_limit,
-                cpu_limit_millis=min(max(250, requested_threads * 500), max(1, cpu_millis)),
+                cpu_limit_millis=self._cpu_limit_for_threads(requested_threads, cpu_millis),
+                low_resource=memory_mib < 4096,
+                kmers="",
+                input_size_mib=input_size_mib,
+                capacity=capacity,
+            )
+
+        if tool_id == "FASTQC":
+            requested_threads = self._tool_threads(tool_id, self._dynamic_threads(whole_cpus, ratio=0.75) if memory_mib >= 4096 else 1)
+            requested_memory_gb = self._dynamic_memory_gb(tool_memory_budget_mib, ratio=0.4 if memory_mib >= 4096 else 0.5)
+            memory_limit = min(tool_memory_budget_mib, max(2048, requested_memory_gb * 1024))
+            return self._resource_plan(
+                tool_id=tool_id,
+                profile="adaptive",
+                threads=requested_threads,
+                memory_gb=requested_memory_gb,
+                memory_limit_mib=memory_limit,
+                cpu_limit_millis=self._cpu_limit_for_threads(requested_threads, cpu_millis),
                 low_resource=memory_mib < 4096,
                 kmers="",
                 input_size_mib=input_size_mib,
@@ -2759,9 +2796,9 @@ exit "$CASSIE_STATUS"
 
         if tool_id == "HIFIASM":
             low_resource = memory_mib < 8192 or whole_cpus < 4
-            threads = self._tool_threads(tool_id, min(4, whole_cpus) if not low_resource else min(2, whole_cpus))
+            threads = self._tool_threads(tool_id, self._dynamic_threads(whole_cpus, ratio=0.9) if not low_resource else self._dynamic_threads(whole_cpus, ratio=0.5))
             memory_gb = min(
-                self._tool_memory_gb(tool_id, 4 if low_resource else min(12, max(6, tool_memory_budget_mib // 1024))),
+                self._tool_memory_gb(tool_id, 4 if low_resource else self._dynamic_memory_gb(tool_memory_budget_mib, ratio=0.8, reserve_mib=512)),
                 max(1, tool_memory_budget_mib // 1024),
             )
             memory_limit = min(tool_memory_budget_mib, max((memory_gb * 1024) + 512, 4096))
@@ -2771,7 +2808,7 @@ exit "$CASSIE_STATUS"
                 threads=threads,
                 memory_gb=memory_gb,
                 memory_limit_mib=memory_limit,
-                cpu_limit_millis=min(max(500, threads * 750), max(1, cpu_millis)),
+                cpu_limit_millis=self._cpu_limit_for_threads(threads, cpu_millis),
                 low_resource=low_resource,
                 kmers="",
                 input_size_mib=input_size_mib,
@@ -2780,9 +2817,9 @@ exit "$CASSIE_STATUS"
 
         if tool_id == "VERKKO":
             low_resource = memory_mib < 8192 or whole_cpus < 4
-            threads = self._tool_threads(tool_id, min(4, whole_cpus) if not low_resource else min(2, whole_cpus))
+            threads = self._tool_threads(tool_id, self._dynamic_threads(whole_cpus, ratio=0.9) if not low_resource else self._dynamic_threads(whole_cpus, ratio=0.5))
             memory_gb = min(
-                self._tool_memory_gb(tool_id, 6 if low_resource else min(14, max(8, tool_memory_budget_mib // 1024))),
+                self._tool_memory_gb(tool_id, 6 if low_resource else self._dynamic_memory_gb(tool_memory_budget_mib, ratio=0.85, reserve_mib=1024)),
                 max(1, tool_memory_budget_mib // 1024),
             )
             memory_limit = min(tool_memory_budget_mib, max((memory_gb * 1024) + 1024, 6144))
@@ -2792,7 +2829,7 @@ exit "$CASSIE_STATUS"
                 threads=threads,
                 memory_gb=memory_gb,
                 memory_limit_mib=memory_limit,
-                cpu_limit_millis=min(max(500, threads * 750), max(1, cpu_millis)),
+                cpu_limit_millis=self._cpu_limit_for_threads(threads, cpu_millis),
                 low_resource=low_resource,
                 kmers="",
                 input_size_mib=input_size_mib,
@@ -2800,8 +2837,8 @@ exit "$CASSIE_STATUS"
             )
 
         if tool_id == "LIFTOFF":
-            threads = self._tool_threads(tool_id, min(4, whole_cpus))
-            memory_gb = min(self._tool_memory_gb(tool_id, max(2, min(tool_memory_budget_mib // 1024, 4))), max(1, tool_memory_budget_mib // 1024))
+            threads = self._tool_threads(tool_id, self._dynamic_threads(whole_cpus, ratio=0.75))
+            memory_gb = min(self._tool_memory_gb(tool_id, self._dynamic_memory_gb(tool_memory_budget_mib, ratio=0.55)), max(1, tool_memory_budget_mib // 1024))
             memory_limit = min(tool_memory_budget_mib, max((memory_gb * 1024) + 256, 2048))
             return self._resource_plan(
                 tool_id=tool_id,
@@ -2809,7 +2846,7 @@ exit "$CASSIE_STATUS"
                 threads=threads,
                 memory_gb=memory_gb,
                 memory_limit_mib=memory_limit,
-                cpu_limit_millis=min(max(250, threads * 500), max(1, cpu_millis)),
+                cpu_limit_millis=self._cpu_limit_for_threads(threads, cpu_millis),
                 low_resource=memory_mib < 4096,
                 kmers="",
                 input_size_mib=input_size_mib,
@@ -2818,9 +2855,9 @@ exit "$CASSIE_STATUS"
 
         if tool_id == "CAT":
             low_resource = memory_mib < 6144
-            threads = self._tool_threads(tool_id, min(2, whole_cpus) if low_resource else min(4, whole_cpus))
+            threads = self._tool_threads(tool_id, self._dynamic_threads(whole_cpus, ratio=0.5) if low_resource else self._dynamic_threads(whole_cpus, ratio=0.8))
             memory_gb = min(
-                self._tool_memory_gb(tool_id, 4 if low_resource else min(8, max(6, tool_memory_budget_mib // 1024))),
+                self._tool_memory_gb(tool_id, 4 if low_resource else self._dynamic_memory_gb(tool_memory_budget_mib, ratio=0.75, reserve_mib=512)),
                 max(1, tool_memory_budget_mib // 1024),
             )
             memory_limit = min(tool_memory_budget_mib, max((memory_gb * 1024) + 512, 4096))
@@ -2830,7 +2867,7 @@ exit "$CASSIE_STATUS"
                 threads=threads,
                 memory_gb=memory_gb,
                 memory_limit_mib=memory_limit,
-                cpu_limit_millis=min(max(500, threads * 500), max(1, cpu_millis)),
+                cpu_limit_millis=self._cpu_limit_for_threads(threads, cpu_millis),
                 low_resource=low_resource,
                 kmers="",
                 input_size_mib=input_size_mib,
@@ -2838,8 +2875,8 @@ exit "$CASSIE_STATUS"
             )
 
         if tool_id == "BUSCO":
-            threads = self._tool_threads(tool_id, min(4, whole_cpus))
-            memory_gb = min(self._tool_memory_gb(tool_id, max(2, min(tool_memory_budget_mib // 1024, 4))), max(1, tool_memory_budget_mib // 1024))
+            threads = self._tool_threads(tool_id, self._dynamic_threads(whole_cpus, ratio=0.8))
+            memory_gb = min(self._tool_memory_gb(tool_id, self._dynamic_memory_gb(tool_memory_budget_mib, ratio=0.65)), max(1, tool_memory_budget_mib // 1024))
             memory_limit = min(tool_memory_budget_mib, max((memory_gb * 1024) + 256, 2048))
             return self._resource_plan(
                 tool_id=tool_id,
@@ -2847,7 +2884,7 @@ exit "$CASSIE_STATUS"
                 threads=threads,
                 memory_gb=memory_gb,
                 memory_limit_mib=memory_limit,
-                cpu_limit_millis=min(max(250, threads * 500), max(1, cpu_millis)),
+                cpu_limit_millis=self._cpu_limit_for_threads(threads, cpu_millis),
                 low_resource=memory_mib < 4096,
                 kmers="",
                 input_size_mib=input_size_mib,
@@ -2855,8 +2892,8 @@ exit "$CASSIE_STATUS"
             )
 
         if tool_id == "MERQURY":
-            threads = self._tool_threads(tool_id, min(2, whole_cpus))
-            memory_gb = min(self._tool_memory_gb(tool_id, max(2, min(tool_memory_budget_mib // 1024, 4))), max(1, tool_memory_budget_mib // 1024))
+            threads = self._tool_threads(tool_id, self._dynamic_threads(whole_cpus, ratio=0.7))
+            memory_gb = min(self._tool_memory_gb(tool_id, self._dynamic_memory_gb(tool_memory_budget_mib, ratio=0.75)), max(1, tool_memory_budget_mib // 1024))
             memory_limit = min(tool_memory_budget_mib, max((memory_gb * 1024) + 256, 2048))
             return self._resource_plan(
                 tool_id=tool_id,
@@ -2864,16 +2901,15 @@ exit "$CASSIE_STATUS"
                 threads=threads,
                 memory_gb=memory_gb,
                 memory_limit_mib=memory_limit,
-                cpu_limit_millis=min(max(250, threads * 500), max(1, cpu_millis)),
+                cpu_limit_millis=self._cpu_limit_for_threads(threads, cpu_millis),
                 low_resource=memory_mib < 4096,
                 kmers="",
                 input_size_mib=input_size_mib,
                 capacity=capacity,
             )
 
-        default_threads = min(2, whole_cpus) if memory_mib >= 4096 else 1
         requested_threads = self._tool_threads(tool_id, default_threads)
-        requested_memory_gb = max(1, min(tool_memory_budget_mib // 1024, 2))
+        requested_memory_gb = self._tool_memory_gb(tool_id, default_memory_gb)
         memory_limit = min(tool_memory_budget_mib, max(1024, requested_memory_gb * 1024))
         return self._resource_plan(
             tool_id=tool_id,
@@ -2881,7 +2917,7 @@ exit "$CASSIE_STATUS"
             threads=requested_threads,
             memory_gb=requested_memory_gb,
             memory_limit_mib=memory_limit,
-            cpu_limit_millis=min(max(250, requested_threads * 500), max(1, cpu_millis)),
+            cpu_limit_millis=self._cpu_limit_for_threads(requested_threads, cpu_millis),
             low_resource=False,
             kmers="",
             input_size_mib=input_size_mib,
@@ -2925,9 +2961,13 @@ exit "$CASSIE_STATUS"
             capacity=capacity,
         )
         init_memory_request = f"{init_memory_request_mib}Mi"
-        cpu_limit = self._env_value_or_default(f"{prefix}_CPU_LIMIT", self._format_cpu_quantity(cpu_limit_millis))
-        memory_limit = self._env_value_or_default(f"{prefix}_MEMORY_LIMIT", f"{memory_limit_mib}Mi")
-        storage_limit = self._env_value_or_default(f"{prefix}_STORAGE_LIMIT", f"{storage_limit_mib}Mi")
+        cpu_limit = self._format_cpu_quantity(cpu_limit_millis)
+        memory_limit = f"{memory_limit_mib}Mi"
+        storage_limit = f"{storage_limit_mib}Mi"
+        if self._resource_env_overrides_enabled():
+            cpu_limit = self._env_value_or_default(f"{prefix}_CPU_LIMIT", cpu_limit)
+            memory_limit = self._env_value_or_default(f"{prefix}_MEMORY_LIMIT", memory_limit)
+            storage_limit = self._env_value_or_default(f"{prefix}_STORAGE_LIMIT", storage_limit)
         hard_cpu_request = cpu_limit
         hard_memory_request = memory_limit
         hard_storage_request = storage_limit
@@ -4415,3 +4455,4 @@ def get_pipeline_runner():
         "Kubernetes execution is configured, but the cluster is not reachable from the backend container. "
         "Check kubeconfig mounting and Docker Desktop Kubernetes connectivity."
     )
+
