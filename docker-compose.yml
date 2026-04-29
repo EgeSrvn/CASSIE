@@ -5,7 +5,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${DB_USER:-admin}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-admin}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD to a strong database password}
       POSTGRES_DB: postgres
     volumes:
       - cassie_postgres_data:/var/lib/postgresql/data
@@ -23,8 +23,8 @@ services:
     restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD to a strong storage password}
     ports:
       - "${MINIO_API_PORT:-9010}:9000"
       - "${MINIO_CONSOLE_PORT:-9011}:9001"
@@ -56,16 +56,16 @@ services:
       DB_HOST: postgres
       DB_PORT: 5432
       DB_USER: ${DB_USER:-admin}
-      DB_PASSWORD: ${DB_PASSWORD:-admin}
+      DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD to a strong database password}
       DB_NAME: ${DB_NAME:-cassie_db}
       MINIO_ENDPOINT: http://minio:9000
       MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-http://localhost:9010}
-      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
-      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD to a strong storage password}
       MINIO_REGION: ${MINIO_REGION:-us-east-1}
       MINIO_BUCKET_PREFIX: ${MINIO_BUCKET_PREFIX:-cassie}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
-      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-me-in-production}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?Set JWT_SECRET_KEY to a 32+ character random value}
       EXECUTION_BACKEND: ${EXECUTION_BACKEND:-kubernetes}
       KUBERNETES_NAMESPACE: ${KUBERNETES_NAMESPACE:-default}
       KUBERNETES_IMAGE_PULL_POLICY: ${KUBERNETES_IMAGE_PULL_POLICY:-IfNotPresent}

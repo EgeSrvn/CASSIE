@@ -13,7 +13,7 @@ ENV VITE_GOOGLE_DRIVE_CLIENT_ID=${VITE_GOOGLE_DRIVE_CLIENT_ID}
 ENV VITE_GOOGLE_DRIVE_API_KEY=${VITE_GOOGLE_DRIVE_API_KEY}
 ENV VITE_GOOGLE_DRIVE_APP_ID=${VITE_GOOGLE_DRIVE_APP_ID}
 
-COPY frontend/package*.json ./
+COPY frontend/package*.json ../
 RUN npm ci --fetch-retries=5 --fetch-retry-mintimeout=5000 --fetch-retry-maxtimeout=60000
 
 COPY frontend/ ./

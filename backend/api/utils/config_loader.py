@@ -42,6 +42,11 @@ class MinIOConfig:
         self.public_endpoint = os.getenv("MINIO_PUBLIC_ENDPOINT", self.endpoint)
         self.access_key = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
         self.secret_key = os.getenv("MINIO_SECRET_KEY", "minioadmin")
+        environment = os.getenv("CASSIE_ENV", os.getenv("ENVIRONMENT", "development")).lower()
+        allow_insecure = os.getenv("CASSIE_ALLOW_INSECURE_DEFAULTS", "false").lower() in {"1", "true", "yes"}
+        if environment in {"prod", "production"} and not allow_insecure:
+            if self.access_key in {"", "minioadmin", "admin"} or self.secret_key in {"", "minioadmin", "password"}:
+                raise RuntimeError("MINIO_ACCESS_KEY and MINIO_SECRET_KEY must be set to strong values in production.")
         self.use_ssl = os.getenv("MINIO_USE_SSL", "false").lower() in ("true", "1", "yes")
         self.region = os.getenv("MINIO_REGION", "us-east-1")
         self.bucket_prefix = os.getenv("MINIO_BUCKET_PREFIX", "cassie-")
@@ -62,8 +67,11 @@ class APIConfig:
         self.log_file = os.getenv("LOG_FILE", None)  # None = no file logging
         
         # CORS settings
-        cors_origins = os.getenv("CORS_ORIGINS", "*")
+        cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:3000")
         if cors_origins == "*":
+            environment = os.getenv("CASSIE_ENV", os.getenv("ENVIRONMENT", "development")).lower()
+            if environment in {"prod", "production"}:
+                raise RuntimeError("CORS_ORIGINS='*' is not allowed in production.")
             self.cors_origins = ["*"]
         else:
             self.cors_origins = [origin.strip() for origin in cors_origins.split(",")]
@@ -255,6 +263,7 @@ class Config:
         # Load .env file if it exists (in project root or current directory)
         self._load_env_file()
         project_root = Path(__file__).parent.parent.parent.parent
+        self.environment = os.getenv("CASSIE_ENV", os.getenv("ENVIRONMENT", "development")).lower()
         
         # Initialize configuration sections
         self.database = DatabaseConfig()

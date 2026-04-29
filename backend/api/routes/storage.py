@@ -70,7 +70,7 @@ from backend.api.utils.validators import (
     validate_file_format
 )
 from backend.api.utils.logger import get_logger
-from backend.api.routes.data_files import _download_google_drive_file
+from backend.api.routes.data_files import _download_google_drive_file, _safe_cloud_filename
 
 logger = get_logger(__name__)
 
@@ -386,12 +386,13 @@ async def upload_file(
         Success response with file data (including file_id for later job association)
     """
     current_user = auth_context.user
+    upload_filename = _safe_cloud_filename(file.filename)
     request_size = _parse_content_length(request)
     logger.info(
         "Upload request accepted for user %s job %s file %s (%s bytes declared)",
         current_user.id,
         job_id,
-        file.filename,
+        upload_filename,
         request_size if request_size is not None else "unknown",
     )
     if request_size is not None:
@@ -457,7 +458,7 @@ async def upload_file(
         file_size = 0
         chunk_size = 1024 * 1024
 
-        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as temp_file:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(upload_filename)[1]) as temp_file:
             temp_path = temp_file.name
 
             while True:
@@ -474,7 +475,7 @@ async def upload_file(
             "Upload body received for user %s job %s file %s (%s bytes). Storing object...",
             current_user.id,
             job_id,
-            file.filename,
+            upload_filename,
             file_size,
         )
 
@@ -494,11 +495,11 @@ async def upload_file(
             return JSONResponse(content=error_data, status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE)
 
         if job_id:
-            s3_key = f"jobs/{job_id}/{file_type.value}/{file.filename}"
+            s3_key = f"jobs/{job_id}/{file_type.value}/{upload_filename}"
             existing_file = await run_in_threadpool(
                 get_existing_file_record_by_fingerprint,
                 job_id=job_id,
-                filename=file.filename,
+                filename=upload_filename,
                 file_type=file_type,
                 size_bytes=file_size,
                 checksum=checksum,
@@ -507,7 +508,7 @@ async def upload_file(
                 logger.info(
                     "Duplicate upload request for job %s file %s matched existing file record %s; returning existing record.",
                     job_id,
-                    file.filename,
+                    upload_filename,
                     existing_file.id,
                 )
                 response_data = success_response(
@@ -528,7 +529,7 @@ async def upload_file(
                 )
                 return JSONResponse(content=response_data, status_code=status.HTTP_201_CREATED)
         else:
-            s3_key = f"staging/{current_user.id}/{int(time.time())}_{file.filename}"
+            s3_key = f"staging/{current_user.id}/{int(time.time())}_{upload_filename}"
 
         await run_in_threadpool(
             minio_client.ensure_user_bucket,
@@ -547,13 +548,13 @@ async def upload_file(
             "Object stored for user %s job %s file %s at %s",
             current_user.id,
             job_id,
-            file.filename,
+            upload_filename,
             upload_result.get("object_key") or upload_result.get("key"),
         )
 
         file_data = FileCreate(
             job_id=job_id,
-            filename=file.filename,
+            filename=upload_filename,
             s3_key=s3_key,
             file_type=file_type,
             file_format=file_format,
@@ -567,7 +568,7 @@ async def upload_file(
             file_record.id,
             current_user.id,
             job_id,
-            file.filename,
+            upload_filename,
         )
 
         if job_id and file_type == FileType.INPUT:

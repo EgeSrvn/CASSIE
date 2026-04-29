@@ -204,14 +204,16 @@ async def lifespan(app: FastAPI):
 
 # Initialize FastAPI app
 config = get_config()
+_environment = config.environment.lower() if getattr(config, "environment", None) else "development"
+_show_api_docs = _environment not in {"prod", "production"} or config.api.debug
 
 app = FastAPI(
     title="CASSIE API",
     description="Cloud-based Automated Sequence assembly and annotation System for Integrated Execution",
     version="1.0.0",
-    docs_url="/docs",
-    redoc_url="/redoc",
-    openapi_url="/openapi.json",
+    docs_url="/docs" if _show_api_docs else None,
+    redoc_url="/redoc" if _show_api_docs else None,
+    openapi_url="/openapi.json" if _show_api_docs else None,
     lifespan=lifespan
 )
 

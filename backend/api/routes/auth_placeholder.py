@@ -12,6 +12,7 @@ Usage:
         ...
 """
 
+import os
 from fastapi import Header, HTTPException, status
 from typing import Optional
 from backend.api.models.user_model import UserResponse
@@ -38,6 +39,12 @@ async def get_current_user_placeholder(
     Raises:
         HTTPException: If user_id not provided or user not found
     """
+    if os.getenv("CASSIE_ENABLE_PLACEHOLDER_AUTH", "false").lower() not in {"1", "true", "yes"}:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Placeholder authentication is disabled",
+        )
+
     if x_user_id is None:
         # Default to user_id=1 for testing if header not provided
         logger.warning("X-User-ID header not provided, using default user_id=1 for testing")
@@ -58,4 +65,3 @@ async def get_current_user_placeholder(
         created_at=user.created_at,
         updated_at=user.updated_at
     )
-

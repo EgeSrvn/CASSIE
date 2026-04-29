@@ -64,6 +64,8 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/auth", tags=["authentication"])
 CODE_EXPIRY_MINUTES = 15
 EMAIL_RESEND_COOLDOWN_SECONDS = 120
+GENERIC_VERIFICATION_MESSAGE = "If an account needs verification, a code will be sent to its email address."
+GENERIC_PASSWORD_RESET_MESSAGE = "If an account exists for that email address, a password reset code will be sent."
 
 # Security scheme for JWT tokens
 security = HTTPBearer()
@@ -186,8 +188,10 @@ def _resolved_avatar_url(user) -> Optional[str]:
     if not normalized:
         return None
 
-    if normalized.startswith(("http://", "https://", "data:", "/api/auth/profile/avatar/")):
+    if normalized.startswith(("/api/auth/profile/avatar/",)):
         return normalized
+    if normalized.startswith(("http://", "https://", "data:")):
+        return None
 
     return f"/api/auth/profile/avatar/{user.id}"
 
@@ -221,6 +225,16 @@ def _user_response_from_model(user) -> UserResponse:
 def _generate_one_time_code(length: int = 6) -> str:
     digits = "0123456789"
     return "".join(secrets.choice(digits) for _ in range(length))
+
+
+def _allow_dev_code_preview() -> bool:
+    return os.getenv("CASSIE_ALLOW_DEV_CODE_PREVIEW", "false").lower() in {"1", "true", "yes"}
+
+
+def _code_matches(stored_code: Optional[str], submitted_code: str) -> bool:
+    if not stored_code:
+        return False
+    return secrets.compare_digest(str(stored_code), submitted_code.strip())
 
 
 def _issue_email_verification(user_id: int) -> tuple[str, int]:
@@ -315,7 +329,7 @@ def _build_login_two_factor_challenge(user, *, code: str, expires_in_minutes: in
         username=user.username,
         email=user.email,
         two_factor_required=True,
-        verification_preview_code=None if email_sent else code,
+        verification_preview_code=code if (not email_sent and _allow_dev_code_preview()) else None,
         expires_in_minutes=expires_in_minutes,
     )
 
@@ -547,12 +561,21 @@ async def register(request: RegisterRequest):
         if user.email:
             subject, text_body, html_body = _build_verification_email(user.username, verification_code, expires_in_minutes)
             email_sent = send_email(user.email, subject, text_body, html_body)
+        if not email_sent and not _allow_dev_code_preview():
+            return JSONResponse(
+                content=error_response(
+                    error_code=ErrorCode.EXTERNAL_SERVICE_ERROR,
+                    message="Account created, but the verification email could not be sent. Configure SMTP or enable CASSIE_ALLOW_DEV_CODE_PREVIEW for local development.",
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                ),
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
 
         return success_response(
             data=VerificationChallengeResponse(
                 email=request.email,
                 verification_required=True,
-                verification_preview_code=None if email_sent else verification_code,
+                verification_preview_code=verification_code if (not email_sent and _allow_dev_code_preview()) else None,
                 expires_in_minutes=expires_in_minutes,
             ).model_dump(exclude_none=True),
             message="Account created. Verify your email before logging in." if email_sent else "Account created. Verify your email before logging in. SMTP is not configured, so the code is shown in the app.",
@@ -700,7 +723,7 @@ async def confirm_login_two_factor(request: LoginTwoFactorConfirmRequest):
         )
         return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
 
-    if user.login_two_factor_code != request.code.strip():
+    if not _code_matches(user.login_two_factor_code, request.code):
         error_data = error_response(
             error_code=ErrorCode.VALIDATION_ERROR,
             message="Incorrect login code",
@@ -727,12 +750,10 @@ async def resend_login_two_factor(request: LoginTwoFactorResendRequest):
 
     user = get_user_by_username(request.username)
     if user is None:
-        error_data = error_response(
-            error_code=ErrorCode.NOT_FOUND,
-            message="Account not found",
-            status_code=status.HTTP_404_NOT_FOUND,
+        return success_response(
+            data={"username": request.username, "two_factor_required": True},
+            message="If a login challenge is active, a new code will be sent.",
         )
-        return JSONResponse(content=error_data, status_code=status.HTTP_404_NOT_FOUND)
 
     if not getattr(user, "login_two_factor_enabled", False):
         error_data = error_response(
@@ -781,12 +802,10 @@ async def request_email_verification(request: ForgotPasswordRequest):
 
     user = get_user_by_email(request.email)
     if user is None:
-        error_data = error_response(
-            error_code=ErrorCode.NOT_FOUND,
-            message="No account was found for that email address",
-            status_code=status.HTTP_404_NOT_FOUND,
+        return success_response(
+            data={"email": request.email, "verification_required": True},
+            message=GENERIC_VERIFICATION_MESSAGE,
         )
-        return JSONResponse(content=error_data, status_code=status.HTTP_404_NOT_FOUND)
 
     if user.email_verified:
         return success_response(
@@ -812,11 +831,20 @@ async def request_email_verification(request: ForgotPasswordRequest):
     if user.email:
         subject, text_body, html_body = _build_verification_email(user.username, verification_code, expires_in_minutes)
         email_sent = send_email(user.email, subject, text_body, html_body)
+    if not email_sent and not _allow_dev_code_preview():
+        return JSONResponse(
+            content=error_response(
+                error_code=ErrorCode.EXTERNAL_SERVICE_ERROR,
+                message="Verification email could not be sent. Please try again later.",
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            ),
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
     return success_response(
         data=VerificationChallengeResponse(
             email=request.email,
             verification_required=True,
-            verification_preview_code=None if email_sent else verification_code,
+            verification_preview_code=verification_code if (not email_sent and _allow_dev_code_preview()) else None,
             expires_in_minutes=expires_in_minutes,
         ).model_dump(exclude_none=True),
         message="Verification code sent by email" if email_sent else "Verification code generated for local email confirmation",
@@ -830,11 +858,11 @@ async def confirm_email_verification(request: VerifyEmailRequest):
     user = get_user_by_email(request.email)
     if user is None:
         error_data = error_response(
-            error_code=ErrorCode.NOT_FOUND,
-            message="No account was found for that email address",
-            status_code=status.HTTP_404_NOT_FOUND,
+            error_code=ErrorCode.VALIDATION_ERROR,
+            message="The verification request is invalid or expired.",
+            status_code=status.HTTP_400_BAD_REQUEST,
         )
-        return JSONResponse(content=error_data, status_code=status.HTTP_404_NOT_FOUND)
+        return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
 
     if user.email_verified:
         return success_response(
@@ -862,7 +890,7 @@ async def confirm_email_verification(request: VerifyEmailRequest):
         )
         return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
 
-    if user.email_verification_code != request.code.strip():
+    if not _code_matches(user.email_verification_code, request.code):
         error_data = error_response(
             error_code=ErrorCode.VALIDATION_ERROR,
             message="Incorrect verification code",
@@ -883,12 +911,10 @@ async def request_password_reset(request: ForgotPasswordRequest):
 
     user = get_user_by_email(request.email)
     if user is None:
-        error_data = error_response(
-            error_code=ErrorCode.NOT_FOUND,
-            message="No account was found for that email address",
-            status_code=status.HTTP_404_NOT_FOUND,
+        return success_response(
+            data={"email": request.email},
+            message=GENERIC_PASSWORD_RESET_MESSAGE,
         )
-        return JSONResponse(content=error_data, status_code=status.HTTP_404_NOT_FOUND)
 
     cooldown_remaining = _cooldown_remaining_seconds(user.password_reset_expires_at, CODE_EXPIRY_MINUTES)
     if user.password_reset_code and cooldown_remaining > 0:
@@ -904,11 +930,20 @@ async def request_password_reset(request: ForgotPasswordRequest):
     if user.email:
         subject, text_body, html_body = _build_password_reset_email(user.username, reset_code, expires_in_minutes)
         email_sent = send_email(user.email, subject, text_body, html_body)
+    if not email_sent and not _allow_dev_code_preview():
+        return JSONResponse(
+            content=error_response(
+                error_code=ErrorCode.EXTERNAL_SERVICE_ERROR,
+                message="Password reset email could not be sent. Please try again later.",
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            ),
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
     response_data = {
         "email": request.email,
         "expires_in_minutes": expires_in_minutes,
     }
-    if not email_sent:
+    if not email_sent and _allow_dev_code_preview():
         response_data["reset_preview_code"] = reset_code
 
     return success_response(
@@ -959,7 +994,7 @@ async def reset_password(request: PasswordResetRequest):
         )
         return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
 
-    if user.password_reset_code != request.code.strip():
+    if not _code_matches(user.password_reset_code, request.code):
         error_data = error_response(
             error_code=ErrorCode.VALIDATION_ERROR,
             message="Incorrect reset code",
@@ -1157,6 +1192,14 @@ async def deposit_profile_balance(
     current_user: UserResponse = Depends(get_current_user),
 ):
     """Add cash to the current user's CASSIE job balance."""
+    if os.getenv("CASSIE_ENABLE_FAKE_PAYMENTS", "false").lower() not in {"1", "true", "yes"}:
+        error_data = error_response(
+            error_code=ErrorCode.FORBIDDEN,
+            message="Self-service test balance deposits are disabled. Configure a real payment flow or explicitly enable CASSIE_ENABLE_FAKE_PAYMENTS in local development.",
+            status_code=status.HTTP_403_FORBIDDEN,
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_403_FORBIDDEN)
+
     try:
         deposit_user_cash(current_user.id, payload.amount_usd)
         updated_user = get_user_by_id(current_user.id)
@@ -1252,7 +1295,7 @@ async def confirm_account_deletion(
         )
         return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
 
-    if stored_code != request.code.strip():
+    if not _code_matches(stored_code, request.code):
         error_data = error_response(
             error_code=ErrorCode.VALIDATION_ERROR,
             message="Incorrect account deletion code",
@@ -1294,24 +1337,23 @@ async def upload_profile_avatar(
 ):
     """Upload a profile avatar image and update the current user profile."""
     content_type = (file.content_type or "").lower()
-    allowed_types = {"image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp", "image/svg+xml"}
+    allowed_types = {"image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp"}
     if content_type not in allowed_types:
         error_data = error_response(
             error_code=ErrorCode.VALIDATION_ERROR,
-            message="Profile pictures must be PNG, JPEG, GIF, WEBP, or SVG",
+            message="Profile pictures must be PNG, JPEG, GIF, or WEBP",
             status_code=status.HTTP_400_BAD_REQUEST,
         )
         return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
 
     suffix = os.path.splitext(file.filename or "")[1].lower()
-    if suffix not in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}:
+    if suffix not in {".png", ".jpg", ".jpeg", ".gif", ".webp"}:
         suffix = {
             "image/png": ".png",
             "image/jpeg": ".jpg",
             "image/jpg": ".jpg",
             "image/gif": ".gif",
             "image/webp": ".webp",
-            "image/svg+xml": ".svg",
         }.get(content_type, ".img")
 
     max_bytes = 5 * 1024 * 1024
@@ -1387,7 +1429,7 @@ async def get_profile_avatar(user_id: int):
 
     stored_avatar = str(user.avatar_url).strip()
     if stored_avatar.startswith(("http://", "https://", "data:")):
-        return RedirectResponse(url=stored_avatar, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Avatar not found")
 
     try:
         minio_client = MinIOClient()

@@ -8,6 +8,7 @@ This module provides:
 """
 
 import os
+import secrets
 import bcrypt
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
@@ -17,7 +18,35 @@ from backend.api.utils.logger import get_logger
 logger = get_logger(__name__)
 
 # JWT settings
-SECRET_KEY = os.getenv("JWT_SECRET_KEY", "your-secret-key-change-in-production")
+_WEAK_JWT_SECRETS = {
+    "",
+    "admin",
+    "secret",
+    "password",
+    "your-secret-key-change-in-production",
+    "change-me-in-production",
+}
+
+
+def _load_secret_key() -> str:
+    configured_secret = os.getenv("JWT_SECRET_KEY", "")
+    environment = os.getenv("CASSIE_ENV", os.getenv("ENVIRONMENT", "development")).lower()
+    allow_insecure = os.getenv("CASSIE_ALLOW_INSECURE_DEFAULTS", "false").lower() in {"1", "true", "yes"}
+
+    if configured_secret and configured_secret not in _WEAK_JWT_SECRETS and len(configured_secret) >= 32:
+        return configured_secret
+
+    if environment in {"prod", "production"} and not allow_insecure:
+        raise RuntimeError("JWT_SECRET_KEY must be set to a strong unique value in production.")
+
+    logger.warning(
+        "JWT_SECRET_KEY is missing or weak; using an ephemeral development secret. "
+        "Set JWT_SECRET_KEY to a stable 32+ character random value before deployment."
+    )
+    return secrets.token_urlsafe(48)
+
+
+SECRET_KEY = _load_secret_key()
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "1440"))  # 24 hours default
 JOB_UPLOAD_TOKEN_EXPIRE_MINUTES = int(os.getenv("JWT_JOB_UPLOAD_TOKEN_EXPIRE_MINUTES", "10080"))  # 7 days default

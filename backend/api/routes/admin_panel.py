@@ -382,13 +382,18 @@ def _notice(message: str | None, *, error: bool = False) -> str:
 
 
 def _admin_session_cookie(token: str) -> dict:
+    forwarded_proto = os.getenv("FORWARDED_PROTO", "").lower()
+    secure_cookie = (
+        os.getenv("ADMIN_PANEL_SECURE_COOKIE", "").lower() in {"1", "true", "yes"}
+        or forwarded_proto == "https"
+    )
     return {
         "key": config.admin_panel.session_cookie_name,
         "value": token,
         "httponly": True,
         "max_age": config.admin_panel.session_duration_minutes * 60,
         "samesite": "lax",
-        "secure": False,
+        "secure": secure_cookie,
         "path": config.admin_panel.path,
     }
 
@@ -1914,9 +1919,9 @@ async def admin_panel_change_password(
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
-    if len(new_password) < 4:
+    if len(new_password) < 12:
         return RedirectResponse(
-            url=f"{config.admin_panel.path}?message=New+password+must+be+at+least+4+characters&error=1",
+            url=f"{config.admin_panel.path}?message=New+password+must+be+at+least+12+characters&error=1",
             status_code=status.HTTP_303_SEE_OTHER,
         )
 

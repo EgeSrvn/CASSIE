@@ -4,6 +4,7 @@ User service for database operations.
 This module provides database operations for user management.
 """
 
+import os
 from datetime import datetime
 from typing import Optional
 from backend.api.database.db_init import get_db_connection
@@ -416,6 +417,12 @@ def ensure_admin_user() -> UserInDB:
     Subsequent restarts preserve any password changed from the admin panel.
     """
     config = get_config()
+    environment = os.getenv("CASSIE_ENV", os.getenv("ENVIRONMENT", "development")).lower()
+    allow_insecure = os.getenv("CASSIE_ALLOW_INSECURE_DEFAULTS", "false").lower() in {"1", "true", "yes"}
+    weak_password = config.admin_panel.default_password in {"", "admin", "password", "change-me"}
+    if weak_password and environment in {"prod", "production"} and not allow_insecure:
+        raise RuntimeError("ADMIN_PANEL_PASSWORD must be set to a strong value in production.")
+
     existing = get_user_by_username(config.admin_panel.username)
     if existing:
         return existing

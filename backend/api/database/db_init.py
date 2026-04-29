@@ -67,11 +67,17 @@ def get_db_config():
     Returns:
         dict: Database connection parameters
     """
+    password = os.getenv("DB_PASSWORD", "admin")
+    environment = os.getenv("CASSIE_ENV", os.getenv("ENVIRONMENT", "development")).lower()
+    allow_insecure = os.getenv("CASSIE_ALLOW_INSECURE_DEFAULTS", "false").lower() in {"1", "true", "yes"}
+    if password in {"", "admin", "password"} and environment in {"prod", "production"} and not allow_insecure:
+        raise RuntimeError("DB_PASSWORD must be set to a strong value in production.")
+
     return {
         "host": os.getenv("DB_HOST", "127.0.0.1"),
         "port": int(os.getenv("DB_PORT", "5433")),
         "user": os.getenv("DB_USER", "admin"),
-        "password": os.getenv("DB_PASSWORD", "admin"),
+        "password": password,
         "database": os.getenv("DB_NAME", "cassie_db")
     }
 

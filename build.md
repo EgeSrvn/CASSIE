@@ -70,17 +70,17 @@ npm install
 The backend uses default configuration, but you can override with environment variables. Create a `.env` file in the `backend` directory if needed:
 
 ```env
-# Database (defaults shown)
+# Database
 DB_HOST=127.0.0.1
 DB_PORT=5433
 DB_USER=admin
-DB_PASSWORD=admin
+DB_PASSWORD=replace-with-a-strong-database-password
 DB_NAME=cassie_db
 
-# MinIO (defaults shown)
+# MinIO
 MINIO_ENDPOINT=localhost:9000
-MINIO_ACCESS_KEY=minioadmin
-MINIO_SECRET_KEY=minioadmin
+MINIO_ACCESS_KEY=replace-with-a-storage-access-key
+MINIO_SECRET_KEY=replace-with-a-strong-storage-secret
 ```
 
 **Note:** The backend automatically creates the database and initializes the schema on startup if they don't exist.

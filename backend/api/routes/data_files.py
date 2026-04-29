@@ -7,7 +7,9 @@ This module provides endpoints for managing files in folders.
 import os
 import re
 import shutil
+import socket
 import tempfile
+import ipaddress
 from urllib.parse import parse_qs, unquote, urlparse
 from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, status, Query, Form, Request
 from fastapi.concurrency import run_in_threadpool
@@ -46,6 +48,8 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/data-files", tags=["data-files"])
 
 minio_client = get_minio_client()
+MAX_CLOUD_REDIRECTS = 5
+MAX_CLOUD_IMPORT_BYTES = int(os.getenv("CASSIE_MAX_CLOUD_IMPORT_BYTES", str(5 * 1024 * 1024 * 1024)))
 
 
 def _write_upload_chunk(temp_file, chunk: bytes) -> None:
@@ -248,7 +252,7 @@ def _safe_cloud_filename(value: Optional[str]) -> str:
 
 def _extract_google_drive_file_id(source_url: str) -> Optional[str]:
     parsed = urlparse(source_url)
-    if "drive.google.com" not in parsed.netloc.lower():
+    if parsed.hostname not in {"drive.google.com", "www.drive.google.com"}:
         return None
 
     query_id = parse_qs(parsed.query).get("id", [None])[0]
@@ -266,12 +270,57 @@ def _normalize_cloud_download_url(source_url: str) -> tuple[str, Optional[str]]:
     parsed = urlparse(source_url)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError("Cloud import URL must be a valid http or https link")
+    _validate_public_http_url(source_url)
 
     google_file_id = _extract_google_drive_file_id(source_url)
     if google_file_id:
         return f"https://drive.google.com/uc?export=download&id={google_file_id}", google_file_id
 
     return source_url, None
+
+
+def _validate_public_http_url(source_url: str) -> None:
+    parsed = urlparse(source_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("Cloud import URL must be a valid http or https link")
+
+    hostname = parsed.hostname.rstrip(".").lower()
+    if hostname in {"localhost"} or hostname.endswith(".localhost"):
+        raise ValueError("Cloud import URL must point to a public host")
+
+    try:
+        resolved_addresses = socket.getaddrinfo(hostname, parsed.port or (443 if parsed.scheme == "https" else 80), type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise ValueError("Cloud import URL host could not be resolved") from exc
+
+    for address_info in resolved_addresses:
+        ip_text = address_info[4][0]
+        ip_address = ipaddress.ip_address(ip_text)
+        if (
+            ip_address.is_private
+            or ip_address.is_loopback
+            or ip_address.is_link_local
+            or ip_address.is_multicast
+            or ip_address.is_reserved
+            or ip_address.is_unspecified
+        ):
+            raise ValueError("Cloud import URL must not resolve to a private or local network address")
+
+
+def _safe_streaming_get(session: requests.Session, source_url: str, **kwargs) -> requests.Response:
+    current_url = source_url
+    for _ in range(MAX_CLOUD_REDIRECTS + 1):
+        _validate_public_http_url(current_url)
+        response = session.get(current_url, allow_redirects=False, **kwargs)
+        if response.is_redirect or response.is_permanent_redirect:
+            location = response.headers.get("location")
+            response.close()
+            if not location:
+                raise ValueError("Cloud import redirect did not include a target URL")
+            current_url = requests.compat.urljoin(current_url, location)
+            continue
+        return response
+    raise ValueError("Cloud import URL redirected too many times")
 
 
 def _filename_from_content_disposition(value: Optional[str]) -> Optional[str]:
@@ -289,6 +338,16 @@ def _filename_from_content_disposition(value: Optional[str]) -> Optional[str]:
     return None
 
 
+def _declared_content_length(response: requests.Response) -> Optional[int]:
+    value = response.headers.get("content-length")
+    if not value:
+        return None
+    try:
+        return max(int(value), 0)
+    except ValueError:
+        return None
+
+
 def _google_confirm_token(cookies: requests.cookies.RequestsCookieJar) -> Optional[str]:
     for key, value in cookies.items():
         if key.startswith("download_warning"):
@@ -303,8 +362,11 @@ def _download_cloud_file(source_url: str, requested_filename: Optional[str]) -> 
     temp_path: Optional[str] = None
 
     try:
-        response = session.get(download_url, stream=True, timeout=(15, 120), allow_redirects=True)
+        response = _safe_streaming_get(session, download_url, stream=True, timeout=(15, 120))
         response.raise_for_status()
+        declared_size = _declared_content_length(response)
+        if declared_size is not None and declared_size > MAX_CLOUD_IMPORT_BYTES:
+            raise ValueError("Cloud file is larger than the maximum import size")
 
         confirm_token = _google_confirm_token(response.cookies)
         content_disposition = response.headers.get("content-disposition")
@@ -319,14 +381,17 @@ def _download_cloud_file(source_url: str, requested_filename: Optional[str]) -> 
 
         if google_file_id and confirm_token:
             response.close()
-            response = session.get(
+            response = _safe_streaming_get(
+                session,
                 "https://drive.google.com/uc",
                 params={"export": "download", "id": google_file_id, "confirm": confirm_token},
                 stream=True,
                 timeout=(15, 120),
-                allow_redirects=True,
             )
             response.raise_for_status()
+            declared_size = _declared_content_length(response)
+            if declared_size is not None and declared_size > MAX_CLOUD_IMPORT_BYTES:
+                raise ValueError("Cloud file is larger than the maximum import size")
 
         fallback_name = os.path.basename(urlparse(response.url).path)
         detected_name = (
@@ -343,6 +408,8 @@ def _download_cloud_file(source_url: str, requested_filename: Optional[str]) -> 
                 if not chunk:
                     continue
                 downloaded_size += len(chunk)
+                if downloaded_size > MAX_CLOUD_IMPORT_BYTES:
+                    raise ValueError("Cloud file is larger than the maximum import size")
                 temp_file.write(chunk)
 
         if downloaded_size <= 0:
@@ -384,6 +451,14 @@ def _download_google_drive_file(
         )
         metadata_response.raise_for_status()
         metadata = metadata_response.json()
+        declared_size = metadata.get("size")
+        if declared_size is not None:
+            try:
+                parsed_size = int(declared_size)
+            except (TypeError, ValueError):
+                parsed_size = 0
+            if parsed_size > MAX_CLOUD_IMPORT_BYTES:
+                raise ValueError("Google Drive file is larger than the maximum import size")
         drive_mime_type = metadata.get("mimeType") or selected_mime_type or ""
         if str(drive_mime_type).startswith("application/vnd.google-apps."):
             raise ValueError("Google Workspace documents must be exported from Drive before importing into CASSIE.")
@@ -400,6 +475,9 @@ def _download_google_drive_file(
             timeout=(15, 120),
         )
         download_response.raise_for_status()
+        response_size = _declared_content_length(download_response)
+        if response_size is not None and response_size > MAX_CLOUD_IMPORT_BYTES:
+            raise ValueError("Google Drive file is larger than the maximum import size")
 
         with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(filename)[1]) as temp_file:
             temp_path = temp_file.name
@@ -408,6 +486,8 @@ def _download_google_drive_file(
                 if not chunk:
                     continue
                 downloaded_size += len(chunk)
+                if downloaded_size > MAX_CLOUD_IMPORT_BYTES:
+                    raise ValueError("Google Drive file is larger than the maximum import size")
                 temp_file.write(chunk)
 
         if downloaded_size <= 0:
@@ -450,6 +530,7 @@ async def upload_data_file_endpoint(
     """
     temp_path: Optional[str] = None
     try:
+        upload_filename = _safe_cloud_filename(file.filename)
         request_size = _parse_content_length(request)
         if request_size is not None:
             storage_ok, storage_error = await run_in_threadpool(
@@ -471,7 +552,7 @@ async def upload_data_file_endpoint(
 
         file_size = 0
         chunk_size = 1024 * 1024
-        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as temp_file:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(upload_filename)[1]) as temp_file:
             temp_path = temp_file.name
             while True:
                 chunk = await file.read(chunk_size)
@@ -488,7 +569,7 @@ async def upload_data_file_endpoint(
             upload_data_file_from_path,
             user_id=current_user.id,
             local_path=temp_path,
-            filename=file.filename,
+            filename=upload_filename,
             folder_id=folder_id_int,
             file_format=file_format,
         )
