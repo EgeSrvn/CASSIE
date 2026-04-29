@@ -185,6 +185,7 @@ async def estimate_runtime(
                     "partition_factor": estimate.partition_factor,
                     "vm_price_per_minute": estimate.vm_price_per_minute,
                     "total_input_size_mib": estimate.total_input_size_mib,
+                    "estimated_runtime_seconds": estimate.estimated_runtime_seconds,
                     "estimated_runtime_minutes": estimate.estimated_runtime_minutes,
                     "estimated_runtime_hours": estimate.estimated_runtime_hours,
                     "estimated_price_usd": estimate.estimated_price_usd,

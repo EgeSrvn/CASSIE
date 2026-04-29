@@ -355,6 +355,7 @@ export interface RuntimeEstimate {
   partition_factor: number
   vm_price_per_minute: number
   total_input_size_mib: number
+  estimated_runtime_seconds: number
   estimated_runtime_minutes: number
   estimated_runtime_hours: number
   estimated_price_usd: number
@@ -365,7 +366,10 @@ export interface RuntimeEstimate {
     tool_name: string
     base_minutes: number
     input_size_mib: number
+    input_size_bytes?: number
+    input_suffixes?: string[]
     size_factor: number
+    compression_factor?: number
     adjusted_minutes: number
   }>
   assumptions: string[]
