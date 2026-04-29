@@ -354,7 +354,9 @@ export default function Storage() {
           </div>
           <div className="storage-usage-footer">
             <span>{formatBytes(summary?.remaining_bytes)} remaining</span>
-            <span>Weekly upgrades for larger storage are available</span>
+            <button type="button" className="btn-secondary storage-upgrade-link" onClick={() => navigate('/storage/upgrade')}>
+              Weekly Storage Upgrades
+            </button>
           </div>
         </section>
 

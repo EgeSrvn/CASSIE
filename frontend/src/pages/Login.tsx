@@ -184,7 +184,7 @@ export default function Login({ onLogin }: LoginProps) {
         </form>
 
         {twoFactorChallenge ? (
-          <div className="button-row" style={{ marginTop: '1rem' }}>
+          <div className="button-row auth-code-actions">
             <button type="button" className="btn-secondary" onClick={handleResendCode} disabled={resendingCode || loading}>
               {resendingCode ? 'Sending...' : 'Resend Code'}
             </button>

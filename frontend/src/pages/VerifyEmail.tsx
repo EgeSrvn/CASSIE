@@ -100,7 +100,7 @@ export default function VerifyEmail() {
             {loading ? 'Verifying...' : 'Verify Email'}
           </button>
         </form>
-        <div className="button-row" style={{ marginTop: '1rem' }}>
+        <div className="button-row auth-code-actions">
           <button type="button" className="btn-secondary" onClick={handleResend} disabled={resending || !email.trim()}>
             {resending ? 'Sending...' : 'Resend Code'}
           </button>

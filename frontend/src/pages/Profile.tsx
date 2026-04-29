@@ -48,7 +48,10 @@ export default function Profile() {
   const [success, setSuccess] = useState('')
   const [avatarFile, setAvatarFile] = useState<File | null>(null)
   const [confirmNewPassword, setConfirmNewPassword] = useState('')
+  const [isPasswordEditing, setIsPasswordEditing] = useState(false)
+  const [savingPassword, setSavingPassword] = useState(false)
   const editSectionRef = useRef<HTMLElement | null>(null)
+  const passwordSectionRef = useRef<HTMLElement | null>(null)
 
   const avatarPreviewUrl = useMemo(() => {
     if (!avatarFile) return null
@@ -73,6 +76,7 @@ export default function Profile() {
       setError('')
       setSuccess('')
       setIsEditing(false)
+      setIsPasswordEditing(false)
 
       const data = isPublicProfile ? await getPublicProfile(Number(userId)) : await getProfile()
       const loadedUser = data.user as User
@@ -123,8 +127,22 @@ export default function Profile() {
     setIsEditing((current) => {
       const next = !current
       if (next) {
+        setIsPasswordEditing(false)
         window.setTimeout(() => {
           editSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+        }, 50)
+      }
+      return next
+    })
+  }
+
+  const handleTogglePasswordEdit = () => {
+    setIsPasswordEditing((current) => {
+      const next = !current
+      if (next) {
+        setIsEditing(false)
+        window.setTimeout(() => {
+          passwordSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
         }, 50)
       }
       return next
@@ -163,22 +181,6 @@ export default function Profile() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     const emailChanged = (formData.email || '').trim() !== (profile?.email || '').trim()
-    const isPasswordChangeRequested = Boolean((formData.new_password || '').trim() || (confirmNewPassword || '').trim())
-    if (isPasswordChangeRequested) {
-      const passwordFailures = validatePasswordComplexity(formData.new_password || '')
-      if (passwordFailures.length > 0) {
-        setError(`New password must include: ${passwordFailures.join(', ')}.`)
-        return
-      }
-      if (!confirmNewPassword.trim()) {
-        setError('Please confirm your new password.')
-        return
-      }
-      if ((formData.new_password || '') !== confirmNewPassword) {
-        setError('New passwords do not match.')
-        return
-      }
-    }
     setSaving(true)
     setError('')
     setSuccess('')
@@ -195,18 +197,52 @@ export default function Profile() {
       )
       setIsEditing(false)
       setAvatarFile(null)
-      setFormData((current) => ({
-        ...current,
-        current_password: '',
-        new_password: '',
-      }))
-      setConfirmNewPassword('')
       window.dispatchEvent(new Event('auth-change'))
     } catch (err: any) {
       const message = extractApiErrorMessage(err, 'Failed to update profile')
       setError(message)
     } finally {
       setSaving(false)
+    }
+  }
+
+  const handlePasswordSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    const passwordFailures = validatePasswordComplexity(formData.new_password || '')
+    if (passwordFailures.length > 0) {
+      setError(`New password must include: ${passwordFailures.join(', ')}.`)
+      return
+    }
+    if (!confirmNewPassword.trim()) {
+      setError('Please confirm your new password.')
+      return
+    }
+    if ((formData.new_password || '') !== confirmNewPassword) {
+      setError('New passwords do not match.')
+      return
+    }
+
+    setSavingPassword(true)
+    setError('')
+    setSuccess('')
+    try {
+      await updateProfile({
+        current_password: formData.current_password || '',
+        new_password: formData.new_password || '',
+      })
+      setSuccess('Password updated successfully.')
+      setIsPasswordEditing(false)
+      setFormData((current) => ({
+        ...current,
+        current_password: '',
+        new_password: '',
+      }))
+      setConfirmNewPassword('')
+    } catch (err: any) {
+      const message = extractApiErrorMessage(err, 'Failed to update password')
+      setError(message)
+    } finally {
+      setSavingPassword(false)
     }
   }
 
@@ -228,15 +264,24 @@ export default function Profile() {
         <section className="feature-hero">
           <div className="profile-summary-card">
             {!isPublicProfile && (
-              <button
-                type="button"
-                className="profile-edit-button"
-                onClick={handleToggleEdit}
-                aria-label={isEditing ? 'Close profile editor' : 'Edit profile'}
-                title={isEditing ? 'Close profile editor' : 'Edit profile'}
-              >
-                ✎
-              </button>
+              <div className="profile-summary-actions">
+                <button
+                  type="button"
+                  className="profile-edit-button"
+                  onClick={handleToggleEdit}
+                  aria-label={isEditing ? 'Close profile editor' : 'Edit profile'}
+                  title={isEditing ? 'Close profile editor' : 'Edit profile'}
+                >
+                  ✎
+                </button>
+                <button
+                  type="button"
+                  className="btn-secondary profile-password-toggle"
+                  onClick={handleTogglePasswordEdit}
+                >
+                  {isPasswordEditing ? 'Close Password' : 'Change Password'}
+                </button>
+              </div>
             )}
             <div className="profile-avatar-shell">
               {avatarPreviewUrl || profile?.avatar_url ? (
@@ -324,7 +369,7 @@ export default function Profile() {
           <section ref={editSectionRef} className="card profile-form-card">
             <div className="section-heading">
               <h2>Profile Details</h2>
-              <p>Visible information, account basics, and optional password change.</p>
+              <p>Visible information, account basics, and notification settings.</p>
             </div>
 
             <form onSubmit={handleSubmit}>
@@ -414,49 +459,6 @@ export default function Profile() {
                   />
                 </div>
 
-                <div className="profile-password-block profile-form-wide">
-                  <h3>Change Password</h3>
-                  <div className="profile-form-grid">
-                    <div className="form-group">
-                      <label htmlFor="current_password">Current Password</label>
-                      <input
-                        id="current_password"
-                        type="password"
-                        value={formData.current_password || ''}
-                        onChange={(e) => handleChange('current_password', e.target.value)}
-                        placeholder="Required only if changing password"
-                      />
-                    </div>
-                    <div className="form-group">
-                      <label htmlFor="new_password">New Password</label>
-                      <input
-                        id="new_password"
-                        type="password"
-                        minLength={8}
-                        value={formData.new_password || ''}
-                        onChange={(e) => handleChange('new_password', e.target.value)}
-                        placeholder="Choose a stronger password"
-                      />
-                      <small>{getPasswordRequirementText()}.</small>
-                    </div>
-                    <div className="form-group">
-                      <label htmlFor="confirm_new_password">Confirm New Password</label>
-                      <input
-                        id="confirm_new_password"
-                        type="password"
-                        minLength={8}
-                        value={confirmNewPassword}
-                        onChange={(e) => setConfirmNewPassword(e.target.value)}
-                        placeholder="Re-enter your new password"
-                      />
-                      {!!((formData.new_password || '').trim() || confirmNewPassword.trim()) &&
-                        (formData.new_password || '') !== confirmNewPassword && (
-                          <small style={{ color: '#b91c1c' }}>New passwords must match.</small>
-                        )}
-                    </div>
-                  </div>
-                </div>
-
                 <div className="profile-settings-block profile-form-wide">
                   <h3>Security & Notifications</h3>
                   <p className="profile-settings-copy">
@@ -517,7 +519,7 @@ export default function Profile() {
             <div className="profile-danger-zone">
               <h3>Delete Account</h3>
               <p>Permanently remove your account and its associated data. A verification code will be sent to your email before deletion is allowed.</p>
-              <div className="button-row">
+              <div className="button-row profile-code-actions">
                 <button className="btn-secondary profile-danger-button" type="button" onClick={handleRequestDeletionCode} disabled={requestingDeletionCode || deletingAccount}>
                   {requestingDeletionCode ? 'Sending Code...' : (deletionCodeSent ? 'Resend Delete Code' : 'Send Delete Code')}
                 </button>
@@ -542,8 +544,82 @@ export default function Profile() {
             </div>
           </section>
         )}
+
+        {!isPublicProfile && isPasswordEditing && (
+          <section ref={passwordSectionRef} className="card profile-form-card profile-password-card">
+            <div className="section-heading">
+              <h2>Change Password</h2>
+              <p>Update only your sign-in password. Your public profile details stay unchanged.</p>
+            </div>
+
+            <form onSubmit={handlePasswordSubmit}>
+              <div className="profile-form-grid">
+                <div className="form-group">
+                  <label htmlFor="current_password">Current Password</label>
+                  <input
+                    id="current_password"
+                    type="password"
+                    value={formData.current_password || ''}
+                    onChange={(e) => handleChange('current_password', e.target.value)}
+                    placeholder="Enter your current password"
+                    required
+                    disabled={savingPassword}
+                  />
+                </div>
+                <div className="form-group">
+                  <label htmlFor="new_password">New Password</label>
+                  <input
+                    id="new_password"
+                    type="password"
+                    minLength={8}
+                    value={formData.new_password || ''}
+                    onChange={(e) => handleChange('new_password', e.target.value)}
+                    placeholder="Choose a stronger password"
+                    required
+                    disabled={savingPassword}
+                  />
+                  <small>{getPasswordRequirementText()}.</small>
+                </div>
+                <div className="form-group">
+                  <label htmlFor="confirm_new_password">Confirm New Password</label>
+                  <input
+                    id="confirm_new_password"
+                    type="password"
+                    minLength={8}
+                    value={confirmNewPassword}
+                    onChange={(e) => setConfirmNewPassword(e.target.value)}
+                    placeholder="Re-enter your new password"
+                    required
+                    disabled={savingPassword}
+                  />
+                  {!!((formData.new_password || '').trim() || confirmNewPassword.trim()) &&
+                    (formData.new_password || '') !== confirmNewPassword && (
+                      <small style={{ color: '#b91c1c' }}>New passwords must match.</small>
+                    )}
+                </div>
+              </div>
+
+              <div className="button-row" style={{ marginTop: '1.5rem' }}>
+                <button className="btn-primary" type="submit" disabled={savingPassword}>
+                  {savingPassword ? 'Updating Password...' : 'Update Password'}
+                </button>
+                <button
+                  className="btn-secondary"
+                  type="button"
+                  disabled={savingPassword}
+                  onClick={() => {
+                    setIsPasswordEditing(false)
+                    setFormData((current) => ({ ...current, current_password: '', new_password: '' }))
+                    setConfirmNewPassword('')
+                  }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>
+          </section>
+        )}
       </div>
     </div>
   )
 }
-
