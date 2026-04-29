@@ -428,8 +428,9 @@ def _build_gemini_runtime_prompt(
     return (
         "You are estimating total runtime in minutes for a bioinformatics workflow. "
         "Use the provided tool breakdown, input sizes, and VM partition factor. "
-        "Return ONLY strict JSON with keys: estimated_runtime_minutes (integer >= 1), rationale (string), confidence (0-1). "
-        "Do not include markdown.\n"
+        "Return ONLY one comma-separated line in this exact format: estimated_runtime_minutes,confidence,rationale. "
+        "Rules: estimated_runtime_minutes must be an integer >= 1; confidence must be a decimal between 0 and 1; "
+        "rationale must be plain text, under 16 words, and must not contain commas. Do not include markdown, labels, or extra lines.\n"
         f"{json.dumps(payload, ensure_ascii=False)}"
     )
 
@@ -461,7 +462,6 @@ def _request_gemini_runtime_minutes(prompt: str) -> Optional[Dict[str, Any]]:
         "generationConfig": {
             "temperature": settings.temperature,
             "maxOutputTokens": settings.max_output_tokens,
-            "responseMimeType": "application/json",
         },
     }
 
@@ -490,10 +490,13 @@ def _request_gemini_runtime_minutes(prompt: str) -> Optional[Dict[str, Any]]:
                 text_payload += str(part["text"])
         if not text_payload.strip():
             return None
-        parsed = json.loads(text_payload)
-        estimated_runtime_minutes = max(1, int(parsed.get("estimated_runtime_minutes", 0)))
-        confidence = float(parsed.get("confidence", 0.0) or 0.0)
-        rationale = str(parsed.get("rationale") or "").strip()
+        normalized_text = " ".join(str(text_payload).strip().splitlines()).strip()
+        parts = [part.strip() for part in normalized_text.split(",", 2)]
+        if len(parts) < 3:
+            return None
+        estimated_runtime_minutes = max(1, int(float(parts[0])))
+        confidence = float(parts[1] or 0.0)
+        rationale = parts[2].strip()
         return {
             "estimated_runtime_minutes": estimated_runtime_minutes,
             "confidence": max(0.0, min(confidence, 1.0)),
