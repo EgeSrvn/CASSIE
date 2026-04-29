@@ -152,6 +152,10 @@ export interface StorageUpgradePurchaseResult {
   storage: StorageSummary
 }
 
+export interface StorageUpgradeCancelResult {
+  storage: StorageSummary
+}
+
 export const getStorageSummary = async (): Promise<StorageSummary> => {
   const response = await apiClient.get<{ success: boolean; data: StorageSummary; message?: string }>('/api/storage/summary')
   if (response.data.success) {
@@ -169,6 +173,16 @@ export const purchaseStorageUpgrade = async (planId: string): Promise<StorageUpg
     return response.data.data
   }
   throw new Error(response.data.message || 'Failed to purchase storage upgrade')
+}
+
+export const cancelStorageUpgrade = async (): Promise<StorageUpgradeCancelResult> => {
+  const response = await apiClient.post<{ success: boolean; data: StorageUpgradeCancelResult; message?: string }>(
+    '/api/storage/upgrade/cancel'
+  )
+  if (response.data.success) {
+    return response.data.data
+  }
+  throw new Error(response.data.message || 'Failed to cancel storage upgrade')
 }
 
 export interface GoogleDriveJobImportPayload {

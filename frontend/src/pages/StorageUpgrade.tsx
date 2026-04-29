@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import Navigation from '../components/Navigation'
 import { getStoredUser, notifyAuthChange, setStoredUser } from '../services/authService'
-import { getStorageSummary, purchaseStorageUpgrade, StorageSummary } from '../services/fileService'
+import { cancelStorageUpgrade, getStorageSummary, purchaseStorageUpgrade, StorageSummary } from '../services/fileService'
 import { extractApiErrorMessage } from '../services/apiClient'
 import storageUpgradeConfig from '../../storage_upgrade_plans.json'
 import '../styles/globals.css'
@@ -90,6 +90,22 @@ export default function StorageUpgrade() {
     }
   }
 
+  const handleCancelSubscription = async () => {
+    try {
+      setSubmittingPlanId('cancel')
+      setError('')
+      setSuccess('')
+      const result = await cancelStorageUpgrade()
+      setSummary(result.storage)
+      setSuccess('Your active storage subscription has been cancelled. Default storage is active now.')
+      window.dispatchEvent(new Event('storage-library-change'))
+    } catch (err: any) {
+      setError(extractApiErrorMessage(err, 'Failed to cancel storage subscription'))
+    } finally {
+      setSubmittingPlanId(null)
+    }
+  }
+
   return (
     <div className="page-container storage-page">
       <Navigation />
@@ -154,6 +170,16 @@ export default function StorageUpgrade() {
                 ? `Your plan renews on the normal ${billingInterval} billing cycle and replaces the previous add-on.`
                 : 'You are currently using the default included storage plan.'}
             </p>
+            {summary?.active_subscription && (
+              <button
+                type="button"
+                className="btn-danger"
+                disabled={submittingPlanId === 'cancel'}
+                onClick={handleCancelSubscription}
+              >
+                {submittingPlanId === 'cancel' ? 'Cancelling...' : 'Cancel Active Subscription'}
+              </button>
+            )}
           </div>
           {summary && (
             <div className="storage-upgrade-summary-metrics">

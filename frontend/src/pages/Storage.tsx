@@ -19,6 +19,7 @@ import {
 import { FileItem, FolderTreeItem } from '../services/folderService'
 import { getJobs, Job } from '../services/jobService'
 import {
+  cancelStorageUpload,
   dismissStorageUpload,
   queueStorageUploads,
   StorageUploadItem,
@@ -127,7 +128,7 @@ const formatStorageFileType = (file: StorageJobFile): string => {
 const buildJobLabel = (job?: Job): string => {
   if (!job) return 'Unknown Job'
   const safeName = (job.name || '').trim()
-  return safeName ? `${safeName} (#${job.id})` : `Job #${job.id}`
+  return safeName || `Job ${job.id}`
 }
 
 export default function Storage() {
@@ -140,6 +141,7 @@ export default function Storage() {
   const [dataTree, setDataTree] = useState<FolderTreeItem[]>([])
   const [jobFiles, setJobFiles] = useState<StorageJobFile[]>([])
   const [jobs, setJobs] = useState<Job[]>([])
+  const [expandedOutputJobs, setExpandedOutputJobs] = useState<number[]>([])
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [pendingFiles, setPendingFiles] = useState<StorageUploadItem[]>([])
@@ -189,22 +191,28 @@ export default function Storage() {
     })
 
     return Array.from(groups.entries())
-      .map(([jobId, group]) => ({
-        jobId,
-        job: group.job,
-        files: [...group.files]
-          .filter((file) => {
-            if (!normalizedOutputSearch) return true
-            const filename = file.filename.toLowerCase()
-            const extension = filename.includes('.') ? filename.split('.').slice(1).join('.') : ''
-            return filename.includes(normalizedOutputSearch) || extension.includes(normalizedOutputSearch)
-          })
-          .sort((a, b) => {
-            const aTime = new Date(a.created_at || a.uploaded_at || 0).getTime()
-            const bTime = new Date(b.created_at || b.uploaded_at || 0).getTime()
-            return bTime - aTime
-          }),
-      }))
+      .map(([jobId, group]) => {
+        const groupMatchesSearch =
+          normalizedOutputSearch.length > 0 &&
+          buildJobLabel(group.job).toLowerCase().includes(normalizedOutputSearch)
+
+        return {
+          jobId,
+          job: group.job,
+          files: [...group.files]
+            .filter((file) => {
+              if (!normalizedOutputSearch || groupMatchesSearch) return true
+              const filename = file.filename.toLowerCase()
+              const extension = filename.includes('.') ? filename.split('.').slice(1).join('.') : ''
+              return filename.includes(normalizedOutputSearch) || extension.includes(normalizedOutputSearch)
+            })
+            .sort((a, b) => {
+              const aTime = new Date(a.created_at || a.uploaded_at || 0).getTime()
+              const bTime = new Date(b.created_at || b.uploaded_at || 0).getTime()
+              return bTime - aTime
+            }),
+        }
+      })
       .filter((group) => group.files.length > 0)
       .sort((a, b) => {
         const aTime = a.job?.updated_at ? new Date(a.job.updated_at).getTime() : 0
@@ -492,7 +500,16 @@ export default function Storage() {
               Dismiss
             </button>
           ) : (
-            <span className="storage-status-pill">{progressLabel}</span>
+            <>
+              <span className="storage-status-pill">{progressLabel}</span>
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={() => cancelStorageUpload(file.id)}
+              >
+                Cancel Upload
+              </button>
+            </>
           )}
         </div>
       </article>
@@ -649,7 +666,7 @@ export default function Storage() {
                   value={outputSearch}
                   onChange={(event) => setOutputSearch(event.target.value)}
                   className="community-search-input"
-                  placeholder="Search output name or extension, for example: quast, html, txt"
+                  placeholder="Search job name, output name, or extension, for example: quast, assembly, html"
                 />
               </div>
 
@@ -666,39 +683,58 @@ export default function Storage() {
                 <div className="storage-output-groups">
                   {groupedOutputs.map((group) => (
                     <section key={`job-output-${group.jobId}`} className="storage-output-group">
-                      <div className="storage-output-group-header">
+                      <button
+                        type="button"
+                        className="storage-output-group-header storage-output-group-toggle"
+                        onClick={() =>
+                          setExpandedOutputJobs((current) =>
+                            current.includes(group.jobId)
+                              ? current.filter((jobId) => jobId !== group.jobId)
+                              : [...current, group.jobId]
+                          )
+                        }
+                      >
                         <div>
                           <h3>{buildJobLabel(group.job)}</h3>
                           <p>
                             {group.job?.status ? `Status: ${group.job.status.toUpperCase()}` : 'Job details unavailable'} | {group.files.length} file{group.files.length === 1 ? '' : 's'}
                           </p>
                         </div>
-                        <button
-                          type="button"
-                          className="btn-secondary"
-                          onClick={() => navigate(`/jobs/${group.jobId}`)}
-                        >
-                          Open Job
-                        </button>
-                      </div>
-                      <div className="storage-file-list">
-                        {group.files.map((file) => (
-                          <article key={`output-${file.id}`} className="storage-file-row">
-                            <div>
-                              <strong>{file.filename}</strong>
-                              <span>{formatBytes(file.size_bytes)} | {formatStorageFileType(file)}</span>
-                            </div>
-                            <div className="storage-file-actions">
-                              <button type="button" className="btn-secondary" onClick={() => downloadFile(file.id)}>
-                                Download
-                              </button>
-                              <button type="button" className="btn-danger" disabled={busy} onClick={() => handleDeleteOutput(file)}>
-                                Delete
-                              </button>
-                            </div>
-                          </article>
-                        ))}
-                      </div>
+                        <span className="storage-output-group-chevron" aria-hidden="true">
+                          {expandedOutputJobs.includes(group.jobId) ? '−' : '+'}
+                        </span>
+                      </button>
+                      {expandedOutputJobs.includes(group.jobId) && (
+                        <>
+                          <div className="storage-output-group-open-job">
+                            <button
+                              type="button"
+                              className="btn-secondary"
+                              onClick={() => navigate(`/jobs/${group.jobId}`)}
+                            >
+                              Open Job
+                            </button>
+                          </div>
+                          <div className="storage-file-list">
+                            {group.files.map((file) => (
+                              <article key={`output-${file.id}`} className="storage-file-row">
+                                <div>
+                                  <strong>{file.filename}</strong>
+                                  <span>{formatBytes(file.size_bytes)} | {formatStorageFileType(file)}</span>
+                                </div>
+                                <div className="storage-file-actions">
+                                  <button type="button" className="btn-secondary" onClick={() => downloadFile(file.id)}>
+                                    Download
+                                  </button>
+                                  <button type="button" className="btn-danger" disabled={busy} onClick={() => handleDeleteOutput(file)}>
+                                    Delete
+                                  </button>
+                                </div>
+                              </article>
+                            ))}
+                          </div>
+                        </>
+                      )}
                     </section>
                   ))}
                 </div>

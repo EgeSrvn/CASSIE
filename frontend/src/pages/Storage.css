@@ -129,6 +129,10 @@
   margin-bottom: 1rem;
 }
 
+.storage-search-row .community-search-input {
+  width: 100%;
+}
+
 .storage-upload-progress {
   flex-basis: 100%;
 }
@@ -278,6 +282,15 @@
   margin-bottom: 0.9rem;
 }
 
+.storage-output-group-toggle {
+  width: 100%;
+  border: none;
+  background: transparent;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+}
+
 .storage-output-group-header h3 {
   margin: 0;
   color: var(--gray-900);
@@ -287,6 +300,26 @@
   margin: 0.25rem 0 0;
   color: var(--gray-600);
   font-size: 0.92rem;
+}
+
+.storage-output-group-chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 999px;
+  background: rgba(39, 84, 138, 0.08);
+  color: var(--primary-dark);
+  font-size: 1.2rem;
+  font-weight: 800;
+  flex-shrink: 0;
+}
+
+.storage-output-group-open-job {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 0.9rem;
 }
 
 .storage-upgrade-page {

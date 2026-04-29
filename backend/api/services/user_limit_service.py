@@ -175,6 +175,44 @@ def set_user_storage_subscription(username: str, plan_id: str) -> Dict[str, Any]
     return get_user_limits(normalized_username)
 
 
+def clear_user_storage_subscription(username: str) -> Dict[str, Any]:
+    normalized_username = str(username or "").strip()
+    if not normalized_username:
+        raise ValueError("Username is required to cancel storage subscription.")
+
+    config_payload = _load_json_file(
+        _user_limits_config_path(),
+        {
+            "default": {
+                "max_running_jobs": get_config().user_limits.default_max_running_jobs,
+                "downloadable_finished_jobs": get_config().user_limits.default_downloadable_finished_jobs,
+                "interactive_output_jobs": get_config().user_limits.default_interactive_output_jobs,
+                "max_storage_gb": get_config().user_limits.default_max_storage_gb,
+                "min_free_storage_gb": get_config().user_limits.default_min_free_storage_gb,
+            },
+            "users": {},
+        },
+    )
+
+    if not isinstance(config_payload.get("users"), dict):
+        config_payload["users"] = {}
+
+    user_overrides = config_payload["users"].get(normalized_username)
+    if not isinstance(user_overrides, dict):
+        user_overrides = {}
+
+    user_overrides.pop("storage_plan_id", None)
+    user_overrides.pop("max_storage_gb", None)
+
+    if user_overrides:
+        config_payload["users"][normalized_username] = user_overrides
+    else:
+        config_payload["users"].pop(normalized_username, None)
+
+    _write_user_limits_config(config_payload)
+    return get_user_limits(normalized_username)
+
+
 def get_user_active_storage_subscription(username: Optional[str]) -> Optional[Dict[str, Any]]:
     plan_id = get_user_storage_plan_id(username)
     if not plan_id:

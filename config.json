@@ -1,0 +1,11 @@
+{
+  "gemini_prediction": {
+    "use_gemini_for_runtime_predictions": false,
+    "model": "gemini-2.5-flash",
+    "api_key_env_var": "GEMINI_API_KEY",
+    "api_base_url": "https://generativelanguage.googleapis.com",
+    "temperature": 0.1,
+    "max_output_tokens": 512,
+    "timeout_seconds": 25
+  }
+}

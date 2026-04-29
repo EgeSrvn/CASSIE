@@ -69,7 +69,26 @@ interface DirectUploadPrepareResponse {
   expires_in: number
 }
 
-const delay = (ms: number): Promise<void> => new Promise((resolve) => window.setTimeout(resolve, ms))
+const delay = (ms: number, signal?: AbortSignal): Promise<void> =>
+  new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+
+    const onAbort = () => {
+      window.clearTimeout(timer)
+      reject(new DOMException('Upload cancelled', 'AbortError'))
+    }
+
+    if (signal) {
+      if (signal.aborted) {
+        onAbort()
+        return
+      }
+      signal.addEventListener('abort', onAbort, { once: true })
+    }
+  })
 
 export const directUploadDataFile = async (
   file: File,
@@ -85,7 +104,8 @@ export const directUploadDataFile = async (
       size_bytes: file.size,
       folder_id: folderId ?? null,
       file_format: fileFormat || null,
-    }
+    },
+    { signal }
   )
 
   if (!prepareResponse.data.success) {
@@ -118,7 +138,8 @@ export const directUploadDataFile = async (
           size_bytes: file.size,
           folder_id: folderId ?? null,
           file_format: fileFormat || null,
-        }
+        },
+        { signal }
       )
 
       if (completeResponse.data.success) {
@@ -130,7 +151,7 @@ export const directUploadDataFile = async (
       lastCompleteError = error
     }
 
-    await delay(attempt * 1000)
+    await delay(attempt * 1000, signal)
   }
 
   throw lastCompleteError || new Error('Failed to complete direct upload')

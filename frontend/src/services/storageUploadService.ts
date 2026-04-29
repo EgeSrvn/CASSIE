@@ -17,6 +17,7 @@ export interface StorageUploadItem {
 interface StorageUploadRecord extends StorageUploadItem {
   file: globalThis.File
   queueOrder: number
+  abortController?: AbortController
 }
 
 const listeners = new Set<(items: StorageUploadItem[]) => void>()
@@ -72,6 +73,8 @@ const runProcessor = async () => {
       updateRecord(record.id, { status: 'uploading', progress: 1, error: undefined })
 
       try {
+        const abortController = new AbortController()
+        updateRecord(record.id, { abortController } as Partial<StorageUploadRecord>)
         const uploadedFile = await directUploadDataFile(
           record.file,
           null,
@@ -81,7 +84,8 @@ const runProcessor = async () => {
               progress,
               status: progress >= 100 ? 'confirming' : 'uploading',
             })
-          }
+          },
+          abortController.signal
         )
         updateRecord(record.id, { status: 'ready', progress: 100 })
         window.dispatchEvent(new CustomEvent('storage-library-change', {
@@ -91,6 +95,10 @@ const runProcessor = async () => {
         }))
         removeRecord(record.id)
       } catch (error: any) {
+        if (error?.name === 'AbortError' || error?.message === 'Upload cancelled') {
+          removeRecord(record.id)
+          continue
+        }
         updateRecord(record.id, {
           status: 'failed',
           error: error?.response?.data?.message || error?.message || 'Failed to upload file',
@@ -126,6 +134,18 @@ export const queueStorageUploads = async (
 }
 
 export const dismissStorageUpload = async (recordId: string) => {
+  removeRecord(recordId)
+}
+
+export const cancelStorageUpload = async (recordId: string) => {
+  const record = records.find((item) => item.id === recordId)
+  if (!record) return
+
+  if (record.abortController) {
+    record.abortController.abort()
+    return
+  }
+
   removeRecord(recordId)
 }
 

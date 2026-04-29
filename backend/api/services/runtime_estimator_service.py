@@ -12,9 +12,12 @@ The estimator is intentionally transparent and configurable. It combines:
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib import error as urllib_error
+from urllib import request as urllib_request
 
 from backend.api.services.vm_partition_service import get_vm_partition
 from backend.api.utils.logger import get_logger
@@ -24,6 +27,7 @@ logger = get_logger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 RUNTIME_ESTIMATOR_CONFIG_PATH = PROJECT_ROOT / "runtime_estimator_profiles.json"
+APP_CONFIG_PATH = PROJECT_ROOT / "config.json"
 
 DEFAULT_TOOL_BASE_MINUTES: Dict[str, float] = {
     "FASTQC": 8.0,
@@ -118,6 +122,17 @@ class RuntimeInputAssignment:
     total_input_size_mib: float
 
 
+@dataclass(frozen=True)
+class GeminiPredictionSettings:
+    enabled: bool
+    model: str
+    api_key_env_var: str
+    api_base_url: str
+    temperature: float
+    max_output_tokens: int
+    timeout_seconds: int
+
+
 def _load_runtime_config() -> Dict[str, Any]:
     if not RUNTIME_ESTIMATOR_CONFIG_PATH.exists():
         return {}
@@ -128,6 +143,35 @@ def _load_runtime_config() -> Dict[str, Any]:
     except Exception as exc:
         logger.warning(f"Failed to read runtime estimator config {RUNTIME_ESTIMATOR_CONFIG_PATH}: {exc}")
         return {}
+
+
+def _load_app_config() -> Dict[str, Any]:
+    if not APP_CONFIG_PATH.exists():
+        return {}
+
+    try:
+        payload = json.loads(APP_CONFIG_PATH.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else {}
+    except Exception as exc:
+        logger.warning(f"Failed to read app config {APP_CONFIG_PATH}: {exc}")
+        return {}
+
+
+def _load_gemini_prediction_settings() -> GeminiPredictionSettings:
+    config = _load_app_config()
+    gemini_config = config.get("gemini_prediction", {})
+    if not isinstance(gemini_config, dict):
+        gemini_config = {}
+
+    return GeminiPredictionSettings(
+        enabled=bool(gemini_config.get("use_gemini_for_runtime_predictions", False)),
+        model=str(gemini_config.get("model") or "gemini-2.5-flash"),
+        api_key_env_var=str(gemini_config.get("api_key_env_var") or "GEMINI_API_KEY"),
+        api_base_url=str(gemini_config.get("api_base_url") or "https://generativelanguage.googleapis.com"),
+        temperature=max(0.0, float(gemini_config.get("temperature", 0.1) or 0.1)),
+        max_output_tokens=max(256, int(gemini_config.get("max_output_tokens", 512) or 512)),
+        timeout_seconds=max(5, int(gemini_config.get("timeout_seconds", 25) or 25)),
+    )
 
 
 def _tool_base_minutes(tool_id: str) -> float:
@@ -360,6 +404,150 @@ def _topological_layers(nodes: List[Dict[str, Any]], edges: List[Dict[str, Any]]
     return critical_path, branch_factor
 
 
+def _build_gemini_runtime_prompt(
+    *,
+    execution_shape: str,
+    vm_name: str,
+    vm_display_name: str,
+    partition_factor: float,
+    fixed_overhead_minutes: float,
+    tool_breakdown: List[Dict[str, Any]],
+    total_input_size_mib: float,
+    assumptions: List[str],
+) -> str:
+    payload = {
+        "execution_shape": execution_shape,
+        "vm_name": vm_name,
+        "vm_display_name": vm_display_name,
+        "partition_factor": partition_factor,
+        "fixed_overhead_minutes": fixed_overhead_minutes,
+        "total_input_size_mib": total_input_size_mib,
+        "tool_breakdown": tool_breakdown,
+        "assumptions": assumptions,
+    }
+    return (
+        "You are estimating total runtime in minutes for a bioinformatics workflow. "
+        "Use the provided tool breakdown, input sizes, and VM partition factor. "
+        "Return ONLY strict JSON with keys: estimated_runtime_minutes (integer >= 1), rationale (string), confidence (0-1). "
+        "Do not include markdown.\n"
+        f"{json.dumps(payload, ensure_ascii=False)}"
+    )
+
+
+def _request_gemini_runtime_minutes(prompt: str) -> Optional[Dict[str, Any]]:
+    settings = _load_gemini_prediction_settings()
+    if not settings.enabled:
+        return None
+
+    api_key = os.getenv(settings.api_key_env_var, "").strip()
+    if not api_key:
+        logger.warning("Gemini runtime prediction enabled but %s is not set.", settings.api_key_env_var)
+        return None
+
+    endpoint = (
+        f"{settings.api_base_url.rstrip('/')}/v1beta/models/{settings.model}:generateContent"
+        f"?key={api_key}"
+    )
+    body = {
+        "contents": [
+            {
+                "parts": [
+                    {
+                        "text": prompt
+                    }
+                ]
+            }
+        ],
+        "generationConfig": {
+            "temperature": settings.temperature,
+            "maxOutputTokens": settings.max_output_tokens,
+            "responseMimeType": "application/json",
+        },
+    }
+
+    request = urllib_request.Request(
+        endpoint,
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    try:
+        with urllib_request.urlopen(request, timeout=settings.timeout_seconds) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (urllib_error.URLError, urllib_error.HTTPError, TimeoutError, json.JSONDecodeError) as exc:
+        logger.warning("Gemini runtime prediction request failed: %s", exc)
+        return None
+
+    try:
+        candidates = payload.get("candidates", [])
+        first_candidate = candidates[0] if candidates else {}
+        content = first_candidate.get("content", {}) if isinstance(first_candidate, dict) else {}
+        parts = content.get("parts", []) if isinstance(content, dict) else []
+        text_payload = ""
+        for part in parts:
+            if isinstance(part, dict) and part.get("text"):
+                text_payload += str(part["text"])
+        if not text_payload.strip():
+            return None
+        parsed = json.loads(text_payload)
+        estimated_runtime_minutes = max(1, int(parsed.get("estimated_runtime_minutes", 0)))
+        confidence = float(parsed.get("confidence", 0.0) or 0.0)
+        rationale = str(parsed.get("rationale") or "").strip()
+        return {
+            "estimated_runtime_minutes": estimated_runtime_minutes,
+            "confidence": max(0.0, min(confidence, 1.0)),
+            "rationale": rationale,
+        }
+    except Exception as exc:
+        logger.warning("Gemini runtime prediction payload could not be parsed: %s", exc)
+        return None
+
+
+def _apply_optional_gemini_runtime_prediction(estimate: RuntimeEstimate) -> RuntimeEstimate:
+    settings = _load_gemini_prediction_settings()
+    if not settings.enabled:
+        return estimate
+
+    prompt = _build_gemini_runtime_prompt(
+        execution_shape=estimate.execution_shape,
+        vm_name=estimate.vm_name,
+        vm_display_name=estimate.vm_display_name,
+        partition_factor=estimate.partition_factor,
+        fixed_overhead_minutes=estimate.fixed_overhead_minutes,
+        tool_breakdown=estimate.tool_breakdown,
+        total_input_size_mib=estimate.total_input_size_mib,
+        assumptions=estimate.assumptions,
+    )
+    gemini_result = _request_gemini_runtime_minutes(prompt)
+    if not gemini_result:
+        return estimate
+
+    estimated_minutes = max(1, int(gemini_result["estimated_runtime_minutes"]))
+    return RuntimeEstimate(
+        model_type=f"{estimate.model_type}+gemini-runtime",
+        vm_name=estimate.vm_name,
+        vm_display_name=estimate.vm_display_name,
+        partition_factor=estimate.partition_factor,
+        vm_price_per_minute=estimate.vm_price_per_minute,
+        total_input_size_mib=estimate.total_input_size_mib,
+        estimated_runtime_minutes=estimated_minutes,
+        estimated_runtime_hours=round(estimated_minutes / 60.0, 2),
+        estimated_price_usd=round(estimated_minutes * estimate.vm_price_per_minute, 2),
+        fixed_overhead_minutes=estimate.fixed_overhead_minutes,
+        execution_shape=estimate.execution_shape,
+        tool_breakdown=estimate.tool_breakdown,
+        assumptions=[
+            *estimate.assumptions,
+            (
+                "Final runtime minutes were refined with the optional Gemini predictor configured in config.json; "
+                f"reported confidence={gemini_result['confidence']:.2f}."
+            ),
+            gemini_result["rationale"] or "Gemini supplied a runtime-only refinement.",
+        ],
+    )
+
+
 def estimate_runtime_for_tool_indices(
     tool_indices: List[int],
     vm_name: Optional[str],
@@ -382,7 +570,7 @@ def estimate_runtime_for_tool_indices(
     total_input_size_mib = _total_explicit_input_size_mib(grouped_assignments)
     estimated_price_usd = round(estimated_minutes * vm_price_per_minute, 2)
 
-    return RuntimeEstimate(
+    estimate = RuntimeEstimate(
         model_type="deterministic-heuristic",
         vm_name=resolved_vm_name,
         vm_display_name=display_name,
@@ -401,6 +589,7 @@ def estimate_runtime_for_tool_indices(
             "Scales each tool using total mapped input sizes; downstream intermediate inputs are inferred from upstream output-size multipliers.",
         ],
     )
+    return _apply_optional_gemini_runtime_prediction(estimate)
 
 
 def estimate_runtime_for_pipeline_graph(
@@ -458,7 +647,7 @@ def estimate_runtime_for_pipeline_graph(
     total_input_size_mib = _total_explicit_input_size_mib(grouped_assignments)
     estimated_price_usd = round(estimated_minutes * vm_price_per_minute, 2)
 
-    return RuntimeEstimate(
+    estimate = RuntimeEstimate(
         model_type="deterministic-dag-heuristic",
         vm_name=resolved_vm_name,
         vm_display_name=display_name,
@@ -477,3 +666,4 @@ def estimate_runtime_for_pipeline_graph(
             "Mapped input sizes are propagated through downstream intermediate tools using per-tool output size multipliers.",
         ],
     )
+    return _apply_optional_gemini_runtime_prediction(estimate)

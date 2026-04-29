@@ -50,6 +50,7 @@ from backend.api.services.job_launch_service import get_auto_start_payload, star
 from backend.api.services.user_service import get_user_by_id
 from backend.api.services.user_limit_service import (
     can_user_access_job_outputs,
+    clear_user_storage_subscription,
     get_user_active_storage_subscription,
     get_storage_upgrade_plan,
     get_user_limits,
@@ -200,6 +201,48 @@ async def purchase_storage_upgrade(
         error_data = error_response(
             error_code=ErrorCode.INTERNAL_ERROR,
             message="Failed to purchase storage upgrade",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@router.post("/upgrade/cancel", status_code=status.HTTP_200_OK)
+async def cancel_storage_upgrade(
+    current_user: UserResponse = Depends(get_current_user),
+):
+    """Cancel the active storage add-on and return the user to default storage."""
+    try:
+        updated_limits = clear_user_storage_subscription(current_user.username)
+        used_bytes = get_total_file_bytes_by_user(current_user.id)
+        max_storage_bytes = max(int(updated_limits.get("max_storage_bytes", 0)), 0)
+
+        return success_response(
+            data={
+                "storage": {
+                    "used_bytes": used_bytes,
+                    "max_storage_bytes": max_storage_bytes,
+                    "remaining_bytes": max(max_storage_bytes - used_bytes, 0) if max_storage_bytes > 0 else None,
+                    "usage_ratio": (used_bytes / max_storage_bytes) if max_storage_bytes > 0 else None,
+                    "subscription_upgrade_available": True,
+                    "subscription_period": "weekly",
+                    "active_subscription": get_user_active_storage_subscription(current_user.username),
+                }
+            },
+            message="Storage subscription cancelled successfully",
+            status_code=status.HTTP_200_OK,
+        )
+    except ValueError as exc:
+        error_data = error_response(
+            error_code=ErrorCode.VALIDATION_ERROR,
+            message=str(exc),
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+    except Exception as exc:
+        logger.error(f"Error cancelling storage subscription: {exc}", exc_info=True)
+        error_data = error_response(
+            error_code=ErrorCode.INTERNAL_ERROR,
+            message="Failed to cancel storage subscription",
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
         return JSONResponse(content=error_data, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
