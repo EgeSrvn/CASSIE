@@ -66,6 +66,7 @@ export default function Jobs() {
       case 'running': return 'status-running'
       case 'failed': return 'status-failed'
       case 'pending': return 'status-pending'
+      case 'cancelled': return 'status-failed'
       default: return ''
     }
   }
@@ -95,6 +96,7 @@ export default function Jobs() {
               <option value="running">Running</option>
               <option value="completed">Completed</option>
               <option value="failed">Failed</option>
+              <option value="cancelled">Cancelled</option>
             </select>
           </label>
           <button onClick={loadJobs} className="btn-secondary">Refresh</button>

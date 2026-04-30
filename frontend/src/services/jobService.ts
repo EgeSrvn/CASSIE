@@ -274,6 +274,81 @@ export const deleteJob = async (jobId: number): Promise<void> => {
   await apiClient.delete(`/api/jobs/${jobId}`)
 }
 
+export interface JobUpdate {
+  name?: string
+  assembler?: string
+  data_types?: string[]
+  cloud_provider?: string
+  execution_preferences?: Record<string, unknown>
+  vm_name?: string
+}
+
+export const updateJob = async (jobId: number, jobData: JobUpdate): Promise<Job> => {
+  try {
+    const response = await apiClient.put<{ success: boolean; data: Job; message?: string }>(
+      `/api/jobs/${jobId}`,
+      jobData
+    )
+    if (response.data.success) {
+      return response.data.data
+    }
+    throw new Error(response.data.message || 'Failed to update job')
+  } catch (error: any) {
+    if (error.response?.data) {
+      const errorData = error.response.data
+      throw new Error(extractApiErrorMessage(errorData, 'Failed to update job'))
+    }
+    throw error
+  }
+}
+
+export interface CancelJobResult {
+  job?: Job | null
+  cancelled_executions: number
+  kubernetes_cleanup?: {
+    namespace?: string | null
+    deleted_stage_jobs?: string[]
+    errors?: string[]
+  }
+}
+
+export const cancelJob = async (jobId: number): Promise<CancelJobResult> => {
+  try {
+    const response = await apiClient.post<{ success: boolean; data: CancelJobResult; message?: string }>(
+      `/api/jobs/${jobId}/cancel`
+    )
+    if (response.data.success) {
+      return response.data.data
+    }
+    throw new Error(response.data.message || 'Failed to cancel job')
+  } catch (error: any) {
+    if (error.response?.data) {
+      const errorData = error.response.data
+      throw new Error(extractApiErrorMessage(errorData, 'Failed to cancel job'))
+    }
+    throw error
+  }
+}
+
+export const retryJob = async (jobId: number, jobData: JobUpdate): Promise<Job> => {
+  try {
+    const response = await apiClient.post<{ success: boolean; data: Job; message?: string }>(
+      `/api/jobs/${jobId}/retry`,
+      jobData
+    )
+    if (response.data.success) {
+      return response.data.data
+    }
+    throw new Error(response.data.message || 'Failed to prepare job retry')
+  } catch (error: any) {
+    if (error.response?.data) {
+      const errorData = error.response.data
+      throw new Error(extractApiErrorMessage(errorData, 'Failed to prepare job retry'))
+    }
+    throw error
+  }
+}
+
 export interface ExecuteJobResult {
   job_id: number
   status: 'pending' | 'running'

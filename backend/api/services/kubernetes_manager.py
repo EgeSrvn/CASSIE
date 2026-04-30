@@ -452,6 +452,43 @@ class KubernetesPipelineRunner:
                 f"Kubernetes pipeline execution failed for job {job_id}, execution {execution_id}: {exc}",
                 exc_info=True,
             )
+            latest_job = get_job_by_id(job_id, user_id=user_id)
+            if latest_job and latest_job.status == JobStatus.CANCELLED:
+                cancellation_message = "Job was cancelled by the user."
+                stages = parameters_used.get("stages") if isinstance(parameters_used, dict) else None
+                if isinstance(stages, list):
+                    for stage in stages:
+                        if not isinstance(stage, dict):
+                            continue
+                        if str(stage.get("status") or "").strip().lower() in {
+                            "pending",
+                            "running",
+                            "waiting_for_dependencies",
+                            "waiting_for_resources",
+                            "waiting_for_checkpoint",
+                        }:
+                            stage["status"] = "cancelled"
+                            stage["completed_at"] = datetime.now().isoformat()
+                            stage["error"] = cancellation_message
+                update_job_execution(
+                    execution_id,
+                    JobExecutionUpdate(
+                        status=ExecutionStatus.CANCELLED,
+                        error_message=cancellation_message,
+                        completed_at=datetime.now(),
+                        parameters_used=parameters_used,
+                    ),
+                )
+                try:
+                    settle_job_charge(job_id, user_id, execution_id)
+                except Exception as billing_error:
+                    self._logger.warning(
+                        "Failed to settle cancelled job %s after Kubernetes task stopped: %s",
+                        job_id,
+                        billing_error,
+                        exc_info=True,
+                    )
+                return
             update_job_execution(
                 execution_id,
                 JobExecutionUpdate(

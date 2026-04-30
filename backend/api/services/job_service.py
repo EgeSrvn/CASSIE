@@ -690,6 +690,72 @@ def update_job(job_id: int, user_id: int, job_update: JobUpdate) -> Optional[Job
             cur.close()
 
 
+def prepare_job_for_retry(job_id: int, user_id: int, job_update: Optional[JobUpdate] = None) -> Optional[JobInDB]:
+    """Move a failed/cancelled job back to pending and clear one-run billing fields."""
+    job_update = job_update or JobUpdate()
+
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+
+        try:
+            existing_job = get_job_by_id(job_id, user_id)
+            if not existing_job:
+                return None
+
+            if existing_job.status not in {JobStatus.FAILED, JobStatus.CANCELLED}:
+                raise ValueError(
+                    f"Only failed or cancelled jobs can be prepared for retry. Current status: {existing_job.status.value}"
+                )
+
+            updates = ["status = %s", "actual_price_charged_usd = NULL", "balance_reserved_at = NULL", "balance_charged_at = NULL"]
+            values: List[Any] = [JobStatus.PENDING.value]
+
+            if job_update.name is not None:
+                updates.append("name = %s")
+                values.append(job_update.name)
+
+            if job_update.assembler is not None:
+                updates.append("assembler = %s")
+                values.append(job_update.assembler)
+
+            if job_update.data_types is not None:
+                updates.append("data_types = %s")
+                values.append(json.dumps(job_update.data_types))
+
+            if job_update.cloud_provider is not None:
+                updates.append("cloud_provider = %s")
+                values.append(job_update.cloud_provider.value)
+
+            if job_update.execution_preferences is not None:
+                updates.append("execution_preferences = %s")
+                values.append(json.dumps(job_update.execution_preferences))
+
+            if job_update.vm_name is not None:
+                updates.append("vm_name = %s")
+                values.append(job_update.vm_name)
+
+            updates.append("updated_at = CURRENT_TIMESTAMP")
+            values.extend([job_id, user_id])
+
+            cur.execute(
+                f"""
+                UPDATE jobs
+                SET {', '.join(updates)}
+                WHERE id = %s AND user_id = %s
+                RETURNING {JOB_SELECT_COLUMNS}
+                """,
+                values,
+            )
+            row = cur.fetchone()
+            conn.commit()
+            return _row_to_job(row) if row else None
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            cur.close()
+
+
 def delete_job(job_id: int, user_id: int) -> bool:
     """
     Delete a job.

@@ -22,7 +22,10 @@ import time
 from backend.api.routes.auth import get_current_user, get_auth_context, AuthContext
 from backend.api.models.user_model import UserResponse
 from backend.api.models.job_model import (
+    CloudProvider,
+    ExecutionStatus,
     JobCreate,
+    JobExecutionUpdate,
     JobUpdate,
     JobResponse,
     JobCreateResponse,
@@ -34,6 +37,7 @@ from backend.api.services.job_service import (
     get_job_by_id,
     get_jobs_by_user,
     update_job,
+    prepare_job_for_retry,
     delete_job,
     count_jobs_by_user
 )
@@ -49,7 +53,7 @@ from backend.api.services.user_limit_service import (
     validate_user_storage_headroom,
 )
 from backend.api.services.vm_queue_service import get_vm_slot_usage, queue_or_start_job, reserve_vm_slot_for_job
-from backend.api.services.job_execution_service import get_executions_by_job
+from backend.api.services.job_execution_service import get_executions_by_job, update_job_execution
 from backend.api.services.billing_service import reserve_job_charge, settle_job_charge
 from backend.api.services.kubernetes_manager import get_kubernetes_pipeline_runner, kubernetes_is_available
 from backend.api.services.vm_partition_service import get_vm_partitions, get_vm_partition
@@ -97,6 +101,15 @@ class PipelinePlanPreviewRequest(BaseModel):
     execution_preferences: Optional[Dict[str, Any]] = None
 
 
+class JobRetryRequest(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=100)
+    vm_name: Optional[str] = Field(None, max_length=50)
+    execution_preferences: Optional[Dict[str, Any]] = None
+    data_types: Optional[List[str]] = None
+    assembler: Optional[str] = None
+    cloud_provider: Optional[str] = None
+
+
 def _job_response_for_user(job, username: Optional[str]) -> dict:
     interactive_outputs_enabled, _ = can_user_interact_with_job_outputs(
         user_id=job.user_id,
@@ -127,6 +140,53 @@ def _job_response_for_user(job, username: Optional[str]) -> dict:
         updated_at=job.updated_at,
         interactive_outputs_enabled=interactive_outputs_enabled,
     ).model_dump(mode='json')
+
+
+def _mark_active_executions_cancelled(
+    *,
+    executions: List[Any],
+    message: str,
+) -> int:
+    active_execution_statuses = {
+        ExecutionStatus.RUNNING,
+        ExecutionStatus.PENDING,
+    }
+    now = datetime.now()
+    cancelled_count = 0
+
+    for execution in executions:
+        if execution.status not in active_execution_statuses:
+            continue
+
+        parameters_used = deepcopy(execution.parameters_used) if isinstance(execution.parameters_used, dict) else {}
+        stages = parameters_used.get("stages")
+        if isinstance(stages, list):
+            for stage in stages:
+                if not isinstance(stage, dict):
+                    continue
+                if str(stage.get("status") or "").lower() in {
+                    "pending",
+                    "running",
+                    "waiting_for_dependencies",
+                    "waiting_for_resources",
+                    "waiting_for_checkpoint",
+                }:
+                    stage["status"] = "cancelled"
+                    stage["completed_at"] = now.isoformat()
+                    stage["error"] = message
+
+        update_job_execution(
+            execution.id,
+            JobExecutionUpdate(
+                status=ExecutionStatus.CANCELLED,
+                completed_at=now,
+                error_message=message,
+                parameters_used=parameters_used,
+            ),
+        )
+        cancelled_count += 1
+
+    return cancelled_count
 
 
 def _cleanup_deleted_job_resources(
@@ -1134,6 +1194,195 @@ async def list_job_executions(
             error_code=ErrorCode.INTERNAL_ERROR,
             message="Failed to retrieve job executions",
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@router.post("/{job_id}/cancel", status_code=status.HTTP_200_OK)
+async def cancel_job_endpoint(
+    job_id: int,
+    current_user: UserResponse = Depends(get_current_user)
+):
+    """Cancel a pending/running job without deleting its records or outputs."""
+    try:
+        job = get_job_by_id(job_id, user_id=current_user.id)
+        if not job:
+            error_data = not_found_response("Job", job_id)
+            return JSONResponse(content=error_data, status_code=status.HTTP_404_NOT_FOUND)
+
+        if job.status not in {JobStatus.PENDING, JobStatus.RUNNING}:
+            error_data = error_response(
+                error_code=ErrorCode.VALIDATION_ERROR,
+                message=f"Only pending or running jobs can be cancelled. Current status: {job.status.value}",
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+            return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+
+        executions = get_executions_by_job(job_id)
+        cleanup_summary = {"namespace": None, "deleted_stage_jobs": [], "errors": []}
+        if kubernetes_is_available():
+            try:
+                cleanup_summary = get_kubernetes_pipeline_runner().terminate_job_stages(job_id, executions)
+            except Exception as cleanup_error:
+                logger.warning("Failed to terminate Kubernetes stages for job %s: %s", job_id, cleanup_error, exc_info=True)
+                cleanup_summary["errors"].append(str(cleanup_error))
+
+        cancelled_count = _mark_active_executions_cancelled(
+            executions=executions,
+            message="Cancelled by user",
+        )
+        updated_job = update_job(job_id, current_user.id, JobUpdate(status=JobStatus.CANCELLED))
+
+        try:
+            settle_job_charge(job_id, current_user.id)
+        except Exception as billing_error:
+            logger.warning("Failed to settle billing after cancelling job %s: %s", job_id, billing_error, exc_info=True)
+
+        try:
+            await schedule_queued_jobs(job.vm_name)
+        except Exception as queue_error:
+            logger.warning("Failed to schedule queued jobs after cancelling job %s: %s", job_id, queue_error, exc_info=True)
+
+        deleted_jobs_count = len(cleanup_summary.get("deleted_stage_jobs") or [])
+        error_count = len(cleanup_summary.get("errors") or [])
+        message = f"Job cancelled. Stopped {deleted_jobs_count} Kubernetes stage job(s)."
+        if error_count:
+            message += f" {error_count} cleanup issue(s) were recorded."
+
+        return success_response(
+            data={
+                "job": _job_response_for_user(updated_job, current_user.username) if updated_job else None,
+                "cancelled_executions": cancelled_count,
+                "kubernetes_cleanup": cleanup_summary,
+            },
+            message=message,
+        )
+    except Exception as e:
+        logger.error(f"Error cancelling job {job_id}: {e}", exc_info=True)
+        error_data = error_response(
+            error_code=ErrorCode.INTERNAL_ERROR,
+            message="Failed to cancel job",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@router.post("/{job_id}/retry", status_code=status.HTTP_200_OK)
+async def retry_job_endpoint(
+    job_id: int,
+    retry_request: JobRetryRequest,
+    current_user: UserResponse = Depends(get_current_user)
+):
+    """Prepare a failed/cancelled job for another execution attempt."""
+    try:
+        job = get_job_by_id(job_id, user_id=current_user.id)
+        if not job:
+            error_data = not_found_response("Job", job_id)
+            return JSONResponse(content=error_data, status_code=status.HTTP_404_NOT_FOUND)
+
+        if job.status not in {JobStatus.FAILED, JobStatus.CANCELLED}:
+            error_data = error_response(
+                error_code=ErrorCode.VALIDATION_ERROR,
+                message=f"Only failed or cancelled jobs can be retried. Current status: {job.status.value}",
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+            return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+
+        active_execution = next(
+            (
+                execution for execution in get_executions_by_job(job_id)
+                if execution.status in {ExecutionStatus.PENDING, ExecutionStatus.RUNNING}
+            ),
+            None,
+        )
+        if active_execution:
+            error_data = error_response(
+                error_code=ErrorCode.VALIDATION_ERROR,
+                message="This job still has an active execution. Cancel it before retrying.",
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+            return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+
+        if retry_request.name is not None:
+            is_valid, error_msg = validate_job_name(retry_request.name)
+            if not is_valid:
+                error_data = error_response(
+                    error_code=ErrorCode.VALIDATION_ERROR,
+                    message=error_msg,
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                )
+                return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+
+        if retry_request.assembler is not None:
+            is_valid, error_msg = validate_assembler(retry_request.assembler)
+            if not is_valid:
+                error_data = error_response(
+                    error_code=ErrorCode.VALIDATION_ERROR,
+                    message=error_msg,
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                )
+                return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+
+        if retry_request.data_types is not None:
+            is_valid, error_msg = validate_data_types(retry_request.data_types)
+            if not is_valid:
+                error_data = error_response(
+                    error_code=ErrorCode.VALIDATION_ERROR,
+                    message=error_msg,
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                )
+                return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+
+        cloud_provider = None
+        if retry_request.cloud_provider is not None:
+            try:
+                cloud_provider = CloudProvider(retry_request.cloud_provider)
+            except ValueError:
+                error_data = error_response(
+                    error_code=ErrorCode.VALIDATION_ERROR,
+                    message="Invalid cloud provider",
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                )
+                return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+
+        retry_update = JobUpdate(
+            name=retry_request.name,
+            assembler=retry_request.assembler,
+            data_types=retry_request.data_types,
+            cloud_provider=cloud_provider,
+            execution_preferences=retry_request.execution_preferences,
+            vm_name=retry_request.vm_name,
+        )
+
+        if getattr(job, "balance_reserved_at", None) is not None and getattr(job, "balance_charged_at", None) is None:
+            try:
+                settle_job_charge(job_id, current_user.id)
+            except Exception as billing_error:
+                logger.warning("Failed to settle previous attempt before retrying job %s: %s", job_id, billing_error, exc_info=True)
+                raise ValueError("The previous attempt could not be settled for billing yet. Please try again.")
+
+        updated_job = prepare_job_for_retry(job_id, current_user.id, retry_update)
+        if updated_job is None:
+            error_data = not_found_response("Job", job_id)
+            return JSONResponse(content=error_data, status_code=status.HTTP_404_NOT_FOUND)
+
+        return success_response(
+            data=_job_response_for_user(updated_job, current_user.username),
+            message="Job is ready to retry. Review inputs or settings, then execute it again.",
+        )
+    except ValueError as e:
+        error_data = error_response(
+            error_code=ErrorCode.VALIDATION_ERROR,
+            message=str(e),
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+    except Exception as e:
+        logger.error(f"Error preparing job {job_id} for retry: {e}", exc_info=True)
+        error_data = error_response(
+            error_code=ErrorCode.INTERNAL_ERROR,
+            message="Failed to prepare job for retry",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
         return JSONResponse(content=error_data, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
