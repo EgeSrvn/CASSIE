@@ -285,6 +285,29 @@ class MinIOClient:
             netloc=parsed_endpoint.netloc,
         ))
 
+    def _build_presign_client(self):
+        """Return the best client to use when generating browser-facing presigned URLs."""
+        minio_config = self._config.minio
+        if not minio_config.public_endpoint or minio_config.public_endpoint == minio_config.endpoint:
+            return self.s3_client
+
+        public_client_kwargs = {
+            'service_name': 's3',
+            'region_name': minio_config.region,
+            'endpoint_url': minio_config.public_endpoint,
+            'config': Config(
+                signature_version='s3v4',
+                retries={'max_attempts': 3, 'mode': 'standard'},
+                connect_timeout=S3_CONNECT_TIMEOUT_SECONDS,
+                read_timeout=S3_READ_TIMEOUT_SECONDS,
+                max_pool_connections=25
+            ),
+        }
+        if minio_config.access_key and minio_config.secret_key:
+            public_client_kwargs['aws_access_key_id'] = minio_config.access_key
+            public_client_kwargs['aws_secret_access_key'] = minio_config.secret_key
+        return boto3.client(**public_client_kwargs)
+
     def _ensure_browser_upload_cors(self, bucket_name: str) -> None:
         """Allow browser presigned uploads to the shared bucket when supported."""
         if bucket_name in self._cors_checked_buckets:
@@ -730,25 +753,7 @@ class MinIOClient:
             if response_content_disposition and http_method.upper() == 'GET':
                 params['ResponseContentDisposition'] = response_content_disposition
 
-            presign_client = self.s3_client
-            minio_config = self._config.minio
-            if minio_config.public_endpoint and minio_config.public_endpoint != minio_config.endpoint:
-                public_client_kwargs = {
-                    'service_name': 's3',
-                    'region_name': minio_config.region,
-                    'endpoint_url': minio_config.public_endpoint,
-                    'config': Config(
-                        signature_version='s3v4',
-                        retries={'max_attempts': 3, 'mode': 'standard'},
-                        connect_timeout=S3_CONNECT_TIMEOUT_SECONDS,
-                        read_timeout=S3_READ_TIMEOUT_SECONDS,
-                        max_pool_connections=25
-                    ),
-                }
-                if minio_config.access_key and minio_config.secret_key:
-                    public_client_kwargs['aws_access_key_id'] = minio_config.access_key
-                    public_client_kwargs['aws_secret_access_key'] = minio_config.secret_key
-                presign_client = boto3.client(**public_client_kwargs)
+            presign_client = self._build_presign_client()
 
             url = presign_client.generate_presigned_url(
                 'get_object' if http_method.upper() == 'GET' else 'put_object',
@@ -761,6 +766,155 @@ class MinIOClient:
             
         except (ClientError, BotoCoreError) as e:
             error_msg = f"Failed to generate presigned URL for '{s3_key}': {e}"
+            self._logger.error(error_msg)
+            raise RuntimeError(error_msg)
+
+    def create_multipart_upload(
+        self,
+        user_id: int,
+        s3_key: str,
+        username: Optional[str] = None,
+        content_type: Optional[str] = None,
+        metadata: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, str]:
+        """Create a multipart upload session for a browser-direct upload."""
+        bucket_name = self.ensure_user_bucket(user_id, username)
+        object_key = self._get_object_key(user_id, s3_key)
+
+        try:
+            extra_args: Dict[str, Any] = {
+                'Bucket': bucket_name,
+                'Key': object_key,
+            }
+            if content_type:
+                extra_args['ContentType'] = content_type
+            if metadata:
+                extra_args['Metadata'] = metadata
+
+            response = self.s3_client.create_multipart_upload(**extra_args)
+            upload_id = response.get('UploadId')
+            if not upload_id:
+                raise RuntimeError("S3 did not return a multipart upload ID")
+
+            return {
+                'bucket': bucket_name,
+                'key': s3_key,
+                'object_key': object_key,
+                'upload_id': upload_id,
+            }
+        except (ClientError, BotoCoreError) as e:
+            error_msg = f"Failed to create multipart upload for '{s3_key}': {e}"
+            self._logger.error(error_msg)
+            raise RuntimeError(error_msg)
+
+    def generate_presigned_upload_part_url(
+        self,
+        user_id: int,
+        s3_key: str,
+        upload_id: str,
+        part_number: int,
+        expiration: int = 3600,
+        username: Optional[str] = None,
+    ) -> str:
+        """Generate a presigned URL for uploading a single multipart chunk."""
+        if part_number < 1:
+            raise ValueError("Multipart upload part numbers must be >= 1")
+
+        bucket_name, object_key = self._get_primary_storage_location(user_id, s3_key, username)
+
+        try:
+            presign_client = self._build_presign_client()
+            return presign_client.generate_presigned_url(
+                'upload_part',
+                Params={
+                    'Bucket': bucket_name,
+                    'Key': object_key,
+                    'UploadId': upload_id,
+                    'PartNumber': part_number,
+                },
+                ExpiresIn=expiration,
+            )
+        except (ClientError, BotoCoreError) as e:
+            error_msg = f"Failed to generate presigned upload-part URL for '{s3_key}' part {part_number}: {e}"
+            self._logger.error(error_msg)
+            raise RuntimeError(error_msg)
+
+    def complete_multipart_upload(
+        self,
+        user_id: int,
+        s3_key: str,
+        upload_id: str,
+        parts: List[Dict[str, Any]],
+        username: Optional[str] = None,
+        expected_size: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Complete a multipart upload and optionally wait for the final object size."""
+        if not parts:
+            raise ValueError("Multipart upload completion requires at least one uploaded part")
+
+        bucket_name, object_key = self._get_primary_storage_location(user_id, s3_key, username)
+        normalized_parts = [
+            {
+                'ETag': str(part.get('etag') or part.get('ETag') or '').strip(),
+                'PartNumber': int(part.get('part_number') or part.get('PartNumber') or 0),
+            }
+            for part in parts
+        ]
+
+        for part in normalized_parts:
+            if part['PartNumber'] < 1 or not part['ETag']:
+                raise ValueError("Each multipart upload part must include a valid part number and ETag")
+
+        normalized_parts.sort(key=lambda part: part['PartNumber'])
+
+        try:
+            response = self.s3_client.complete_multipart_upload(
+                Bucket=bucket_name,
+                Key=object_key,
+                UploadId=upload_id,
+                MultipartUpload={'Parts': normalized_parts},
+            )
+            head = (
+                self._wait_for_uploaded_object(bucket_name, object_key, expected_size)
+                if expected_size is not None
+                else self.s3_client.head_object(Bucket=bucket_name, Key=object_key)
+            )
+            return {
+                'bucket': bucket_name,
+                'key': s3_key,
+                'object_key': object_key,
+                'etag': str(head.get('ETag', '')).strip('"') if head else None,
+                'location': response.get('Location'),
+            }
+        except (ClientError, BotoCoreError) as e:
+            error_msg = f"Failed to complete multipart upload for '{s3_key}': {e}"
+            self._logger.error(error_msg)
+            raise RuntimeError(error_msg)
+
+    def abort_multipart_upload(
+        self,
+        user_id: int,
+        s3_key: str,
+        upload_id: str,
+        username: Optional[str] = None,
+    ) -> None:
+        """Abort a multipart upload session if it is still open."""
+        bucket_name, object_key = self._get_primary_storage_location(user_id, s3_key, username)
+        try:
+            self.s3_client.abort_multipart_upload(
+                Bucket=bucket_name,
+                Key=object_key,
+                UploadId=upload_id,
+            )
+        except ClientError as e:
+            error_code = e.response.get('Error', {}).get('Code', '')
+            if error_code in {'404', 'NoSuchUpload', 'NoSuchKey', 'NotFound'}:
+                return
+            error_msg = f"Failed to abort multipart upload for '{s3_key}': {e}"
+            self._logger.error(error_msg)
+            raise RuntimeError(error_msg)
+        except BotoCoreError as e:
+            error_msg = f"Failed to abort multipart upload for '{s3_key}': {e}"
             self._logger.error(error_msg)
             raise RuntimeError(error_msg)
     

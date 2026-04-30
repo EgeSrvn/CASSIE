@@ -73,11 +73,37 @@ export const uploadDataFile = async (
   }
 }
 
-interface DirectUploadPrepareResponse {
-  upload_url: string
+interface DirectUploadBaseResponse {
   s3_key: string
   filename: string
   expires_in: number
+}
+
+interface DirectUploadSinglePrepareResponse extends DirectUploadBaseResponse {
+  upload_strategy: 'single'
+  upload_url: string
+}
+
+interface DirectUploadMultipartPrepareResponse extends DirectUploadBaseResponse {
+  upload_strategy: 'multipart'
+  upload_id: string
+  part_size_bytes: number
+  part_count: number
+}
+
+type DirectUploadPrepareResponse =
+  | DirectUploadSinglePrepareResponse
+  | DirectUploadMultipartPrepareResponse
+
+interface DirectUploadPartUrlResponse {
+  upload_url: string
+  part_number: number
+  expires_in: number
+}
+
+interface CompletedMultipartPart {
+  part_number: number
+  etag: string
 }
 
 const delay = (ms: number, signal?: AbortSignal): Promise<void> =>
@@ -115,6 +141,7 @@ export const directUploadDataFile = async (
       size_bytes: file.size,
       folder_id: folderId ?? null,
       file_format: fileFormat || null,
+      content_type: file.type || 'application/octet-stream',
     },
     { signal }
   )
@@ -124,29 +151,128 @@ export const directUploadDataFile = async (
   }
 
   const prepared = prepareResponse.data.data
-  const watchdog = createUploadActivityWatchdog(signal)
-  try {
-    await axios.put(prepared.upload_url, file, {
-      headers: {
-        'Content-Type': file.type || 'application/octet-stream',
-      },
-      timeout: 0,
-      signal: watchdog.signal,
-      onUploadProgress: (progressEvent) => {
-        watchdog.markProgress(progressEvent.loaded)
-        if (onProgress && progressEvent.total) {
-          const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total)
-          onProgress(Math.min(percentCompleted, 100))
-        }
-      },
-    })
-  } catch (error: any) {
-    if (watchdog.timedOut()) {
-      throw new Error('Upload timed out after 5 minutes without transfer progress')
+  let completedParts: CompletedMultipartPart[] | undefined
+
+  if (prepared.upload_strategy === 'single') {
+    const watchdog = createUploadActivityWatchdog(signal)
+    try {
+      await axios.put(prepared.upload_url, file, {
+        headers: {
+          'Content-Type': file.type || 'application/octet-stream',
+        },
+        timeout: 0,
+        signal: watchdog.signal,
+        onUploadProgress: (progressEvent) => {
+          watchdog.markProgress(progressEvent.loaded)
+          if (onProgress && progressEvent.total) {
+            const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total)
+            onProgress(Math.min(percentCompleted, 100))
+          }
+        },
+      })
+    } catch (error: any) {
+      if (watchdog.timedOut()) {
+        throw new Error('Upload timed out after 5 minutes without transfer progress')
+      }
+      throw error
+    } finally {
+      watchdog.cleanup()
     }
-    throw error
-  } finally {
-    watchdog.cleanup()
+  } else {
+    completedParts = []
+    const watchdog = createUploadActivityWatchdog(signal)
+    let multipartFinished = false
+
+    try {
+      const partSize = Math.max(prepared.part_size_bytes, 5 * 1024 * 1024)
+      const totalParts = Math.max(prepared.part_count, Math.ceil(file.size / partSize))
+      let uploadedCommittedBytes = 0
+
+      for (let partIndex = 0; partIndex < totalParts; partIndex += 1) {
+        const partNumber = partIndex + 1
+        const chunkStart = partIndex * partSize
+        const chunkEnd = Math.min(file.size, chunkStart + partSize)
+        const chunk = file.slice(chunkStart, chunkEnd)
+
+        const partUrlResponse = await apiClient.post<{ success: boolean; data: DirectUploadPartUrlResponse; message?: string }>(
+          '/api/data-files/direct-upload/part-url',
+          {
+            s3_key: prepared.s3_key,
+            upload_id: prepared.upload_id,
+            part_number: partNumber,
+          },
+          { signal: watchdog.signal }
+        )
+
+        if (!partUrlResponse.data.success) {
+          throw new Error(partUrlResponse.data.message || `Failed to prepare multipart upload part ${partNumber}`)
+        }
+
+        let currentPartLoaded = 0
+        const uploadResponse = await axios.put(partUrlResponse.data.data.upload_url, chunk, {
+          headers: {
+            'Content-Type': file.type || 'application/octet-stream',
+          },
+          timeout: 0,
+          signal: watchdog.signal,
+          onUploadProgress: (progressEvent) => {
+            currentPartLoaded = Math.min(progressEvent.loaded || 0, chunk.size)
+            const aggregateLoaded = uploadedCommittedBytes + currentPartLoaded
+            watchdog.markProgress(aggregateLoaded)
+            if (onProgress && file.size > 0) {
+              const percentCompleted = Math.round((aggregateLoaded * 100) / file.size)
+              onProgress(Math.min(percentCompleted, 99))
+            }
+          },
+        })
+
+        uploadedCommittedBytes += chunk.size
+        watchdog.markProgress(uploadedCommittedBytes)
+
+        const etagHeader = (uploadResponse.headers?.['etag'] || uploadResponse.headers?.['ETag']) as string | undefined
+        const etag = String(etagHeader || '').replace(/"/g, '').trim()
+        if (!etag) {
+          throw new Error(`Storage did not return an ETag for uploaded part ${partNumber}`)
+        }
+
+        completedParts.push({
+          part_number: partNumber,
+          etag,
+        })
+
+        if (onProgress && file.size > 0) {
+          const percentCompleted = Math.round((uploadedCommittedBytes * 100) / file.size)
+          onProgress(Math.min(percentCompleted, 99))
+        }
+      }
+
+      multipartFinished = true
+    } catch (error: any) {
+      if (!signal?.aborted && completedParts) {
+        try {
+          await apiClient.post(
+            '/api/data-files/direct-upload/abort',
+            {
+              s3_key: prepared.s3_key,
+              upload_id: prepared.upload_id,
+            },
+            { signal }
+          )
+        } catch {
+          // Best-effort cleanup only; surfacing the original upload error is more useful.
+        }
+      }
+
+      if (watchdog.timedOut()) {
+        throw new Error('Upload timed out after 5 minutes without transfer progress')
+      }
+      throw error
+    } finally {
+      if (!multipartFinished && onProgress) {
+        onProgress(0)
+      }
+      watchdog.cleanup()
+    }
   }
 
   let lastCompleteError: any = null
@@ -160,11 +286,16 @@ export const directUploadDataFile = async (
           size_bytes: file.size,
           folder_id: folderId ?? null,
           file_format: fileFormat || null,
+          upload_id: prepared.upload_strategy === 'multipart' ? prepared.upload_id : null,
+          parts: prepared.upload_strategy === 'multipart' ? completedParts : null,
         },
         { signal }
       )
 
       if (completeResponse.data.success) {
+        if (onProgress) {
+          onProgress(100)
+        }
         return completeResponse.data.data
       }
 

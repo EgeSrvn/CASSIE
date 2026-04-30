@@ -4,6 +4,7 @@ Data file management routes for CASSIE backend.
 This module provides endpoints for managing files in folders.
 """
 
+import math
 import os
 import re
 import shutil
@@ -16,7 +17,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 import requests
-from typing import Optional
+from typing import Optional, List
 from backend.api.routes.auth import get_current_user
 from backend.api.models.user_model import UserResponse
 from backend.api.services.data_file_service import (
@@ -50,6 +51,13 @@ router = APIRouter(prefix="/data-files", tags=["data-files"])
 minio_client = get_minio_client()
 MAX_CLOUD_REDIRECTS = 5
 MAX_CLOUD_IMPORT_BYTES = int(os.getenv("CASSIE_MAX_CLOUD_IMPORT_BYTES", str(5 * 1024 * 1024 * 1024)))
+DIRECT_UPLOAD_MULTIPART_THRESHOLD_BYTES = int(
+    os.getenv("CASSIE_DIRECT_UPLOAD_MULTIPART_THRESHOLD_BYTES", str(256 * 1024 * 1024))
+)
+DIRECT_UPLOAD_PART_SIZE_BYTES = int(
+    os.getenv("CASSIE_DIRECT_UPLOAD_PART_SIZE_BYTES", str(64 * 1024 * 1024))
+)
+DIRECT_UPLOAD_URL_EXPIRATION_SECONDS = 24 * 60 * 60
 
 
 def _write_upload_chunk(temp_file, chunk: bytes) -> None:
@@ -71,6 +79,18 @@ class DirectUploadPrepareRequest(BaseModel):
     size_bytes: int = Field(..., ge=1)
     folder_id: Optional[int] = None
     file_format: Optional[str] = Field(None, max_length=50)
+    content_type: Optional[str] = Field(None, max_length=255)
+
+
+class DirectUploadMultipartPart(BaseModel):
+    part_number: int = Field(..., ge=1)
+    etag: str = Field(..., min_length=1, max_length=512)
+
+
+class DirectUploadPartUrlRequest(BaseModel):
+    s3_key: str = Field(..., min_length=1, max_length=500)
+    upload_id: str = Field(..., min_length=1, max_length=512)
+    part_number: int = Field(..., ge=1)
 
 
 class DirectUploadCompleteRequest(BaseModel):
@@ -79,6 +99,13 @@ class DirectUploadCompleteRequest(BaseModel):
     size_bytes: int = Field(..., ge=1)
     folder_id: Optional[int] = None
     file_format: Optional[str] = Field(None, max_length=50)
+    upload_id: Optional[str] = Field(None, min_length=1, max_length=512)
+    parts: Optional[List[DirectUploadMultipartPart]] = None
+
+
+class DirectUploadAbortRequest(BaseModel):
+    s3_key: str = Field(..., min_length=1, max_length=500)
+    upload_id: str = Field(..., min_length=1, max_length=512)
 
 
 @router.post("/direct-upload/prepare", status_code=status.HTTP_200_OK)
@@ -110,21 +137,45 @@ async def prepare_direct_data_file_upload(
         await run_in_threadpool(minio_client.ensure_user_bucket, current_user.id, current_user.username)
         storage_filename = make_storage_data_filename(filename)
         s3_key = build_data_s3_key(current_user.id, storage_filename, payload.folder_id)
+        if payload.size_bytes >= DIRECT_UPLOAD_MULTIPART_THRESHOLD_BYTES:
+            multipart_upload = await run_in_threadpool(
+                minio_client.create_multipart_upload,
+                current_user.id,
+                s3_key,
+                current_user.username,
+                payload.content_type,
+                None,
+            )
+            part_count = max(1, math.ceil(payload.size_bytes / DIRECT_UPLOAD_PART_SIZE_BYTES))
+
+            return success_response(
+                data={
+                    "upload_strategy": "multipart",
+                    "upload_id": multipart_upload["upload_id"],
+                    "part_size_bytes": DIRECT_UPLOAD_PART_SIZE_BYTES,
+                    "part_count": part_count,
+                    "s3_key": s3_key,
+                    "filename": filename,
+                    "expires_in": DIRECT_UPLOAD_URL_EXPIRATION_SECONDS,
+                },
+                message="Multipart direct upload prepared",
+            )
+
         upload_url = await run_in_threadpool(
             minio_client.generate_presigned_url,
             current_user.id,
             s3_key,
-            24 * 60 * 60,
+            DIRECT_UPLOAD_URL_EXPIRATION_SECONDS,
             current_user.username,
             "PUT",
         )
-
         return success_response(
             data={
+                "upload_strategy": "single",
                 "upload_url": upload_url,
                 "s3_key": s3_key,
                 "filename": filename,
-                "expires_in": 24 * 60 * 60,
+                "expires_in": DIRECT_UPLOAD_URL_EXPIRATION_SECONDS,
             },
             message="Direct upload URL prepared",
         )
@@ -149,6 +200,56 @@ async def prepare_direct_data_file_upload(
         )
 
 
+@router.post("/direct-upload/part-url", status_code=status.HTTP_200_OK)
+async def create_direct_data_file_upload_part_url(
+    payload: DirectUploadPartUrlRequest,
+    current_user: UserResponse = Depends(get_current_user),
+):
+    """Create a presigned URL for one multipart upload chunk."""
+    try:
+        expected_prefix = f"data/{current_user.id}/"
+        if not payload.s3_key.startswith(expected_prefix):
+            raise ValueError("Upload key does not belong to the current user")
+
+        upload_url = await run_in_threadpool(
+            minio_client.generate_presigned_upload_part_url,
+            current_user.id,
+            payload.s3_key,
+            payload.upload_id,
+            payload.part_number,
+            DIRECT_UPLOAD_URL_EXPIRATION_SECONDS,
+            current_user.username,
+        )
+
+        return success_response(
+            data={
+                "upload_url": upload_url,
+                "part_number": payload.part_number,
+                "expires_in": DIRECT_UPLOAD_URL_EXPIRATION_SECONDS,
+            },
+            message="Multipart upload part URL prepared",
+        )
+    except ValueError as e:
+        return JSONResponse(
+            content=error_response(
+                error_code=ErrorCode.VALIDATION_ERROR,
+                message=str(e),
+                status_code=status.HTTP_400_BAD_REQUEST,
+            ),
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    except Exception as e:
+        logger.error(f"Error preparing direct upload part URL: {e}", exc_info=True)
+        return JSONResponse(
+            content=error_response(
+                error_code=ErrorCode.INTERNAL_ERROR,
+                message="Failed to prepare multipart upload part",
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            ),
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+
 @router.post("/direct-upload/complete", status_code=status.HTTP_201_CREATED)
 async def complete_direct_data_file_upload(
     payload: DirectUploadCompleteRequest,
@@ -159,6 +260,26 @@ async def complete_direct_data_file_upload(
         expected_prefix = f"data/{current_user.id}/"
         if not payload.s3_key.startswith(expected_prefix):
             raise ValueError("Upload key does not belong to the current user")
+
+        if payload.upload_id:
+            if not payload.parts:
+                raise ValueError("Multipart direct upload completion requires uploaded parts")
+            try:
+                await run_in_threadpool(
+                    minio_client.complete_multipart_upload,
+                    current_user.id,
+                    payload.s3_key,
+                    payload.upload_id,
+                    [part.model_dump() for part in payload.parts],
+                    current_user.username,
+                    payload.size_bytes,
+                )
+            except Exception as completion_error:
+                logger.warning(
+                    "Multipart upload completion for '%s' failed before final verification: %s",
+                    payload.s3_key,
+                    completion_error,
+                )
 
         object_info = await run_in_threadpool(
             minio_client.get_file_info,
@@ -217,6 +338,50 @@ async def complete_direct_data_file_upload(
             content=error_response(
                 error_code=ErrorCode.INTERNAL_ERROR,
                 message="Failed to complete direct upload",
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            ),
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+
+@router.post("/direct-upload/abort", status_code=status.HTTP_200_OK)
+async def abort_direct_data_file_upload(
+    payload: DirectUploadAbortRequest,
+    current_user: UserResponse = Depends(get_current_user),
+):
+    """Abort an unfinished multipart direct upload."""
+    try:
+        expected_prefix = f"data/{current_user.id}/"
+        if not payload.s3_key.startswith(expected_prefix):
+            raise ValueError("Upload key does not belong to the current user")
+
+        await run_in_threadpool(
+            minio_client.abort_multipart_upload,
+            current_user.id,
+            payload.s3_key,
+            payload.upload_id,
+            current_user.username,
+        )
+
+        return success_response(
+            data={"aborted": True},
+            message="Multipart upload aborted",
+        )
+    except ValueError as e:
+        return JSONResponse(
+            content=error_response(
+                error_code=ErrorCode.VALIDATION_ERROR,
+                message=str(e),
+                status_code=status.HTTP_400_BAD_REQUEST,
+            ),
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    except Exception as e:
+        logger.error(f"Error aborting direct data upload: {e}", exc_info=True)
+        return JSONResponse(
+            content=error_response(
+                error_code=ErrorCode.INTERNAL_ERROR,
+                message="Failed to abort multipart upload",
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             ),
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
