@@ -1515,7 +1515,6 @@ export default function CreateJob() {
         checksum: file.checksum || null,
         uploaded_at: file.uploaded_at || null,
         created_at: file.created_at,
-        folderPath: 'Original job inputs',
       })
       seenIds.add(file.id)
     })
@@ -1795,6 +1794,10 @@ export default function CreateJob() {
   const combinedSelectableFiles = useMemo(
     () => getCombinedSelectableFiles(),
     [dataFileTree, retrySourceInputFiles]
+  )
+  const combinedSelectableFilesById = useMemo(
+    () => new Map(combinedSelectableFiles.map((file) => [file.id, file])),
+    [combinedSelectableFiles]
   )
   const canAdvanceFromLevelTwo = inputStepMappingsComplete
 
@@ -2706,6 +2709,7 @@ export default function CreateJob() {
                         const inputKey = inputReq.id || inputReq.label
                         const mappedFileIds = pipelineInputMappings[inputKey] || []
                         const compatibleFiles = combinedSelectableFiles.filter(file => fileMatchesRequirement(file, inputReq))
+                        const missingMappedFileCount = mappedFileIds.filter((fileId) => !combinedSelectableFilesById.has(fileId)).length
 
                         return (
                           <div key={inputKey} className="builder-requirement-card builder-block-card">
@@ -2736,11 +2740,16 @@ export default function CreateJob() {
                                 Used by: {inputReq.used_by.join(', ')}
                               </p>
                             )}
-                            {compatibleFiles.length === 0 ? (
+                            {missingMappedFileCount > 0 && (
+                              <p style={{ margin: '0 0 0.65rem 0', color: '#b45309', fontSize: '0.85rem', fontWeight: 500 }}>
+                                {missingMappedFileCount} original job input file{missingMappedFileCount !== 1 ? 's are' : ' is'} no longer available.
+                              </p>
+                            )}
+                            {compatibleFiles.length === 0 && mappedFileIds.length === 0 ? (
                               <p style={{ color: '#666', fontStyle: 'italic', fontSize: '0.875rem' }}>
                                 No compatible files found in Storage. Upload files with formats: {inputReq.formats.join(', ').toUpperCase()}
                               </p>
-                            ) : (
+                            ) : compatibleFiles.length > 0 ? (
                               <div className="builder-file-chip-grid">
                                 {compatibleFiles.map((file) => {
                                   const isSelected = mappedFileIds.includes(file.id)
@@ -2759,7 +2768,7 @@ export default function CreateJob() {
                                   )
                                 })}
                               </div>
-                            )}
+                            ) : null}
                           </div>
                         )
                       })}
@@ -2890,6 +2899,7 @@ export default function CreateJob() {
                                 const requirementSource = getRequirementSource(block.toolReq, req)
                                 const mappedFileIds = toolFileMappings[toolKey]?.[req.type] || []
                                 const compatibleFiles = combinedSelectableFiles.filter((file) => fileMatchesRequirement(file, req))
+                                const missingMappedFileCount = mappedFileIds.filter((fileId) => !combinedSelectableFilesById.has(fileId)).length
 
                                 return (
                                   <div key={`${block.id}-${req.type}`} style={{ paddingTop: '0.25rem', borderTop: '1px solid #ece5d2' }}>
@@ -2947,16 +2957,22 @@ export default function CreateJob() {
                                       </p>
                                     ) : null}
 
+                                    {missingMappedFileCount > 0 && requirementSource !== 'upstream' && (
+                                      <p style={{ margin: '0 0 0.65rem 0', color: '#b45309', fontSize: '0.85rem', fontWeight: 500 }}>
+                                        {missingMappedFileCount} original job input file{missingMappedFileCount !== 1 ? 's are' : ' is'} no longer available.
+                                      </p>
+                                    )}
+
                                     {requirementSource === 'upstream' ? (
                                       <p style={{ color: '#6b7280', fontStyle: 'italic', fontSize: '0.875rem', padding: '0.5rem', backgroundColor: '#eff6ff', borderRadius: '4px', margin: 0 }}>
                                         This requirement is currently provided by {req.source_tool}. The tool still keeps this tool block visible so you can review all inputs in one place.
                                       </p>
-                                    ) : compatibleFiles.length === 0 ? (
+                                    ) : compatibleFiles.length === 0 && mappedFileIds.length === 0 ? (
                                       <p style={{ color: '#666', fontStyle: 'italic', fontSize: '0.875rem', margin: 0 }}>
                                         No compatible files found in Storage. Upload files with formats: {req.formats.join(', ').toUpperCase()}
                                         {req.filename_example ? ` and names like ${req.filename_example}` : ''}
                                       </p>
-                                    ) : (
+                                    ) : compatibleFiles.length > 0 ? (
                                       <div className="builder-file-chip-grid">
                                         {compatibleFiles.map((file) => {
                                           const isSelected = mappedFileIds.includes(file.id)
@@ -2975,7 +2991,7 @@ export default function CreateJob() {
                                           )
                                         })}
                                       </div>
-                                    )}
+                                    ) : null}
                                   </div>
                                 )
                               })}
