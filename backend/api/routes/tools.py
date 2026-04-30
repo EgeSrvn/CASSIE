@@ -201,6 +201,8 @@ async def get_tool_requirements(
                     "tool_name": tool_name,
                     "tool_type": tool.get("type", "unknown"),
                     "description": tool.get("description", ""),
+                    "editable_flags": tool.get("editable_flags", []),
+                    "default_flag_values": tool.get("default_flag_values", {}),
                     "requirements": processed_requirements
                 })
         

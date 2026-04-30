@@ -11,6 +11,75 @@ export const getUploadResponseTimeoutMs = (sizeBytes?: number | null): number =>
   return baseTimeoutMs + (extraGiB * 2 * 60 * 1000)
 }
 
+export const UPLOAD_IDLE_TIMEOUT_MS = 5 * 60 * 1000
+
+export interface UploadActivityWatchdog {
+  signal: AbortSignal
+  markProgress: (loadedBytes?: number) => void
+  cleanup: () => void
+  timedOut: () => boolean
+}
+
+export const createUploadActivityWatchdog = (signal?: AbortSignal): UploadActivityWatchdog => {
+  const controller = new AbortController()
+  let timedOut = false
+  let lastLoadedBytes = -1
+  let timer: number | null = null
+
+  const clearTimer = () => {
+    if (timer !== null) {
+      window.clearTimeout(timer)
+      timer = null
+    }
+  }
+
+  const triggerTimeout = () => {
+    timedOut = true
+    clearTimer()
+    controller.abort()
+  }
+
+  const scheduleTimeout = () => {
+    clearTimer()
+    timer = window.setTimeout(triggerTimeout, UPLOAD_IDLE_TIMEOUT_MS)
+  }
+
+  const onAbort = () => {
+    clearTimer()
+    controller.abort()
+  }
+
+  if (signal) {
+    if (signal.aborted) {
+      onAbort()
+    } else {
+      signal.addEventListener('abort', onAbort, { once: true })
+    }
+  }
+
+  scheduleTimeout()
+
+  return {
+    signal: controller.signal,
+    markProgress: (loadedBytes?: number) => {
+      if (typeof loadedBytes === 'number' && loadedBytes >= 0) {
+        if (loadedBytes === lastLoadedBytes) {
+          return
+        }
+        lastLoadedBytes = loadedBytes
+      }
+      scheduleTimeout()
+    },
+    cleanup: () => {
+      clearTimer()
+      if (signal) {
+        signal.removeEventListener('abort', onAbort)
+      }
+    },
+    timedOut: () => timedOut,
+  }
+}
+
 const extractApiErrorMessage = (errorData: any, fallback: string): string => {
   const candidate = (
     errorData?.message ||
@@ -70,6 +139,7 @@ export const uploadFile = async (
   authToken?: string,
   signal?: AbortSignal
 ): Promise<File> => {
+  const watchdog = createUploadActivityWatchdog(signal)
   try {
     const formData = new FormData()
     formData.append('file', file)
@@ -77,7 +147,7 @@ export const uploadFile = async (
     const params: any = { file_type: fileType }
     if (jobId !== null) params.job_id = jobId
     if (fileFormat) params.file_format = fileFormat
-    
+
     const response = await apiClient.post<{ success: boolean; data: File; message?: string }>(
       '/api/storage/upload',
       formData,
@@ -87,9 +157,10 @@ export const uploadFile = async (
           'Content-Type': 'multipart/form-data',
           ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
         },
-        timeout: getUploadResponseTimeoutMs(file.size),
-        signal,
+        timeout: 0,
+        signal: watchdog.signal,
         onUploadProgress: (progressEvent) => {
+          watchdog.markProgress(progressEvent.loaded)
           if (onProgress && progressEvent.total) {
             const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total)
             onProgress(Math.min(percentCompleted, 100))
@@ -97,12 +168,14 @@ export const uploadFile = async (
         },
       }
     )
-    
     if (response.data.success) {
       return response.data.data
     }
     throw new Error(response.data.message || 'Failed to upload file')
   } catch (error: any) {
+    if (watchdog.timedOut()) {
+      throw new Error('Upload timed out after 5 minutes without transfer progress')
+    }
     if (error.response?.data) {
       const errorData = error.response.data
       const message = (
@@ -121,6 +194,8 @@ export const uploadFile = async (
       throw new Error('Upload reached the server, but storage did not confirm in time. Please retry after checking that MinIO is healthy.')
     }
     throw error
+  } finally {
+    watchdog.cleanup()
   }
 }
 

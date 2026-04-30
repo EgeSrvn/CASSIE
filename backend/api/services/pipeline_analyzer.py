@@ -111,22 +111,6 @@ def _resolve_node_tool_config(node: Dict[str, Any], tool_id: str) -> Dict[str, A
     return validation["values"] if not validation["errors"] else {}
 
 
-def _apply_flag_specific_requirement_rules(
-    tool_id: str,
-    requirement: Dict[str, Any],
-    tool_config: Dict[str, Any],
-) -> Dict[str, Any]:
-    req_copy = dict(requirement)
-
-    if tool_id == "FASTQC" and bool(tool_config.get("casava")) and str(req_copy.get("type") or "").strip().lower() == "reads":
-        req_copy["filename_pattern"] = r".+_L\d{3}_(?:R?[12])_\d{3}\.(?:fastq|fq)(?:\.gz)?$"
-        req_copy["filename_example"] = "sample_L001_R1_001.fastq.gz"
-        req_copy["validation_message"] = "CASAVA mode expects filenames like sample_L001_R1_001.fastq.gz."
-        req_copy["input_behavior"] = "casava"
-
-    return req_copy
-
-
 def _build_requirement_source_metadata(
     requirement: Dict[str, Any],
     producer_name: str | None,
@@ -227,8 +211,8 @@ def analyze_pipeline_requirements(pipeline: PipelineInDB) -> Dict[str, Any]:
                 }
 
                 processed_requirements = []
-                for requirement_index, req in enumerate(get_tool_requirements(tool_id)):
-                    req_copy = _apply_flag_specific_requirement_rules(tool_id, req, tool_config)
+                for requirement_index, req in enumerate(get_tool_requirements(tool_id, tool_config)):
+                    req_copy = dict(req)
                     producer_name = None
                     for upstream_tool_id in upstream_tool_ids:
                         if tool_produces_requirement(upstream_tool_id, str(req_copy.get("type") or "")):

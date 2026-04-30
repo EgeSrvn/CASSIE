@@ -1,5 +1,5 @@
 import apiClient from './apiClient'
-import { getUploadResponseTimeoutMs } from './fileService'
+import { createUploadActivityWatchdog } from './fileService'
 import axios from 'axios'
 
 export interface DataFile {
@@ -46,20 +46,31 @@ export const uploadDataFile = async (
     formData.append('file_format', fileFormat)
   }
   
-  const response = await apiClient.post('/api/data-files/upload', formData, {
-    headers: {
-      'Content-Type': 'multipart/form-data'
-    },
-    timeout: getUploadResponseTimeoutMs(file.size),
-    signal,
-    onUploadProgress: (progressEvent) => {
-      if (onProgress && progressEvent.total) {
-        const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total)
-        onProgress(Math.min(percentCompleted, 100))
-      }
-    },
-  })
-  return response.data.data
+  const watchdog = createUploadActivityWatchdog(signal)
+  try {
+    const response = await apiClient.post('/api/data-files/upload', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data'
+      },
+      timeout: 0,
+      signal: watchdog.signal,
+      onUploadProgress: (progressEvent) => {
+        watchdog.markProgress(progressEvent.loaded)
+        if (onProgress && progressEvent.total) {
+          const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total)
+          onProgress(Math.min(percentCompleted, 100))
+        }
+      },
+    })
+    return response.data.data
+  } catch (error: any) {
+    if (watchdog.timedOut()) {
+      throw new Error('Upload timed out after 5 minutes without transfer progress')
+    }
+    throw error
+  } finally {
+    watchdog.cleanup()
+  }
 }
 
 interface DirectUploadPrepareResponse {
@@ -113,19 +124,30 @@ export const directUploadDataFile = async (
   }
 
   const prepared = prepareResponse.data.data
-  await axios.put(prepared.upload_url, file, {
-    headers: {
-      'Content-Type': file.type || 'application/octet-stream',
-    },
-    timeout: getUploadResponseTimeoutMs(file.size),
-    signal,
-    onUploadProgress: (progressEvent) => {
-      if (onProgress && progressEvent.total) {
-        const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total)
-        onProgress(Math.min(percentCompleted, 100))
-      }
-    },
-  })
+  const watchdog = createUploadActivityWatchdog(signal)
+  try {
+    await axios.put(prepared.upload_url, file, {
+      headers: {
+        'Content-Type': file.type || 'application/octet-stream',
+      },
+      timeout: 0,
+      signal: watchdog.signal,
+      onUploadProgress: (progressEvent) => {
+        watchdog.markProgress(progressEvent.loaded)
+        if (onProgress && progressEvent.total) {
+          const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total)
+          onProgress(Math.min(percentCompleted, 100))
+        }
+      },
+    })
+  } catch (error: any) {
+    if (watchdog.timedOut()) {
+      throw new Error('Upload timed out after 5 minutes without transfer progress')
+    }
+    throw error
+  } finally {
+    watchdog.cleanup()
+  }
 
   let lastCompleteError: any = null
   for (let attempt = 1; attempt <= 5; attempt += 1) {

@@ -43,7 +43,7 @@ export default function SortDropdown({ id, label, value, options, onChange }: So
           onClick={() => setOpen((current) => !current)}
         >
           <span>{selectedOption?.label || 'Sort'}</span>
-          <span className="system-dropdown-caret" aria-hidden="true">{'\u2304'}</span>
+          <span className="system-dropdown-caret" aria-hidden="true">▾</span>
         </button>
         {open && (
           <div className="system-dropdown-menu" role="listbox" aria-labelledby={`${id}-label`}>

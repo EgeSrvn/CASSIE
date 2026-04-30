@@ -200,6 +200,22 @@
   background: rgba(255, 255, 255, 0.3);
 }
 
+.builder-block-menu-trigger {
+  width: 34px;
+  height: 34px;
+  border: 1px solid rgba(24, 59, 78, 0.14);
+  background: rgba(245, 238, 220, 0.92);
+  color: #183b4e;
+  font-size: 1.25rem;
+  font-weight: 700;
+  box-shadow: 0 8px 16px rgba(24, 59, 78, 0.08);
+}
+
+.builder-block-menu-trigger:hover {
+  background: #f8f1df;
+  border-color: rgba(24, 59, 78, 0.24);
+}
+
 .pipeline-node-menu {
   position: absolute;
   top: 34px;

@@ -173,6 +173,8 @@ export interface ToolRequirementInfo {
   tool_name: string
   tool_type: string
   description?: string
+  editable_flags?: EditableFlagDefinition[]
+  default_flag_values?: Record<string, string | number | boolean>
   tool_config?: Record<string, string | number | boolean>
   requirements: ToolRequirement[]
 }

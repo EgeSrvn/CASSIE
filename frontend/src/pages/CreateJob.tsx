@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useNavigate, useLocation } from 'react-router-dom'
 import {
   createJob,
@@ -14,6 +15,7 @@ import {
   VM,
 } from '../services/jobService'
 import {
+  EditableFlagDefinition,
   getAvailableTools,
   Tool,
   getToolRequirements,
@@ -39,6 +41,13 @@ import {
   computePipelinePriorityGroups,
   PriorityGroup,
 } from '../utils/pipelinePriority'
+import {
+  buildDefaultFlagValues,
+  FlagValue,
+  hasCustomizedFlagValues,
+  normalizeDraftFlagValues,
+  resolveToolRequirementsForFlags,
+} from '../utils/toolFlagConfig'
 import './PipelineBuilder.css'
 import '../styles/globals.css'
 
@@ -68,6 +77,7 @@ interface BuilderLevelDefinition {
 interface ManualToolInputBlock {
   id: string
   toolReq: ToolRequirementInfo
+  toolDefinition: Tool | null
   requirements: ToolRequirement[]
   externalRequirements: ToolRequirement[]
   upstreamRequirements: ToolRequirement[]
@@ -84,10 +94,10 @@ const getManualInputBlockDefaultName = (block: ManualToolInputBlock): string => 
 }
 
 const PIPELINE_STAGE_NODE_TYPES = new Set(['tool', 'checkpoint'])
-const CREATE_JOB_DRAFT_STORAGE_KEY = 'cassie:create-job-draft:v3'
+const CREATE_JOB_DRAFT_STORAGE_KEY = 'cassie:create-job-draft:v4'
 
 interface CreateJobDraft {
-  version: 3
+  version: 4
   jobName: string
   selectionMode: 'tools' | 'pipeline'
   selectedTools: number[]
@@ -102,6 +112,7 @@ interface CreateJobDraft {
   openPriorityGroups: number[]
   currentLevel: BuilderLevel
   inputBlockNames: Record<string, string>
+  manualToolFlagValues: Record<string, Record<string, FlagValue>>
   selectedVM: string
   reviewPipelinePreview: JobPipelineVisualization | null
 }
@@ -132,7 +143,7 @@ const readCreateJobDraft = (): CreateJobDraft | null => {
     }
 
     const parsed = JSON.parse(rawDraft)
-    if (!parsed || parsed.version !== 3) {
+    if (!parsed || parsed.version !== 4) {
       return null
     }
 
@@ -212,6 +223,14 @@ const resolvePipelineNodeLabel = (node: any, fallbackLabel: string): string => (
   String(node?.data?.label ?? node?.label ?? fallbackLabel)
 )
 
+const renderPageModal = (content: ReactNode) => {
+  if (typeof document === 'undefined') {
+    return null
+  }
+
+  return createPortal(content, document.body)
+}
+
 export default function CreateJob() {
   const location = useLocation()
   const storedDraftRef = useRef<CreateJobDraft | null>(readCreateJobDraft())
@@ -246,6 +265,7 @@ export default function CreateJob() {
   const [toolFileMappings, setToolFileMappings] = useState<Record<string, Record<string, number[]>>>(() => storedDraftRef.current?.toolFileMappings || {}) // Maps tool_index -> requirement_type -> file_id[]
   const [pipelineInputMappings, setPipelineInputMappings] = useState<Record<string, number[]>>(() => storedDraftRef.current?.pipelineInputMappings || {})
   const [requirementSourceSelections, setRequirementSourceSelections] = useState<Record<string, 'external' | 'upstream'>>(() => storedDraftRef.current?.requirementSourceSelections || {})
+  const [manualToolFlagValues, setManualToolFlagValues] = useState<Record<string, Record<string, FlagValue>>>(() => storedDraftRef.current?.manualToolFlagValues || {})
   const [recommendationIntents, setRecommendationIntents] = useState<RecommendationIntent[]>([])
   const [selectedIntentIds, setSelectedIntentIds] = useState<string[]>(() => storedDraftRef.current?.selectedIntentIds || [])
   const [recommendationOptions, setRecommendationOptions] = useState<RecommendationOption[]>([])
@@ -261,6 +281,10 @@ export default function CreateJob() {
   const [backendReviewPipelinePreview, setBackendReviewPipelinePreview] = useState<JobPipelineVisualization | null>(null)
   const [loadingReviewPipelinePreview, setLoadingReviewPipelinePreview] = useState(false)
   const [reviewPipelinePreviewError, setReviewPipelinePreviewError] = useState('')
+  const [openManualToolMenuId, setOpenManualToolMenuId] = useState<string | null>(null)
+  const [editingManualTool, setEditingManualTool] = useState<ToolRequirementInfo | null>(null)
+  const [editingManualToolDraftValues, setEditingManualToolDraftValues] = useState<Record<string, FlagValue>>({})
+  const [editingManualToolErrors, setEditingManualToolErrors] = useState<Record<string, string>>({})
   const navigate = useNavigate()
   const sharedRequirementCardStyle = {
     display: 'flex',
@@ -276,6 +300,15 @@ export default function CreateJob() {
     () => pipelines.find((pipeline) => pipeline.id === selectedPipelineId) || null,
     [pipelines, selectedPipelineId]
   )
+  const toolCatalogById = useMemo(() => {
+    const map = new Map<string, Tool>()
+    availableTools.forEach((tool) => {
+      if (tool.tool_id) {
+        map.set(tool.tool_id, tool)
+      }
+    })
+    return map
+  }, [availableTools])
   const selectedPipeline = selectedPipelineDetails || selectedPipelineSummary
   const selectedPipelineNodes = useMemo(
     () => selectedPipeline ? normalizePipelineNodeList(selectedPipeline.nodes) : [],
@@ -285,6 +318,12 @@ export default function CreateJob() {
     () => selectedPipeline ? normalizePipelineEdgeList(selectedPipeline.edges) : [],
     [selectedPipeline]
   )
+  const getManualToolDefaultFlagValues = useCallback((toolReq: ToolRequirementInfo): Record<string, FlagValue> => {
+    if (toolReq.default_flag_values) {
+      return { ...toolReq.default_flag_values }
+    }
+    return buildDefaultFlagValues(toolReq.editable_flags || [])
+  }, [])
 
   useEffect(() => {
     shouldPersistDraftRef.current = true
@@ -407,7 +446,16 @@ export default function CreateJob() {
     return () => {
       cancelled = true
     }
-  }, [selectedVM, selectionMode, selectedPipelineId, selectedTools, toolFileMappings, dataFileTree])
+  }, [
+    dataFileTree,
+    manualToolFlagValues,
+    requirementSourceSelections,
+    selectedPipelineId,
+    selectedTools,
+    selectedVM,
+    selectionMode,
+    toolFileMappings,
+  ])
 
   useEffect(() => {
     const fetchIntents = async () => {
@@ -651,7 +699,29 @@ export default function CreateJob() {
     ))
   }
 
-  const activeToolRequirementCards = toolRequirements
+  const activeToolRequirementCards = useMemo<ToolRequirementInfo[]>(() => (
+    toolRequirements.map((toolReq) => {
+      const currentFlagValues = {
+        ...getManualToolDefaultFlagValues(toolReq),
+        ...(manualToolFlagValues[toolReq.tool_id] || {}),
+      }
+      const resolvedRequirements = resolveToolRequirementsForFlags(
+        toolReq.tool_id,
+        toolReq.requirements || [],
+        currentFlagValues
+      ).map((requirement, index) => ({
+        ...requirement,
+        requirement_id:
+          requirement.requirement_id || `manual:${toolReq.tool_index}:${toolReq.tool_id}:${requirement.type}:${index}`,
+      }))
+
+      return {
+        ...toolReq,
+        tool_config: currentFlagValues,
+        requirements: resolvedRequirements,
+      }
+    })
+  ), [getManualToolDefaultFlagValues, manualToolFlagValues, toolRequirements])
   const pipelineInputRequirements = useMemo(
     () => pipelineRequirements?.input_requirements || [],
     [pipelineRequirements]
@@ -783,14 +853,14 @@ export default function CreateJob() {
   }, [selectionMode, selectedTools])
 
   useEffect(() => {
-    if (selectionMode !== 'tools' || !appliedRecommendationFileIds || toolRequirements.length === 0) {
+    if (selectionMode !== 'tools' || !appliedRecommendationFileIds || activeToolRequirementCards.length === 0) {
       return
     }
 
     const candidateFiles = getCombinedSelectableFiles().filter(file => appliedRecommendationFileIds.includes(file.id))
     const suggestedMappings: Record<string, Record<string, number[]>> = {}
 
-    toolRequirements.forEach(toolReq => {
+    activeToolRequirementCards.forEach(toolReq => {
       const toolKey = toolReq.tool_index.toString()
       const requirementMappings: Record<string, number[]> = {}
 
@@ -809,7 +879,7 @@ export default function CreateJob() {
 
     setToolFileMappings(suggestedMappings)
     setAppliedRecommendationFileIds(null)
-  }, [selectionMode, appliedRecommendationFileIds, toolRequirements, dataFileTree])
+  }, [activeToolRequirementCards, appliedRecommendationFileIds, dataFileTree, selectionMode])
 
   useEffect(() => {
     if (selectionMode !== 'tools') {
@@ -817,15 +887,28 @@ export default function CreateJob() {
       return
     }
 
-    const nextSelections: Record<string, 'external' | 'upstream'> = {}
-    toolRequirements.forEach((toolReq) => {
-      toolReq.requirements.forEach((req) => {
-        const key = req.requirement_id || `${toolReq.tool_index}:${req.type}`
-        nextSelections[key] = req.default_source || (req.is_intermediate ? 'upstream' : 'external')
+    setRequirementSourceSelections((current) => {
+      const nextSelections: Record<string, 'external' | 'upstream'> = {}
+      activeToolRequirementCards.forEach((toolReq) => {
+        toolReq.requirements.forEach((req) => {
+          const key = req.requirement_id || `${toolReq.tool_index}:${req.type}`
+          const defaultSelection = req.default_source || (req.is_intermediate ? 'upstream' : 'external')
+          nextSelections[key] = current[key] || defaultSelection
+        })
       })
+
+      const currentKeys = Object.keys(current)
+      const nextKeys = Object.keys(nextSelections)
+      if (
+        currentKeys.length === nextKeys.length &&
+        nextKeys.every((key) => current[key] === nextSelections[key])
+      ) {
+        return current
+      }
+
+      return nextSelections
     })
-    setRequirementSourceSelections(nextSelections)
-  }, [selectionMode, toolRequirements])
+  }, [activeToolRequirementCards, selectionMode])
 
   const getRequirementSelectionKey = useCallback((toolReq: ToolRequirementInfo, req: ToolRequirement): string => (
     req.requirement_id || `${toolReq.tool_index}:${req.type}`
@@ -857,13 +940,184 @@ export default function CreateJob() {
       return {
         id: getManualInputBlockId(toolReq),
         toolReq,
+        toolDefinition: toolCatalogById.get(toolReq.tool_id) || null,
         requirements: toolReq.requirements,
         externalRequirements,
         upstreamRequirements,
       }
     }),
-    [activeToolRequirementCards, getRequirementSource]
+    [activeToolRequirementCards, getRequirementSource, toolCatalogById]
   )
+
+  useEffect(() => {
+    if (selectionMode !== 'tools' || activeToolRequirementCards.length === 0) {
+      setManualToolFlagValues({})
+      setOpenManualToolMenuId(null)
+      setEditingManualTool(null)
+      setEditingManualToolDraftValues({})
+      setEditingManualToolErrors({})
+      return
+    }
+
+    setManualToolFlagValues((current) => {
+      const next: Record<string, Record<string, FlagValue>> = {}
+      activeToolRequirementCards.forEach((toolReq) => {
+        const toolId = toolReq.tool_id
+        const defaultValues = getManualToolDefaultFlagValues(toolReq)
+        next[toolId] = {
+          ...defaultValues,
+          ...(current[toolId] || {}),
+        }
+      })
+
+      const currentToolIds = Object.keys(current)
+      const nextToolIds = Object.keys(next)
+      const isSame =
+        currentToolIds.length === nextToolIds.length &&
+        nextToolIds.every((toolId) => {
+          const currentValues = current[toolId] || {}
+          const nextValues = next[toolId] || {}
+          const currentKeys = Object.keys(currentValues)
+          const nextKeys = Object.keys(nextValues)
+          return (
+            currentKeys.length === nextKeys.length &&
+            nextKeys.every((key) => String(currentValues[key]) === String(nextValues[key]))
+          )
+        })
+
+      return isSame ? current : next
+    })
+  }, [activeToolRequirementCards, getManualToolDefaultFlagValues, selectionMode])
+
+  useEffect(() => {
+    if (selectionMode !== 'tools') {
+      return
+    }
+
+    setToolFileMappings((current) => {
+      let changed = false
+      const activeRequirementsByTool = new Map(
+        activeToolRequirementCards.map((toolReq) => [
+          toolReq.tool_index.toString(),
+          new Set(toolReq.requirements.map((requirement) => requirement.type)),
+        ])
+      )
+      const nextMappings: Record<string, Record<string, number[]>> = {}
+
+      Object.entries(current).forEach(([toolKey, requirementMap]) => {
+        const activeRequirements = activeRequirementsByTool.get(toolKey)
+        if (!activeRequirements) {
+          changed = true
+          return
+        }
+
+        const nextRequirementMap: Record<string, number[]> = {}
+        Object.entries(requirementMap).forEach(([requirementType, fileIds]) => {
+          if (!activeRequirements.has(requirementType)) {
+            changed = true
+            return
+          }
+          nextRequirementMap[requirementType] = fileIds
+        })
+
+        if (Object.keys(nextRequirementMap).length > 0) {
+          nextMappings[toolKey] = nextRequirementMap
+        } else if (Object.keys(requirementMap).length > 0) {
+          changed = true
+        }
+      })
+
+      return changed ? nextMappings : current
+    })
+  }, [activeToolRequirementCards, selectionMode])
+
+  const openManualToolEditModal = useCallback((toolReq: ToolRequirementInfo) => {
+    const defaultValues = getManualToolDefaultFlagValues(toolReq)
+    const draftValues = {
+      ...defaultValues,
+      ...(manualToolFlagValues[toolReq.tool_id] || {}),
+    }
+    const validation = normalizeDraftFlagValues(toolReq.editable_flags || [], draftValues)
+    setEditingManualTool(toolReq)
+    setEditingManualToolDraftValues(validation.normalized)
+    setEditingManualToolErrors(validation.errors)
+    setOpenManualToolMenuId(null)
+  }, [getManualToolDefaultFlagValues, manualToolFlagValues])
+
+  const closeManualToolEditModal = useCallback(() => {
+    setEditingManualTool(null)
+    setEditingManualToolDraftValues({})
+    setEditingManualToolErrors({})
+  }, [])
+
+  const handleManualToolFlagChange = useCallback((flag: EditableFlagDefinition, value: FlagValue) => {
+    const nextDraftValues = {
+      ...editingManualToolDraftValues,
+      [flag.key]: value,
+    }
+    const validation = normalizeDraftFlagValues(editingManualTool?.editable_flags || [], nextDraftValues)
+    setEditingManualToolDraftValues(nextDraftValues)
+    setEditingManualToolErrors(validation.errors)
+  }, [editingManualTool, editingManualToolDraftValues])
+
+  const saveManualToolConfiguration = useCallback(() => {
+    if (!editingManualTool) {
+      return
+    }
+
+    const validation = normalizeDraftFlagValues(editingManualTool.editable_flags || [], editingManualToolDraftValues)
+    setEditingManualToolErrors(validation.errors)
+    if (Object.keys(validation.errors).length > 0) {
+      return
+    }
+
+    setManualToolFlagValues((current) => ({
+      ...current,
+      [editingManualTool.tool_id]: validation.normalized,
+    }))
+    closeManualToolEditModal()
+  }, [closeManualToolEditModal, editingManualTool, editingManualToolDraftValues])
+
+  const getManualToolConfigEntries = useCallback(() => (
+    activeToolRequirementCards
+      .filter((toolReq) => (toolReq.editable_flags || []).length > 0)
+      .map((toolReq) => {
+        const defaultValues = getManualToolDefaultFlagValues(toolReq)
+        const currentValues = {
+          ...defaultValues,
+          ...(manualToolFlagValues[toolReq.tool_id] || {}),
+        }
+        return {
+          tool_id: toolReq.tool_id,
+          tool_index: toolReq.tool_index,
+          tool_name: toolReq.tool_name,
+          tool_config: currentValues,
+          has_custom_config: hasCustomizedFlagValues(toolReq.editable_flags || [], currentValues),
+        }
+      })
+  ), [activeToolRequirementCards, getManualToolDefaultFlagValues, manualToolFlagValues])
+
+  const getManualInputBindings = useCallback(() => (
+    activeToolRequirementCards.flatMap((toolReq) => {
+      const toolKey = toolReq.tool_index.toString()
+      return toolReq.requirements.flatMap((req, requirementIndex) => {
+        if (getRequirementSource(toolReq, req) === 'upstream') {
+          return []
+        }
+
+        const bindingId = req.requirement_id || `manual:${toolReq.tool_index}:${toolReq.tool_id}:${req.type}:${requirementIndex}`
+        const mappedFileIds = toolFileMappings[toolKey]?.[req.type] || []
+
+        return mappedFileIds.map((fileId) => ({
+          file_id: fileId,
+          binding_id: bindingId,
+          tool_id: toolReq.tool_id,
+          requirement_type: req.type,
+          label: req.label,
+        }))
+      })
+    })
+  ), [activeToolRequirementCards, getRequirementSource, toolFileMappings])
 
   useEffect(() => {
     if (selectionMode === 'pipeline') {
@@ -1167,17 +1421,18 @@ export default function CreateJob() {
     candidateFiles: Array<FileItem & { folderPath?: string }>
   ): number[] => {
     const compatibleFiles = candidateFiles.filter(file => fileMatchesRequirement(file, requirement))
+    const normalizedRequirementType = String(requirement.type || '').trim().toLowerCase()
 
-    if (requirement.type === 'forward_reads') {
+    if (normalizedRequirementType === 'forward_reads' || normalizedRequirementType === 'hic_forward_reads') {
       return compatibleFiles.slice(0, 1).map(file => file.id)
     }
-    if (requirement.type === 'reverse_reads') {
+    if (normalizedRequirementType === 'reverse_reads' || normalizedRequirementType === 'hic_reverse_reads') {
       return compatibleFiles.slice(1, 2).map(file => file.id)
     }
-    if (requirement.type === 'assembly') {
+    if (normalizedRequirementType === 'assembly') {
       return compatibleFiles.slice(0, 1).map(file => file.id)
     }
-    if (requirement.type === 'reference') {
+    if (normalizedRequirementType === 'reference' || normalizedRequirementType === 'reference_genome') {
       const alternate = compatibleFiles.slice(1, 2).map(file => file.id)
       return alternate.length > 0 ? alternate : compatibleFiles.slice(0, 1).map(file => file.id)
     }
@@ -1466,6 +1721,18 @@ export default function CreateJob() {
     if (inputSourceOverrides.length > 0) {
       executionPreferences.input_source_overrides = inputSourceOverrides
     }
+    const manualInputBindings = getManualInputBindings()
+    if (manualInputBindings.length > 0) {
+      executionPreferences.manual_input_bindings = manualInputBindings
+    }
+    const manualToolConfigs = getManualToolConfigEntries().map(({ tool_id, tool_index, tool_config }) => ({
+      tool_id,
+      tool_index,
+      tool_config,
+    }))
+    if (manualToolConfigs.length > 0) {
+      executionPreferences.manual_tool_configs = manualToolConfigs
+    }
 
     return {
       tool_indices: selectedTools,
@@ -1478,6 +1745,8 @@ export default function CreateJob() {
     activeToolRequirementCards,
     combinedSelectableFiles,
     currentLevel,
+    getManualToolConfigEntries,
+    getManualInputBindings,
     getManualInputSourceOverrides,
     getRequirementSource,
     inputBlockDisplayName,
@@ -1588,7 +1857,7 @@ export default function CreateJob() {
     }
 
     const draft: CreateJobDraft = {
-      version: 3,
+      version: 4,
       jobName,
       selectionMode,
       selectedTools,
@@ -1603,6 +1872,7 @@ export default function CreateJob() {
       openPriorityGroups,
       currentLevel,
       inputBlockNames,
+      manualToolFlagValues,
       selectedVM,
       reviewPipelinePreview: effectiveReviewPipelinePreview || persistedReviewPipelinePreview,
     }
@@ -1613,6 +1883,7 @@ export default function CreateJob() {
     effectiveReviewPipelinePreview,
     inputBlockNames,
     jobName,
+    manualToolFlagValues,
     openPriorityGroups,
     persistedReviewPipelinePreview,
     pipelineInputMappings,
@@ -1769,8 +2040,24 @@ export default function CreateJob() {
           return
         }
         jobData.tool_indices = selectedTools
+        const manualExecutionPreferences: Record<string, unknown> = {}
         if (priorityGroups.length > 0) {
-          jobData.execution_preferences = buildManualExecutionPreferences(priorityGroups)
+          Object.assign(manualExecutionPreferences, buildManualExecutionPreferences(priorityGroups))
+        }
+        const manualToolConfigs = getManualToolConfigEntries().map(({ tool_id, tool_index, tool_config }) => ({
+          tool_id,
+          tool_index,
+          tool_config,
+        }))
+        if (manualToolConfigs.length > 0) {
+          manualExecutionPreferences.manual_tool_configs = manualToolConfigs
+        }
+        const manualInputBindings = getManualInputBindings()
+        if (manualInputBindings.length > 0) {
+          manualExecutionPreferences.manual_input_bindings = manualInputBindings
+        }
+        if (Object.keys(manualExecutionPreferences).length > 0) {
+          jobData.execution_preferences = manualExecutionPreferences
         }
       }
 
@@ -2354,8 +2641,43 @@ export default function CreateJob() {
                         const attachedFileCount = Array.from(new Set(
                           block.externalRequirements.flatMap((req) => toolFileMappings[toolKey]?.[req.type] || [])
                         )).length
+                        const currentFlagValues = {
+                          ...getManualToolDefaultFlagValues(block.toolReq),
+                          ...(manualToolFlagValues[block.toolReq.tool_id] || {}),
+                        }
+                        const hasEditableFlags = (block.toolReq.editable_flags || []).length > 0
+                        const hasCustomConfig = hasCustomizedFlagValues(block.toolReq.editable_flags || [], currentFlagValues)
                         return (
-                          <div key={block.id} className="builder-requirement-card builder-block-card">
+                          <div key={block.id} className="builder-requirement-card builder-block-card" style={{ position: 'relative' }}>
+                            <div className="pipeline-node-menu-wrap">
+                              <button
+                                type="button"
+                                className="pipeline-node-menu-trigger builder-block-menu-trigger"
+                                onClick={(event) => {
+                                  event.preventDefault()
+                                  event.stopPropagation()
+                                  setOpenManualToolMenuId((current) => current === block.id ? null : block.id)
+                                }}
+                                aria-label={`Open settings for ${block.toolReq.tool_name}`}
+                                aria-expanded={openManualToolMenuId === block.id}
+                              >
+                                ⋮
+                              </button>
+                              {openManualToolMenuId === block.id && (
+                                <div className="pipeline-node-menu">
+                                  <button
+                                    type="button"
+                                    onClick={(event) => {
+                                      event.preventDefault()
+                                      event.stopPropagation()
+                                      openManualToolEditModal(block.toolReq)
+                                    }}
+                                  >
+                                    Edit
+                                  </button>
+                                </div>
+                              )}
+                            </div>
                             <div style={{ marginBottom: '0.85rem' }}>
                               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', marginBottom: '0.6rem' }}>
                                 <label style={{ color: '#64748b', fontSize: '0.75rem', fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase' }}>
@@ -2384,6 +2706,11 @@ export default function CreateJob() {
                               <p style={{ margin: 0, fontSize: '0.875rem', color: '#6b7280' }}>
                                 Tool: {block.toolReq.tool_name}
                               </p>
+                              <div className={`pipeline-node-config-chip ${hasCustomConfig ? 'custom' : 'default'}`} style={{ marginTop: '0.65rem' }}>
+                                {hasEditableFlags
+                                  ? (hasCustomConfig ? 'Custom flags' : 'Default flags')
+                                  : 'No editable flags'}
+                              </div>
                             </div>
 
                             <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
@@ -2612,11 +2939,16 @@ export default function CreateJob() {
                         const mappedFileCount = Array.from(new Set(
                           block.externalRequirements.flatMap((req) => toolFileMappings[toolKey]?.[req.type] || [])
                         )).length
+                        const currentFlagValues = {
+                          ...getManualToolDefaultFlagValues(block.toolReq),
+                          ...(manualToolFlagValues[block.toolReq.tool_id] || {}),
+                        }
+                        const hasCustomConfig = hasCustomizedFlagValues(block.toolReq.editable_flags || [], currentFlagValues)
                         return (
                           <div key={`review-${block.id}`} className="builder-input-summary-row">
                             <strong>{inputBlockDisplayName(block.id, getManualInputBlockDefaultName(block))}</strong>
                             <span>
-                              {mappedFileCount} file(s) | {block.requirements.length} requirement(s) for {block.toolReq.tool_name}
+                              {mappedFileCount} file(s) | {block.requirements.length} requirement(s) for {block.toolReq.tool_name} | {hasCustomConfig ? 'custom flags' : 'default flags'}
                             </span>
                           </div>
                         )
@@ -2628,6 +2960,88 @@ export default function CreateJob() {
             </div>
           )}
           </div>
+
+          {editingManualTool && renderPageModal(
+            <div className="modal-overlay" onClick={closeManualToolEditModal}>
+              <div className="modal-content pipeline-flag-modal" onClick={(event) => event.stopPropagation()}>
+                <div className="modal-header">
+                  <h2>{editingManualTool.tool_name} Settings</h2>
+                  <button type="button" className="modal-close" onClick={closeManualToolEditModal}>
+                    ×
+                  </button>
+                </div>
+                <div className="modal-body">
+                  {(editingManualTool.editable_flags || []).length > 0 ? (
+                    <div className="pipeline-flag-form">
+                      {editingManualTool.editable_flags?.map((flag) => {
+                        const placeholder = [flag.placeholder, flag.example ? `Example: ${flag.example}` : '']
+                          .filter(Boolean)
+                          .join(' ')
+                        const currentValue = editingManualToolDraftValues[flag.key]
+
+                        return (
+                          <div key={flag.key} className="form-group pipeline-flag-field">
+                            <label htmlFor={`job-flag-${flag.key}`}>{flag.label}</label>
+                            {flag.type === 'boolean' ? (
+                              <label className="pipeline-flag-checkbox">
+                                <input
+                                  id={`job-flag-${flag.key}`}
+                                  type="checkbox"
+                                  checked={Boolean(currentValue)}
+                                  onChange={(event) => handleManualToolFlagChange(flag, event.target.checked)}
+                                />
+                                <span>{flag.description || 'Enable this option for the tool block.'}</span>
+                              </label>
+                            ) : flag.type === 'select' ? (
+                              <select
+                                id={`job-flag-${flag.key}`}
+                                value={String(currentValue ?? flag.default ?? '')}
+                                className="form-input"
+                                onChange={(event) => handleManualToolFlagChange(flag, event.target.value)}
+                              >
+                                {(flag.options || []).map((option) => (
+                                  <option key={option.value} value={option.value}>
+                                    {option.label}
+                                  </option>
+                                ))}
+                              </select>
+                            ) : (
+                              <input
+                                id={`job-flag-${flag.key}`}
+                                type="text"
+                                className="form-input"
+                                value={String(currentValue ?? '')}
+                                placeholder={placeholder}
+                                onChange={(event) => handleManualToolFlagChange(flag, event.target.value)}
+                              />
+                            )}
+                            {flag.type !== 'boolean' && flag.description && (
+                              <p className="pipeline-flag-help">{flag.description}</p>
+                            )}
+                            {editingManualToolErrors[flag.key] && (
+                              <p className="pipeline-flag-error">{editingManualToolErrors[flag.key]}</p>
+                            )}
+                          </div>
+                        )
+                      })}
+                    </div>
+                  ) : (
+                    <p className="pipeline-flag-empty-state">
+                      This tool currently runs with its default settings in CASSIE and has no user-editable flags here.
+                    </p>
+                  )}
+                </div>
+                <div className="modal-footer">
+                  <button type="button" className="btn-secondary" onClick={closeManualToolEditModal}>
+                    Cancel
+                  </button>
+                  <button type="button" className="btn-primary" onClick={saveManualToolConfiguration}>
+                    Save settings
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
 
           {isPriorityModalOpen && (
             <div className="modal-overlay" onClick={() => setIsPriorityModalOpen(false)}>

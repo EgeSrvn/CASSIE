@@ -29,10 +29,14 @@ import {
   computePipelinePriorityGroups,
   PriorityGroup,
 } from '../utils/pipelinePriority'
+import {
+  buildDefaultFlagValues,
+  FlagValue,
+  hasCustomizedFlagValues,
+  normalizeDraftFlagValues,
+} from '../utils/toolFlagConfig'
 import './PipelineBuilder.css'
 import '../styles/globals.css'
-
-type FlagValue = string | number | boolean
 
 interface NodeData {
   label: string
@@ -391,107 +395,6 @@ const validatePipelineGraph = (nodes: Node<NodeData>[], edges: Edge[]) => {
   }
 
   return Array.from(new Set(errors))
-}
-
-const buildDefaultFlagValues = (flagDefinitions: EditableFlagDefinition[]) =>
-  flagDefinitions.reduce<Record<string, FlagValue>>((acc, flag) => {
-    if (!flag.key) {
-      return acc
-    }
-    acc[flag.key] = (flag.default as FlagValue) ?? (flag.type === 'boolean' ? false : '')
-    return acc
-  }, {})
-
-const normalizeDraftFlagValues = (
-  flagDefinitions: EditableFlagDefinition[],
-  draftValues: Record<string, FlagValue>
-) => {
-  const normalized = buildDefaultFlagValues(flagDefinitions)
-  const errors: Record<string, string> = {}
-
-  flagDefinitions.forEach((flag) => {
-    const raw = draftValues[flag.key] ?? normalized[flag.key]
-
-    try {
-      if (flag.type === 'boolean') {
-        normalized[flag.key] = Boolean(raw)
-        return
-      }
-
-      const stringValue = String(raw ?? '').trim()
-      const effectiveString = stringValue === '' ? String(flag.default ?? '') : stringValue
-
-      if (flag.type === 'integer') {
-        if (effectiveString === '') {
-          normalized[flag.key] = Number(flag.default ?? 0)
-          return
-        }
-        const parsed = Number.parseInt(effectiveString, 10)
-        if (Number.isNaN(parsed)) {
-          throw new Error('Enter a whole number.')
-        }
-        if (typeof flag.min === 'number' && parsed < flag.min) {
-          throw new Error(`Enter a value of at least ${flag.min}.`)
-        }
-        if (typeof flag.max === 'number' && parsed > flag.max) {
-          throw new Error(`Enter a value of at most ${flag.max}.`)
-        }
-        normalized[flag.key] = parsed
-        return
-      }
-
-      if (flag.type === 'number') {
-        if (effectiveString === '') {
-          normalized[flag.key] = Number(flag.default ?? 0)
-          return
-        }
-        const parsed = Number.parseFloat(effectiveString)
-        if (Number.isNaN(parsed)) {
-          throw new Error('Enter a numeric value.')
-        }
-        if (typeof flag.min === 'number' && parsed < flag.min) {
-          throw new Error(`Enter a value of at least ${flag.min}.`)
-        }
-        if (typeof flag.max === 'number' && parsed > flag.max) {
-          throw new Error(`Enter a value of at most ${flag.max}.`)
-        }
-        normalized[flag.key] = parsed
-        return
-      }
-
-      if (flag.type === 'select') {
-        const options = new Set((flag.options || []).map((option) => option.value))
-        if (options.size > 0 && !options.has(effectiveString)) {
-          throw new Error('Choose one of the available options.')
-        }
-        normalized[flag.key] = effectiveString
-        return
-      }
-
-      if (flag.pattern && effectiveString) {
-        const regex = new RegExp(flag.pattern)
-        if (!regex.test(effectiveString)) {
-          throw new Error(flag.error_message || 'Invalid value.')
-        }
-      }
-      normalized[flag.key] = effectiveString
-    } catch (error) {
-      errors[flag.key] = error instanceof Error ? error.message : 'Invalid value.'
-    }
-  })
-
-  return { normalized, errors }
-}
-
-const hasCustomizedFlagValues = (
-  flagDefinitions: EditableFlagDefinition[],
-  flagValues?: Record<string, FlagValue>
-) => {
-  const defaults = buildDefaultFlagValues(flagDefinitions)
-  return flagDefinitions.some((flag) => {
-    const currentValue = flagValues?.[flag.key] ?? defaults[flag.key]
-    return String(currentValue) !== String(defaults[flag.key])
-  })
 }
 
 const getToolNodeAccentColor = (toolType: string): string => {

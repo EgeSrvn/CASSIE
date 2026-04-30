@@ -686,8 +686,52 @@ TOOL_EDITABLE_FLAGS: Dict[str, List[Dict[str, Any]]] = {
             "type": "boolean",
             "default": False,
         },
+        {
+            "key": "min_length",
+            "label": "Minimum Sequence Length",
+            "description": "Ignore reads shorter than this length during FastQC processing.",
+            "type": "integer",
+            "default": 0,
+            "min": 0,
+            "placeholder": "e.g. 50",
+            "example": "50",
+        },
+        {
+            "key": "dup_length",
+            "label": "Duplicate Length",
+            "description": "Compare only the first N bases when estimating sequence duplication.",
+            "type": "integer",
+            "default": 0,
+            "min": 0,
+            "placeholder": "e.g. 50",
+            "example": "50",
+        },
     ],
     "SPADES": [
+        {
+            "key": "input_mode",
+            "label": "Short-Read Input Mode",
+            "description": "Choose whether SPAdes should expect paired-end, interlaced, or single-end short reads.",
+            "type": "select",
+            "default": "paired_end",
+            "options": [
+                {"label": "Paired-End Reads (R1 + R2)", "value": "paired_end"},
+                {"label": "Interlaced Paired Reads", "value": "interlaced"},
+                {"label": "Single-End Reads", "value": "single_end"},
+            ],
+        },
+        {
+            "key": "long_read_support",
+            "label": "Long-Read Support",
+            "description": "Attach optional PacBio or Nanopore reads to hybrid SPAdes assemblies.",
+            "type": "select",
+            "default": "none",
+            "options": [
+                {"label": "None", "value": "none"},
+                {"label": "PacBio Reads", "value": "pacbio"},
+                {"label": "Nanopore Reads", "value": "nanopore"},
+            ],
+        },
         {
             "key": "careful",
             "label": "Careful Mode",
@@ -725,8 +769,43 @@ TOOL_EDITABLE_FLAGS: Dict[str, List[Dict[str, Any]]] = {
                 {"label": "PHRED+64", "value": "64"},
             ],
         },
+        {
+            "key": "kmers",
+            "label": "K-mer Sizes",
+            "description": "Comma-separated odd k-mer sizes such as 21,33,55.",
+            "type": "string",
+            "default": "",
+            "pattern": r"^$|^\d+(,\d+)*$",
+            "placeholder": "e.g. 21,33,55",
+            "example": "21,33,55",
+            "error_message": "Use comma-separated numeric k-mer sizes such as 21,33,55.",
+        },
+        {
+            "key": "isolate",
+            "label": "Isolate Mode",
+            "description": "Use SPAdes isolate mode for isolate genome assemblies.",
+            "type": "boolean",
+            "default": False,
+        },
+        {
+            "key": "only_error_correction",
+            "label": "Only Error Correction",
+            "description": "Run the error-correction stage only without assembly.",
+            "type": "boolean",
+            "default": False,
+        },
     ],
     "QUAST": [
+        {
+            "key": "min_contig",
+            "label": "Minimum Contig Length",
+            "description": "Ignore contigs shorter than this value in reports.",
+            "type": "integer",
+            "default": 0,
+            "min": 0,
+            "placeholder": "e.g. 500",
+            "example": "500",
+        },
         {
             "key": "gene_finding",
             "label": "Run Gene Finding",
@@ -757,6 +836,17 @@ TOOL_EDITABLE_FLAGS: Dict[str, List[Dict[str, Any]]] = {
         },
     ],
     "GENOMESCOPE2": [
+        {
+            "key": "kmer_length",
+            "label": "K-mer Length",
+            "description": "K-mer size used to build the histogram for GenomeScope2.",
+            "type": "integer",
+            "default": 21,
+            "min": 15,
+            "max": 127,
+            "placeholder": "e.g. 21",
+            "example": "21",
+        },
         {
             "key": "ploidy",
             "label": "Expected Ploidy",
@@ -802,6 +892,29 @@ TOOL_EDITABLE_FLAGS: Dict[str, List[Dict[str, Any]]] = {
     ],
     "METASPADES": [
         {
+            "key": "short_read_mode",
+            "label": "Short-Read Input Mode",
+            "description": "metaSPAdes accepts one paired-end or one interlaced short-read library.",
+            "type": "select",
+            "default": "paired_end",
+            "options": [
+                {"label": "Paired-End Reads (R1 + R2)", "value": "paired_end"},
+                {"label": "Interlaced Paired Reads", "value": "interlaced"},
+            ],
+        },
+        {
+            "key": "long_read_support",
+            "label": "Long-Read Support",
+            "description": "Attach optional experimental PacBio or Nanopore reads to metaSPAdes.",
+            "type": "select",
+            "default": "none",
+            "options": [
+                {"label": "None", "value": "none"},
+                {"label": "PacBio Reads", "value": "pacbio"},
+                {"label": "Nanopore Reads", "value": "nanopore"},
+            ],
+        },
+        {
             "key": "only_assembler",
             "label": "Skip Error Correction",
             "description": "Run the assembler stage only.",
@@ -820,17 +933,30 @@ TOOL_EDITABLE_FLAGS: Dict[str, List[Dict[str, Any]]] = {
                 {"label": "PHRED+64", "value": "64"},
             ],
         },
+        {
+            "key": "kmers",
+            "label": "K-mer Sizes",
+            "description": "Comma-separated odd k-mer sizes such as 21,33,55.",
+            "type": "string",
+            "default": "",
+            "pattern": r"^$|^\d+(,\d+)*$",
+            "placeholder": "e.g. 21,33,55",
+            "example": "21,33,55",
+            "error_message": "Use comma-separated numeric k-mer sizes such as 21,33,55.",
+        },
     ],
     "HIFIASM": [
         {
             "key": "mode",
-            "label": "Assembly Mode",
-            "description": "Choose PacBio HiFi or ONT assembly mode.",
+            "label": "Input Mode",
+            "description": "Choose the read layout that Hifiasm should expect.",
             "type": "select",
             "default": "hifi",
             "options": [
                 {"label": "PacBio HiFi", "value": "hifi"},
                 {"label": "Oxford Nanopore", "value": "ont"},
+                {"label": "HiFi + Hi-C", "value": "hifi_hic"},
+                {"label": "HiFi + Ultra-Long ONT", "value": "hifi_ul"},
             ],
         },
         {
@@ -854,8 +980,107 @@ TOOL_EDITABLE_FLAGS: Dict[str, List[Dict[str, Any]]] = {
             "type": "boolean",
             "default": False,
         },
+        {
+            "key": "trim_bp",
+            "label": "Adapter Trim Override",
+            "description": "Equivalent to hifiasm -z; trims this many adapter bases when needed.",
+            "type": "integer",
+            "default": 0,
+            "min": 0,
+            "max": 999,
+            "placeholder": "e.g. 20",
+            "example": "20",
+        },
+        {
+            "key": "write_ec",
+            "label": "Write Error-Corrected Reads",
+            "description": "Keep corrected read output for inspection.",
+            "type": "boolean",
+            "default": False,
+        },
+        {
+            "key": "primary",
+            "label": "Primary Contigs Only",
+            "description": "Prefer primary contig-style output over alternate phasing detail.",
+            "type": "boolean",
+            "default": False,
+        },
+        {
+            "key": "dual_scaf",
+            "label": "Dual Scaffolding",
+            "description": "Ask Hifiasm to emit additional scaffold-oriented output when supported.",
+            "type": "boolean",
+            "default": False,
+        },
+        {
+            "key": "telomere_motif",
+            "label": "Telomere Motif",
+            "description": "Override the default telomere repeat motif.",
+            "type": "string",
+            "default": "",
+            "pattern": r"^$|^[ACGTacgt]+$",
+            "placeholder": "e.g. CCCTAA",
+            "example": "CCCTAA",
+            "error_message": "Use only A, C, G, and T characters.",
+        },
+        {
+            "key": "genome_size",
+            "label": "Estimated Genome Size",
+            "description": "Optional genome-size hint such as 3g, 750m, or 120000000.",
+            "type": "string",
+            "default": "",
+            "pattern": r"^$|^\d+(?:\.\d+)?[kKmMgGtT]?$",
+            "placeholder": "e.g. 3g",
+            "example": "3g",
+            "error_message": "Use a number with an optional k, m, g, or t suffix such as 3g.",
+        },
+        {
+            "key": "hom_cov",
+            "label": "Homozygous Coverage",
+            "description": "Optional homozygous coverage hint for Hifiasm.",
+            "type": "integer",
+            "default": 0,
+            "min": 0,
+            "placeholder": "e.g. 35",
+            "example": "35",
+        },
     ],
     "VERKKO": [
+        {
+            "key": "include_nano",
+            "label": "Include Nanopore Reads",
+            "description": "Add Nanopore reads to the Verkko run when available.",
+            "type": "boolean",
+            "default": False,
+        },
+        {
+            "key": "include_hic",
+            "label": "Include Hi-C Reads",
+            "description": "Attach Hi-C R1/R2 reads for scaffolding-aware Verkko runs.",
+            "type": "boolean",
+            "default": False,
+        },
+        {
+            "key": "use_hap_kmers",
+            "label": "Use Hap-Kmers",
+            "description": "Provide a haplotype k-mer database to Verkko when available.",
+            "type": "boolean",
+            "default": False,
+        },
+        {
+            "key": "reference_guided",
+            "label": "Reference-Guided Hint",
+            "description": "Provide a reference FASTA to Verkko when you want reference-guided context.",
+            "type": "boolean",
+            "default": False,
+        },
+        {
+            "key": "screen",
+            "label": "General Contaminant Screening",
+            "description": "Enable Verkko screening mode before the more specific human screen preset.",
+            "type": "boolean",
+            "default": False,
+        },
         {
             "key": "haploid",
             "label": "Haploid Mode",
@@ -880,6 +1105,13 @@ TOOL_EDITABLE_FLAGS: Dict[str, List[Dict[str, Any]]] = {
             "placeholder": "e.g. CCCTAA",
             "example": "CCCTAA",
             "error_message": "Use only A, C, G, and T characters.",
+        },
+        {
+            "key": "screen_human_contaminants",
+            "label": "Screen Human Contaminants",
+            "description": "Enable Verkko's human-contaminant screening preset when appropriate.",
+            "type": "boolean",
+            "default": False,
         },
     ],
     "LIFTOFF": [
@@ -1038,6 +1270,126 @@ def _build_default_flag_values(flag_definitions: List[Dict[str, Any]]) -> Dict[s
     }
 
 
+def _find_raw_tool(tool_id: str) -> Optional[Dict[str, Any]]:
+    normalized_tool_id = str(tool_id or "").strip().upper()
+    for tool in TOOL_REGISTRY:
+        if str(tool.get("id") or "").strip().upper() == normalized_tool_id:
+            return tool
+    return None
+
+
+def _requirement(
+    requirement_type: str,
+    label: str,
+    formats: List[str],
+    **extra: Any,
+) -> Dict[str, Any]:
+    requirement = {
+        "type": requirement_type,
+        "label": label,
+        "formats": list(formats),
+    }
+    requirement.update(extra)
+    return requirement
+
+
+def _apply_tool_requirement_rules(
+    tool_id: str,
+    requirements: List[Dict[str, Any]],
+    flag_values: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    normalized_tool_id = str(tool_id or "").strip().upper()
+    resolved_requirements = deepcopy(requirements)
+
+    if normalized_tool_id == "FASTQC":
+        for requirement in resolved_requirements:
+            if str(requirement.get("type") or "").strip().lower() != "reads":
+                continue
+            if bool(flag_values.get("casava")):
+                requirement["filename_pattern"] = r".+_L\d{3}_(?:R?[12])_\d{3}\.(?:fastq|fq)(?:\.gz)?$"
+                requirement["filename_example"] = "sample_L001_R1_001.fastq.gz"
+                requirement["validation_message"] = "CASAVA mode expects filenames like sample_L001_R1_001.fastq.gz."
+                requirement["input_behavior"] = "casava"
+        return resolved_requirements
+
+    if normalized_tool_id == "SPADES":
+        input_mode = str(flag_values.get("input_mode") or "paired_end").strip().lower()
+        long_read_support = str(flag_values.get("long_read_support") or "none").strip().lower()
+        resolved_requirements = []
+        if input_mode == "interlaced":
+            resolved_requirements.append(_requirement("interlaced_reads", "Interlaced Paired Reads", ["fastq"]))
+        elif input_mode == "single_end":
+            resolved_requirements.append(_requirement("single_reads", "Single-End Reads", ["fastq"]))
+        else:
+            resolved_requirements.extend(
+                [
+                    _requirement("forward_reads", "Forward Reads (R1)", ["fastq"]),
+                    _requirement("reverse_reads", "Reverse Reads (R2)", ["fastq"]),
+                ]
+            )
+        if long_read_support == "pacbio":
+            resolved_requirements.append(_requirement("pacbio_reads", "PacBio Long Reads", ["fastq", "fasta"]))
+        elif long_read_support == "nanopore":
+            resolved_requirements.append(_requirement("nanopore_reads", "Nanopore Long Reads", ["fastq", "fasta"]))
+        return resolved_requirements
+
+    if normalized_tool_id == "METASPADES":
+        short_read_mode = str(flag_values.get("short_read_mode") or "paired_end").strip().lower()
+        long_read_support = str(flag_values.get("long_read_support") or "none").strip().lower()
+        resolved_requirements = []
+        if short_read_mode == "interlaced":
+            resolved_requirements.append(_requirement("interlaced_reads", "Interlaced Paired Reads", ["fastq"]))
+        else:
+            resolved_requirements.extend(
+                [
+                    _requirement("forward_reads", "Forward Reads (R1)", ["fastq"]),
+                    _requirement("reverse_reads", "Reverse Reads (R2)", ["fastq"]),
+                ]
+            )
+        if long_read_support == "pacbio":
+            resolved_requirements.append(_requirement("pacbio_reads", "PacBio Long Reads", ["fastq", "fasta"]))
+        elif long_read_support == "nanopore":
+            resolved_requirements.append(_requirement("nanopore_reads", "Nanopore Long Reads", ["fastq", "fasta"]))
+        return resolved_requirements
+
+    if normalized_tool_id == "HIFIASM":
+        mode = str(flag_values.get("mode") or "hifi").strip().lower()
+        resolved_requirements = []
+        if mode == "ont":
+            resolved_requirements.append(_requirement("ont_reads", "ONT Reads", ["fastq", "fasta"]))
+            return resolved_requirements
+        resolved_requirements.append(_requirement("hifi_reads", "HiFi Reads", ["fastq", "fasta"]))
+        if mode == "hifi_hic":
+            resolved_requirements.extend(
+                [
+                    _requirement("hic_forward_reads", "Hi-C Reads (R1)", ["fastq"]),
+                    _requirement("hic_reverse_reads", "Hi-C Reads (R2)", ["fastq"]),
+                ]
+            )
+        elif mode == "hifi_ul":
+            resolved_requirements.append(_requirement("ul_reads", "Ultra-Long ONT Reads", ["fastq", "fasta"]))
+        return resolved_requirements
+
+    if normalized_tool_id == "VERKKO":
+        resolved_requirements = [_requirement("hifi_reads", "HiFi Reads", ["fastq", "fasta"])]
+        if bool(flag_values.get("include_nano")):
+            resolved_requirements.append(_requirement("nanopore_reads", "Nanopore Reads", ["fastq", "fasta"]))
+        if bool(flag_values.get("include_hic")):
+            resolved_requirements.extend(
+                [
+                    _requirement("hic_forward_reads", "Hi-C Reads (R1)", ["fastq"]),
+                    _requirement("hic_reverse_reads", "Hi-C Reads (R2)", ["fastq"]),
+                ]
+            )
+        if bool(flag_values.get("use_hap_kmers")):
+            resolved_requirements.append(_requirement("haplotype_kmers", "Haplotype K-mer Database", ["meryl"]))
+        if bool(flag_values.get("reference_guided")):
+            resolved_requirements.append(_requirement("reference_genome", "Reference Genome (FASTA)", ["fasta"]))
+        return resolved_requirements
+
+    return resolved_requirements
+
+
 def _enrich_tool(tool: Dict[str, Any]) -> Dict[str, Any]:
     enriched = deepcopy(tool)
     for requirement in enriched.get("input_requirements", []) or []:
@@ -1149,10 +1501,13 @@ def get_tool_by_index(index: int) -> Optional[Dict[str, Any]]:
 
 def get_tool_by_id(tool_id: str) -> Optional[Dict[str, Any]]:
     """Return a tool by its stable string identifier."""
-    for tool in TOOL_REGISTRY:
-        if tool["id"] == tool_id:
-            return _enrich_tool(tool)
-    return None
+    raw_tool = _find_raw_tool(tool_id)
+    if not raw_tool:
+        return None
+
+    enriched = _enrich_tool(raw_tool)
+    enriched["input_requirements"] = get_tool_requirements(tool_id)
+    return enriched
 
 
 def get_tool_index_by_id(tool_id: str) -> Optional[int]:
@@ -1163,12 +1518,15 @@ def get_tool_index_by_id(tool_id: str) -> Optional[int]:
     return None
 
 
-def get_tool_requirements(tool_id: str) -> List[Dict[str, Any]]:
+def get_tool_requirements(tool_id: str, tool_config: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
     """Return input requirements for a tool."""
-    tool = get_tool_by_id(tool_id)
-    if not tool:
+    raw_tool = _find_raw_tool(tool_id)
+    if not raw_tool:
         return []
-    return deepcopy(tool.get("input_requirements", []))
+
+    validation = validate_tool_flag_values(tool_id, tool_config)
+    requirements = deepcopy(raw_tool.get("input_requirements", []))
+    return _apply_tool_requirement_rules(tool_id, requirements, validation["values"])
 
 
 def get_tool_outputs(tool_id: str) -> List[str]:

@@ -48,6 +48,7 @@ from backend.api.utils.logger import get_logger
 from tool_registry import (
     get_tool_by_index,
     get_tool_by_id,
+    get_tool_requirements,
     get_tool_id_from_label,
     get_tool_registry,
     tool_produces_requirement as registry_tool_produces_requirement,
@@ -198,7 +199,11 @@ class KubernetesPipelineRunner:
             )
             current_inputs = await loop.run_in_executor(
                 self._metadata_executor,
-                lambda: self._build_initial_inputs(user_id, input_files),
+                lambda: self._build_initial_inputs(
+                    user_id,
+                    input_files,
+                    execution_preferences=getattr(job, "execution_preferences", None),
+                ),
             )
             if not current_inputs:
                 raise ValueError("No input files available for Kubernetes execution")
@@ -705,9 +710,11 @@ class KubernetesPipelineRunner:
 
         for stage_number, step in enumerate(workflow.get("workflow_steps", []) or [], start=1):
             tool_id = str(step.get("tool") or "").strip().upper()
+            tool_config = self._get_manual_tool_config(execution_preferences, tool_id)
             tool = get_tool_by_id(tool_id) if tool_id else None
             if not tool:
                 continue
+            tool["input_requirements"] = get_tool_requirements(tool_id, tool_config)
 
             stage_id = str(step.get("stage_id") or step.get("id") or f"step-{stage_number}")
             dependency_ids = [str(dep).strip() for dep in (step.get("dependency_ids") or []) if str(dep).strip()]
@@ -717,6 +724,7 @@ class KubernetesPipelineRunner:
                     "stage_number": stage_number,
                     "tool": tool,
                     "dependency_ids": dependency_ids,
+                    "tool_config": tool_config,
                     "priority_order": manual_override_positions.get(tool_id, stage_number - 1),
                 }
             )
@@ -746,14 +754,25 @@ class KubernetesPipelineRunner:
                         manual_override_positions[normalized_tool_id] = index
 
         for stage_number, tool in enumerate(tools, start=1):
+            normalized_tool_id = str(tool.get("id") or "").strip().upper()
+            tool_config = self._get_manual_tool_config(
+                execution_preferences,
+                normalized_tool_id,
+            )
+            resolved_tool = get_tool_by_id(normalized_tool_id) if normalized_tool_id else None
+            if resolved_tool:
+                resolved_tool["input_requirements"] = get_tool_requirements(normalized_tool_id, tool_config)
+            else:
+                resolved_tool = tool
             stage_id = f"step-{stage_number}"
             specs.append(
                 {
                     "stage_id": stage_id,
                     "stage_number": stage_number,
-                    "tool": tool,
+                    "tool": resolved_tool,
                     "dependency_ids": [],
-                    "priority_order": manual_override_positions.get(str(tool.get("id") or "").strip().upper(), stage_number - 1),
+                    "tool_config": tool_config,
+                    "priority_order": manual_override_positions.get(normalized_tool_id, stage_number - 1),
                 }
             )
 
@@ -928,10 +947,11 @@ class KubernetesPipelineRunner:
                 stage_kind = "checkpoint"
             else:
                 tool_id = resolve_node_tool_id(node)
+                tool_config = self._extract_pipeline_node_config(node)
                 tool = get_tool_by_id(tool_id) if tool_id else None
                 if not tool:
                     continue
-                tool_config = self._extract_pipeline_node_config(node)
+                tool["input_requirements"] = get_tool_requirements(tool_id, tool_config)
                 stage_kind = "tool"
             stage_label = resolve_node_label(node) or str((tool or {}).get("name") or (tool or {}).get("id") or node_id)
             specs.append(
@@ -992,6 +1012,34 @@ class KubernetesPipelineRunner:
                 + "; ".join(f"{key}: {value}" for key, value in validation["errors"].items())
             )
         return validation["values"]
+
+    def _get_manual_tool_config(
+        self,
+        execution_preferences: Optional[Dict[str, Any]],
+        tool_id: str,
+    ) -> Dict[str, Any]:
+        normalized_tool_id = str(tool_id or "").strip().upper()
+        if not normalized_tool_id or not isinstance(execution_preferences, dict):
+            return {}
+
+        for item in execution_preferences.get("manual_tool_configs") or []:
+            if not isinstance(item, dict):
+                continue
+            item_tool_id = str(item.get("tool_id") or "").strip().upper()
+            if item_tool_id != normalized_tool_id:
+                continue
+            raw_values = item.get("tool_config") or item.get("flag_values") or {}
+            if not isinstance(raw_values, dict):
+                return {}
+            validation = validate_tool_flag_values(normalized_tool_id, raw_values)
+            if validation["errors"]:
+                raise ValueError(
+                    f"Manual tool configuration for {normalized_tool_id} is invalid: "
+                    + "; ".join(f"{key}: {value}" for key, value in validation["errors"].items())
+                )
+            return validation["values"]
+
+        return {}
 
     def _classify_pipeline_input_node(self, node: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         node_type = str(node.get("type") or node.get("nodeType") or "").strip().lower()
@@ -1824,22 +1872,51 @@ class KubernetesPipelineRunner:
         reserved["memory_mib"] = max(0, reserved["memory_mib"] + direction * usage["memory_mib"])
         reserved["storage_mib"] = max(0, reserved["storage_mib"] + direction * usage["storage_mib"])
 
-    def _build_initial_inputs(self, user_id: int, input_files: List[int]) -> List[Dict[str, Any]]:
+    def _build_initial_inputs(
+        self,
+        user_id: int,
+        input_files: List[int],
+        execution_preferences: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        bindings_by_file: Dict[int, List[Dict[str, Any]]] = {}
+        if isinstance(execution_preferences, dict):
+            for item in execution_preferences.get("manual_input_bindings") or []:
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    file_id = int(item.get("file_id"))
+                except (TypeError, ValueError):
+                    continue
+                binding_payload = {
+                    "binding_id": str(item.get("binding_id") or "").strip(),
+                    "tool_id": str(item.get("tool_id") or "").strip().upper(),
+                    "requirement_type": str(item.get("requirement_type") or "").strip().lower(),
+                    "label": str(item.get("label") or "").strip(),
+                }
+                bindings_by_file.setdefault(file_id, []).append(binding_payload)
+
         artifacts: List[Dict[str, Any]] = []
         for file_id in input_files:
             file_record = get_file_by_id(file_id, user_id=user_id)
             if not file_record:
                 raise ValueError(f"File {file_id} not found")
-            artifacts.append(
-                {
-                    "filename": file_record.filename,
-                    "s3_key": file_record.s3_key,
-                    "size_bytes": file_record.size_bytes or 0,
-                    "file_format": getattr(file_record, "file_format", None),
-                    "source": "job-input",
-                    "producer_tool_id": None,
-                }
-            )
+            base_artifact = {
+                "file_id": file_id,
+                "filename": file_record.filename,
+                "s3_key": file_record.s3_key,
+                "size_bytes": file_record.size_bytes or 0,
+                "file_format": getattr(file_record, "file_format", None),
+                "source": "job-input",
+                "producer_tool_id": None,
+            }
+            manual_bindings = bindings_by_file.get(file_id) or []
+            if not manual_bindings:
+                artifacts.append(dict(base_artifact))
+                continue
+            for binding in manual_bindings:
+                artifact = dict(base_artifact)
+                artifact.update(binding)
+                artifacts.append(artifact)
         return artifacts
 
     def _run_stage(
@@ -2230,17 +2307,61 @@ exit "$CASSIE_STATUS"
             )
 
         if tool["id"] == "SPADES":
-            fastq_reads = self._select_fastq_inputs(classified["fastq"], required=2)
-            if len(fastq_reads) < 2:
-                raise ValueError("SPAdes requires paired-end reads (at least two FASTQ files)")
-            r1 = os.path.basename(fastq_reads[0]["filename"])
-            r2 = os.path.basename(fastq_reads[1]["filename"])
+            input_mode = str(tool_config.get("input_mode") or "paired_end").strip().lower()
+            long_read_support = str(tool_config.get("long_read_support") or "none").strip().lower()
+            command_input_flags: List[str] = []
+
+            if input_mode == "interlaced":
+                interlaced_reads = self._get_bound_requirement_inputs(current_inputs, tool["id"], "interlaced_reads")
+                if not interlaced_reads:
+                    interlaced_reads = classified["fastq"]
+                if not interlaced_reads:
+                    raise ValueError("SPAdes interlaced mode requires at least one FASTQ file")
+                command_input_flags.append(f"--12 {self._comma_joined_input_paths(input_dir, interlaced_reads)}")
+            elif input_mode == "single_end":
+                single_reads = self._get_bound_requirement_inputs(current_inputs, tool["id"], "single_reads")
+                if not single_reads:
+                    single_reads = classified["fastq"]
+                if not single_reads:
+                    raise ValueError("SPAdes single-end mode requires at least one FASTQ file")
+                command_input_flags.extend(
+                    f'-s "{input_dir}/{os.path.basename(str(artifact.get("filename") or ""))}"'
+                    for artifact in single_reads
+                )
+            else:
+                forward_reads = self._get_bound_requirement_inputs(current_inputs, tool["id"], "forward_reads")
+                reverse_reads = self._get_bound_requirement_inputs(current_inputs, tool["id"], "reverse_reads")
+                if forward_reads and reverse_reads:
+                    command_input_flags.append(f"-1 {self._comma_joined_input_paths(input_dir, forward_reads)}")
+                    command_input_flags.append(f"-2 {self._comma_joined_input_paths(input_dir, reverse_reads)}")
+                else:
+                    fastq_reads = self._select_fastq_inputs(classified["fastq"], required=2)
+                    if len(fastq_reads) < 2:
+                        raise ValueError("SPAdes paired-end mode requires R1 and R2 FASTQ reads")
+                    r1 = os.path.basename(fastq_reads[0]["filename"])
+                    r2 = os.path.basename(fastq_reads[1]["filename"])
+                    command_input_flags.append(f'-1 "{input_dir}/{r1}"')
+                    command_input_flags.append(f'-2 "{input_dir}/{r2}"')
+
+            if long_read_support == "pacbio":
+                pacbio_reads = self._get_bound_requirement_inputs(current_inputs, tool["id"], "pacbio_reads")
+                if not pacbio_reads:
+                    raise ValueError("SPAdes PacBio support requires PacBio long-read inputs")
+                command_input_flags.append(f"--pacbio {self._comma_joined_input_paths(input_dir, pacbio_reads)}")
+            elif long_read_support == "nanopore":
+                nanopore_reads = self._get_bound_requirement_inputs(current_inputs, tool["id"], "nanopore_reads")
+                if not nanopore_reads:
+                    raise ValueError("SPAdes Nanopore support requires Nanopore long-read inputs")
+                command_input_flags.append(f"--nanopore {self._comma_joined_input_paths(input_dir, nanopore_reads)}")
+
             threads = tool_plan["threads"]
             memory_gb = tool_plan["memory_gb"]
             low_resource = bool(tool_plan["low_resource"])
             user_only_assembler = bool(tool_config.get("only_assembler"))
             only_assembler_flag = " --only-assembler" if (low_resource or user_only_assembler) else ""
             careful_flag = " --careful" if bool(tool_config.get("careful")) else ""
+            isolate_flag = " --isolate" if bool(tool_config.get("isolate")) else ""
+            only_error_correction_flag = " --only-error-correction" if bool(tool_config.get("only_error_correction")) else ""
             cov_cutoff = str(tool_config.get("cov_cutoff") or "off").strip()
             cov_cutoff_flag = (
                 f" --cov-cutoff {cov_cutoff}"
@@ -2258,20 +2379,50 @@ exit "$CASSIE_STATUS"
                     "mkdir -p /workspace/tmp",
                     f"mkdir -p {output_dir}/spades_out",
                     (
-                        f'spades.py --threads {threads} --memory {memory_gb}{only_assembler_flag}{careful_flag}{cov_cutoff_flag}{phred_offset_flag}{kmers_flag} '
+                        f'spades.py --threads {threads} --memory {memory_gb}{only_assembler_flag}{careful_flag}{isolate_flag}{only_error_correction_flag}{cov_cutoff_flag}{phred_offset_flag}{kmers_flag} '
                         f'--tmp-dir /workspace/tmp '
-                        f'-1 "{input_dir}/{r1}" -2 "{input_dir}/{r2}" '
+                        f'{" ".join(command_input_flags)} '
                         f'-o "{output_dir}/spades_out"'
                     ),
                 ]
             )
 
         if tool["id"] == "METASPADES":
-            fastq_reads = self._select_fastq_inputs(classified["fastq"], required=2)
-            if len(fastq_reads) < 2:
-                raise ValueError("metaSPAdes requires paired-end reads (at least two FASTQ files)")
-            r1 = os.path.basename(fastq_reads[0]["filename"])
-            r2 = os.path.basename(fastq_reads[1]["filename"])
+            short_read_mode = str(tool_config.get("short_read_mode") or "paired_end").strip().lower()
+            long_read_support = str(tool_config.get("long_read_support") or "none").strip().lower()
+            command_input_flags: List[str] = []
+            if short_read_mode == "interlaced":
+                interlaced_reads = self._get_bound_requirement_inputs(current_inputs, tool["id"], "interlaced_reads")
+                if not interlaced_reads:
+                    interlaced_reads = classified["fastq"]
+                if not interlaced_reads:
+                    raise ValueError("metaSPAdes interlaced mode requires at least one FASTQ file")
+                command_input_flags.append(f"--12 {self._comma_joined_input_paths(input_dir, interlaced_reads)}")
+            else:
+                forward_reads = self._get_bound_requirement_inputs(current_inputs, tool["id"], "forward_reads")
+                reverse_reads = self._get_bound_requirement_inputs(current_inputs, tool["id"], "reverse_reads")
+                if forward_reads and reverse_reads:
+                    command_input_flags.append(f"-1 {self._comma_joined_input_paths(input_dir, forward_reads)}")
+                    command_input_flags.append(f"-2 {self._comma_joined_input_paths(input_dir, reverse_reads)}")
+                else:
+                    fastq_reads = self._select_fastq_inputs(classified["fastq"], required=2)
+                    if len(fastq_reads) < 2:
+                        raise ValueError("metaSPAdes paired-end mode requires R1 and R2 FASTQ reads")
+                    r1 = os.path.basename(fastq_reads[0]["filename"])
+                    r2 = os.path.basename(fastq_reads[1]["filename"])
+                    command_input_flags.append(f'-1 "{input_dir}/{r1}"')
+                    command_input_flags.append(f'-2 "{input_dir}/{r2}"')
+
+            if long_read_support == "pacbio":
+                pacbio_reads = self._get_bound_requirement_inputs(current_inputs, tool["id"], "pacbio_reads")
+                if not pacbio_reads:
+                    raise ValueError("metaSPAdes PacBio support requires PacBio long-read inputs")
+                command_input_flags.append(f"--pacbio {self._comma_joined_input_paths(input_dir, pacbio_reads)}")
+            elif long_read_support == "nanopore":
+                nanopore_reads = self._get_bound_requirement_inputs(current_inputs, tool["id"], "nanopore_reads")
+                if not nanopore_reads:
+                    raise ValueError("metaSPAdes Nanopore support requires Nanopore long-read inputs")
+                command_input_flags.append(f"--nanopore {self._comma_joined_input_paths(input_dir, nanopore_reads)}")
             low_resource = bool(tool_plan["low_resource"])
             only_assembler_flag = " --only-assembler" if (low_resource or bool(tool_config.get("only_assembler"))) else ""
             phred_offset = str(tool_config.get("phred_offset") or "auto").strip()
@@ -2287,7 +2438,7 @@ exit "$CASSIE_STATUS"
                     (
                         f'spades.py --meta --threads {tool_plan["threads"]} --memory {tool_plan["memory_gb"]}{only_assembler_flag}{phred_offset_flag}{kmers_flag} '
                         f'--tmp-dir /workspace/tmp '
-                        f'-1 "{input_dir}/{r1}" -2 "{input_dir}/{r2}" '
+                        f'{" ".join(command_input_flags)} '
                         f'-o "{output_dir}/metaspades_out"'
                     ),
                 ]
@@ -2397,16 +2548,35 @@ exit "$CASSIE_STATUS"
             return self._wrap_tool_script(prep_commands)
 
         if tool["id"] == "HIFIASM":
-            hifi_reads = classified["reads_like"]
-            if not hifi_reads:
-                raise ValueError("Hifiasm requires HiFi reads in FASTQ or FASTA format")
-            hifiasm_inputs = self._quoted_input_paths(input_dir, hifi_reads)
+            mode = str(tool_config.get("mode") or "hifi").strip().lower()
+            if mode == "ont":
+                primary_reads = self._get_bound_requirement_inputs(current_inputs, tool["id"], "ont_reads") or classified["reads_like"]
+                if not primary_reads:
+                    raise ValueError("Hifiasm ONT mode requires ONT reads in FASTQ or FASTA format")
+                hifiasm_inputs = self._quoted_input_paths(input_dir, primary_reads)
+            else:
+                primary_reads = self._get_bound_requirement_inputs(current_inputs, tool["id"], "hifi_reads") or classified["reads_like"]
+                if not primary_reads:
+                    raise ValueError("Hifiasm requires HiFi reads in FASTQ or FASTA format")
+                hifiasm_inputs = self._quoted_input_paths(input_dir, primary_reads)
             hifiasm_out = f"{output_dir}/hifiasm_out"
             prefix = f"{hifiasm_out}/assembly"
             hifiasm_flags: List[str] = []
             low_resource = bool(tool_plan.get("low_resource"))
-            if str(tool_config.get("mode") or "hifi").strip().lower() == "ont":
+            if mode == "ont":
                 hifiasm_flags.append("--ont")
+            if mode == "hifi_hic":
+                hic_r1 = self._get_bound_requirement_inputs(current_inputs, tool["id"], "hic_forward_reads")
+                hic_r2 = self._get_bound_requirement_inputs(current_inputs, tool["id"], "hic_reverse_reads")
+                if not hic_r1 or not hic_r2:
+                    raise ValueError("Hifiasm Hi-C mode requires both Hi-C R1 and Hi-C R2 inputs")
+                hifiasm_flags.append(f'--h1 {self._quoted_input_paths(input_dir, hic_r1)}')
+                hifiasm_flags.append(f'--h2 {self._quoted_input_paths(input_dir, hic_r2)}')
+            if mode == "hifi_ul":
+                ul_reads = self._get_bound_requirement_inputs(current_inputs, tool["id"], "ul_reads")
+                if not ul_reads:
+                    raise ValueError("Hifiasm HiFi + ultra-long mode requires ultra-long ONT reads")
+                hifiasm_flags.append(f'--ul {self._quoted_input_paths(input_dir, ul_reads)}')
             if low_resource or tool_config.get("disable_dup_purging"):
                 hifiasm_flags.append("-l0")
             trim_bp = int(tool_config.get("trim_bp") or 0)
@@ -2416,6 +2586,21 @@ exit "$CASSIE_STATUS"
                 hifiasm_flags.append("-f0")
             if tool_config.get("write_paf"):
                 hifiasm_flags.append("--write-paf")
+            if tool_config.get("write_ec"):
+                hifiasm_flags.append("--write-ec")
+            if tool_config.get("primary"):
+                hifiasm_flags.append("--primary")
+            if tool_config.get("dual_scaf"):
+                hifiasm_flags.append("--dual-scaf")
+            telomere_motif = str(tool_config.get("telomere_motif") or "").strip()
+            if telomere_motif:
+                hifiasm_flags.append(f'--telo-m {telomere_motif}')
+            genome_size = str(tool_config.get("genome_size") or "").strip()
+            if genome_size:
+                hifiasm_flags.append(f'--hg-size {genome_size}')
+            hom_cov = int(tool_config.get("hom_cov") or 0)
+            if hom_cov > 0:
+                hifiasm_flags.append(f'--hom-cov {hom_cov}')
             hifiasm_flag_str = f'{" ".join(hifiasm_flags)} ' if hifiasm_flags else ""
             return self._wrap_tool_script(
                 [
@@ -2432,19 +2617,52 @@ exit "$CASSIE_STATUS"
             )
 
         if tool["id"] == "VERKKO":
-            hifi_reads, nano_reads = self._split_verkko_reads(classified["reads_like"])
+            hifi_reads = self._get_bound_requirement_inputs(current_inputs, tool["id"], "hifi_reads")
+            nano_reads = self._get_bound_requirement_inputs(current_inputs, tool["id"], "nanopore_reads")
+            if not hifi_reads:
+                hifi_reads, inferred_nano_reads = self._split_verkko_reads(classified["reads_like"])
+                if not nano_reads:
+                    nano_reads = inferred_nano_reads
             if not hifi_reads:
                 raise ValueError("Verkko requires at least one HiFi long-read FASTQ/FASTA input")
             verkko_out = f"{output_dir}/verkko_out"
             hifi_args = self._quoted_input_paths(input_dir, hifi_reads)
             nano_flag = ""
-            if nano_reads:
+            if bool(tool_config.get("include_nano")):
+                if not nano_reads:
+                    raise ValueError("Verkko Nanopore mode requires Nanopore long-read inputs")
                 nano_flag = f" --nano {self._quoted_input_paths(input_dir, nano_reads)}"
+            hic_flag = ""
+            if bool(tool_config.get("include_hic")):
+                hic_r1 = self._get_bound_requirement_inputs(current_inputs, tool["id"], "hic_forward_reads")
+                hic_r2 = self._get_bound_requirement_inputs(current_inputs, tool["id"], "hic_reverse_reads")
+                if not hic_r1 or not hic_r2:
+                    raise ValueError("Verkko Hi-C mode requires both Hi-C R1 and Hi-C R2 inputs")
+                hic_flag = (
+                    f" --hic1 {self._quoted_input_paths(input_dir, hic_r1)}"
+                    f" --hic2 {self._quoted_input_paths(input_dir, hic_r2)}"
+                )
+            hap_kmers_flag = ""
+            if bool(tool_config.get("use_hap_kmers")):
+                hap_kmers = self._get_bound_requirement_inputs(current_inputs, tool["id"], "haplotype_kmers")
+                if not hap_kmers:
+                    raise ValueError("Verkko hap-kmer mode requires a haplotype k-mer database input")
+                hap_kmers_flag = f" --hap-kmers {self._quoted_input_paths(input_dir, hap_kmers)}"
+            reference_flag = ""
+            if bool(tool_config.get("reference_guided")):
+                reference_genome = self._get_bound_requirement_inputs(current_inputs, tool["id"], "reference_genome")
+                if not reference_genome:
+                    raise ValueError("Verkko reference-guided mode requires a reference FASTA input")
+                reference_flag = f" --ref {self._quoted_input_paths(input_dir, reference_genome)}"
             extra_flags = []
+            if tool_config.get("screen"):
+                extra_flags.append("--screen")
             if tool_config.get("haploid"):
                 extra_flags.append("--haploid")
             if tool_config.get("uneven_depth"):
                 extra_flags.append("--uneven-depth")
+            if tool_config.get("screen_human_contaminants"):
+                extra_flags.append("--screen-human-contaminants")
             telomere_motif = str(tool_config.get("telomere_motif") or "").strip()
             if telomere_motif:
                 extra_flags.append(f'--telomere-motif {telomere_motif}')
@@ -2454,7 +2672,7 @@ exit "$CASSIE_STATUS"
                     profile_note,
                     f"mkdir -p {verkko_out}",
                     (
-                        f'verkko -d "{verkko_out}" --hifi {hifi_args}{nano_flag}{extra_flag_str} '
+                        f'verkko -d "{verkko_out}" --hifi {hifi_args}{nano_flag}{hic_flag}{hap_kmers_flag}{reference_flag}{extra_flag_str} '
                         f'--snakeopts "--cores {tool_plan["threads"]}"'
                     ),
                 ]
@@ -3502,6 +3720,30 @@ exit "$CASSIE_STATUS"
 
         ordered = sorted(fastq_files, key=score)
         return ordered[:required]
+
+    def _get_bound_requirement_inputs(
+        self,
+        current_inputs: List[Dict[str, Any]],
+        tool_id: str,
+        requirement_type: str,
+    ) -> List[Dict[str, Any]]:
+        normalized_tool_id = str(tool_id or "").strip().upper()
+        normalized_requirement_type = str(requirement_type or "").strip().lower()
+        matches = [
+            artifact
+            for artifact in current_inputs
+            if str(artifact.get("tool_id") or "").strip().upper() == normalized_tool_id
+            and str(artifact.get("requirement_type") or "").strip().lower() == normalized_requirement_type
+        ]
+        return sorted(matches, key=lambda item: str(item.get("filename") or "").lower())
+
+    def _comma_joined_input_paths(self, input_dir: str, artifacts: List[Dict[str, Any]]) -> str:
+        joined = ",".join(
+            f"{input_dir}/{os.path.basename(str(artifact.get('filename') or ''))}"
+            for artifact in artifacts
+            if str(artifact.get("filename") or "").strip()
+        )
+        return f'"{joined}"' if joined else '""'
 
     def _make_job_name(self, job_id: int, execution_id: int, stage_number: int, tool_id: str) -> str:
         safe_tool = re.sub(r"[^a-z0-9-]", "-", tool_id.lower())
