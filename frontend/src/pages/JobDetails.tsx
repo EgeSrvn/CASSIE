@@ -875,7 +875,7 @@ export default function JobDetails() {
                   <button
                     onClick={handleCancelJob}
                     disabled={cancellingJob}
-                    className="icon-button icon-button-danger"
+                    className="icon-button icon-button-danger job-info-cancel-button"
                     aria-label="Cancel job"
                     title="Cancel job"
                   >
@@ -885,7 +885,7 @@ export default function JobDetails() {
                 {canRetryJob && (
                   <button
                     onClick={handleRetryJob}
-                    className="icon-button icon-button-primary"
+                    className="icon-button icon-button-danger"
                     aria-label="Retry job"
                     title="Retry job"
                   >

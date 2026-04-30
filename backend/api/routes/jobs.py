@@ -54,7 +54,7 @@ from backend.api.services.user_limit_service import (
     can_user_interact_with_job_outputs,
     validate_user_storage_headroom,
 )
-from backend.api.services.vm_queue_service import get_vm_slot_usage, queue_or_start_job, reserve_vm_slot_for_job
+from backend.api.services.vm_queue_service import get_vm_slot_usage, queue_or_start_job, reserve_vm_slot_for_job, schedule_queued_jobs
 from backend.api.services.job_execution_service import get_executions_by_job, update_job_execution
 from backend.api.services.billing_service import reserve_job_charge, settle_job_charge
 from backend.api.services.kubernetes_manager import get_kubernetes_pipeline_runner, kubernetes_is_available
@@ -241,6 +241,48 @@ def _cleanup_deleted_job_resources(
         deleted_objects,
         k8s_cleanup_summary,
     )
+
+
+def _cleanup_cancelled_job_resources(
+    *,
+    job_id: int,
+    executions: List[Any],
+) -> None:
+    cleanup_summary: Dict[str, Any] = {
+        "namespace": None,
+        "deleted_stage_jobs": [],
+        "errors": [],
+    }
+
+    if kubernetes_is_available():
+        try:
+            cleanup_summary = get_kubernetes_pipeline_runner().terminate_job_stages(job_id, executions)
+        except Exception as cleanup_error:
+            logger.warning(
+                "Failed to terminate Kubernetes stages for cancelled job %s: %s",
+                job_id,
+                cleanup_error,
+                exc_info=True,
+            )
+            cleanup_summary["errors"].append(str(cleanup_error))
+
+    logger.info(
+        "Finished asynchronous cleanup for cancelled job %s: %s",
+        job_id,
+        cleanup_summary,
+    )
+
+
+def _schedule_queued_jobs_safely(vm_name: Optional[str]) -> None:
+    try:
+        asyncio.run(schedule_queued_jobs(vm_name))
+    except Exception as queue_error:
+        logger.warning(
+            "Failed to schedule queued jobs after cancelling job on VM %s: %s",
+            vm_name,
+            queue_error,
+            exc_info=True,
+        )
 
 
 def _preserve_deleted_job_input_files(
@@ -1282,6 +1324,7 @@ async def list_job_executions(
 @router.post("/{job_id}/cancel", status_code=status.HTTP_200_OK)
 async def cancel_job_endpoint(
     job_id: int,
+    background_tasks: BackgroundTasks,
     current_user: UserResponse = Depends(get_current_user)
 ):
     """Cancel a pending/running job without deleting its records or outputs."""
@@ -1300,14 +1343,6 @@ async def cancel_job_endpoint(
             return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
 
         executions = get_executions_by_job(job_id)
-        cleanup_summary = {"namespace": None, "deleted_stage_jobs": [], "errors": []}
-        if kubernetes_is_available():
-            try:
-                cleanup_summary = get_kubernetes_pipeline_runner().terminate_job_stages(job_id, executions)
-            except Exception as cleanup_error:
-                logger.warning("Failed to terminate Kubernetes stages for job %s: %s", job_id, cleanup_error, exc_info=True)
-                cleanup_summary["errors"].append(str(cleanup_error))
-
         cancelled_count = _mark_active_executions_cancelled(
             executions=executions,
             message="Cancelled by user",
@@ -1319,22 +1354,20 @@ async def cancel_job_endpoint(
         except Exception as billing_error:
             logger.warning("Failed to settle billing after cancelling job %s: %s", job_id, billing_error, exc_info=True)
 
-        try:
-            await schedule_queued_jobs(job.vm_name)
-        except Exception as queue_error:
-            logger.warning("Failed to schedule queued jobs after cancelling job %s: %s", job_id, queue_error, exc_info=True)
+        background_tasks.add_task(
+            _cleanup_cancelled_job_resources,
+            job_id=job_id,
+            executions=executions,
+        )
+        background_tasks.add_task(_schedule_queued_jobs_safely, job.vm_name)
 
-        deleted_jobs_count = len(cleanup_summary.get("deleted_stage_jobs") or [])
-        error_count = len(cleanup_summary.get("errors") or [])
-        message = f"Job cancelled. Stopped {deleted_jobs_count} Kubernetes stage job(s)."
-        if error_count:
-            message += f" {error_count} cleanup issue(s) were recorded."
+        message = "Job cancelled. Kubernetes cleanup and queued job scheduling are continuing in the background."
 
         return success_response(
             data={
                 "job": _job_response_for_user(updated_job, current_user.username) if updated_job else None,
                 "cancelled_executions": cancelled_count,
-                "kubernetes_cleanup": cleanup_summary,
+                "kubernetes_cleanup": {"queued": True},
             },
             message=message,
         )

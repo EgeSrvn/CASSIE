@@ -128,6 +128,16 @@ def _write_user_limits_config(payload: Dict[str, Any]) -> None:
     get_config().user_limits.raw = payload
 
 
+def _write_user_limits_config_best_effort(payload: Dict[str, Any]) -> None:
+    try:
+        _write_user_limits_config(payload)
+    except Exception:
+        # The database is the durable source for purchased storage plans. The
+        # JSON config mirrors it when writable, but container rebuilds may not
+        # preserve that file.
+        pass
+
+
 def get_storage_upgrade_catalog() -> Dict[str, Any]:
     return _load_json_file(
         _storage_upgrade_catalog_path(),
@@ -181,12 +191,12 @@ def set_user_max_storage_gb(username: str, max_storage_gb: float) -> Dict[str, A
         user_overrides = {}
     user_overrides["max_storage_gb"] = round(float(max_storage_gb), 3)
     config_payload["users"][normalized_username] = user_overrides
-    _write_user_limits_config(config_payload)
     _set_user_storage_override_in_db(
         normalized_username,
         storage_plan_id=user_overrides.get("storage_plan_id"),
         max_storage_gb=round(float(max_storage_gb), 3),
     )
+    _write_user_limits_config_best_effort(config_payload)
     return get_user_limits(normalized_username)
 
 
@@ -252,12 +262,12 @@ def set_user_storage_subscription(username: str, plan_id: str) -> Dict[str, Any]
     user_overrides["max_storage_gb"] = round(target_storage_gb, 3)
     user_overrides["storage_plan_id"] = str(plan.get("id") or "")
     config_payload["users"][normalized_username] = user_overrides
-    _write_user_limits_config(config_payload)
     _set_user_storage_override_in_db(
         normalized_username,
         storage_plan_id=str(plan.get("id") or ""),
         max_storage_gb=round(target_storage_gb, 3),
     )
+    _write_user_limits_config_best_effort(config_payload)
     return get_user_limits(normalized_username)
 
 
@@ -295,12 +305,12 @@ def clear_user_storage_subscription(username: str) -> Dict[str, Any]:
     else:
         config_payload["users"].pop(normalized_username, None)
 
-    _write_user_limits_config(config_payload)
     _set_user_storage_override_in_db(
         normalized_username,
         storage_plan_id=None,
         max_storage_gb=None,
     )
+    _write_user_limits_config_best_effort(config_payload)
     return get_user_limits(normalized_username)
 
 

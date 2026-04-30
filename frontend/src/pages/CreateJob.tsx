@@ -1497,7 +1497,30 @@ export default function CreateJob() {
   }
 
   const getCombinedSelectableFiles = (): Array<FileItem & { folderPath?: string }> => {
-    return flattenFiles(dataFileTree)
+    const files = flattenFiles(dataFileTree)
+    const seenIds = new Set(files.map(file => file.id))
+
+    retrySourceInputFiles.forEach((file) => {
+      if (seenIds.has(file.id)) {
+        return
+      }
+
+      files.push({
+        id: file.id,
+        filename: file.filename,
+        s3_key: file.s3_key,
+        file_type: file.file_type,
+        file_format: file.file_format || null,
+        size_bytes: file.size_bytes ?? null,
+        checksum: file.checksum || null,
+        uploaded_at: file.uploaded_at || null,
+        created_at: file.created_at,
+        folderPath: 'Original job inputs',
+      })
+      seenIds.add(file.id)
+    })
+
+    return files
   }
 
   const getRuntimeInputAssignments = (): RuntimeInputAssignment[] => {
@@ -1767,7 +1790,7 @@ export default function CreateJob() {
   const shouldShowRuntimeEstimateCard = Boolean(loadingRuntimeEstimate || runtimeEstimate || runtimeEstimateError)
   const combinedSelectableFiles = useMemo(
     () => getCombinedSelectableFiles(),
-    [dataFileTree]
+    [dataFileTree, retrySourceInputFiles]
   )
   const canAdvanceFromLevelTwo = inputStepMappingsComplete
 

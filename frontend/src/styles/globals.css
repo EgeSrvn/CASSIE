@@ -327,6 +327,11 @@ body {
   box-shadow: var(--shadow-md);
 }
 
+.job-info-cancel-button {
+  font-size: 1.35rem;
+  font-weight: 800;
+}
+
 .icon-button-primary {
   background: var(--primary-color);
   color: white;
