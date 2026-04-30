@@ -123,6 +123,11 @@ const TOOL_NODE_TEMPLATES: ToolNodeTemplate[] = [
     description: ['Input: assembly or genome FASTA', 'Output: completeness summaries'],
   },
   {
+    toolId: 'MERYL',
+    label: 'Read k-mer Database Build (Meryl)',
+    description: ['Input: FASTQ reads', 'Output: .meryl.tar.gz archive for Merqury'],
+  },
+  {
     toolId: 'MERQURY',
     label: 'Assembly k-mer Evaluation (Merqury)',
     description: ['Input: assembly FASTA and Meryl DB', 'Output: reference-free assembly quality reports'],

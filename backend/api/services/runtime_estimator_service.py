@@ -42,6 +42,7 @@ DEFAULT_TOOL_BASE_MINUTES: Dict[str, float] = {
     "LIFTOFF": 42.0,
     "CAT": 95.0,
     "BUSCO": 36.0,
+    "MERYL": 28.0,
     "MERQURY": 70.0,
 }
 
@@ -68,6 +69,7 @@ DEFAULT_TOOL_REFERENCE_INPUT_MIB: Dict[str, float] = {
     "LIFTOFF": 800.0,
     "CAT": 3000.0,
     "BUSCO": 800.0,
+    "MERYL": 2500.0,
     "MERQURY": 1600.0,
 }
 
@@ -82,6 +84,7 @@ DEFAULT_TOOL_SIZE_EXPONENT: Dict[str, float] = {
     "LIFTOFF": 0.42,
     "CAT": 0.48,
     "BUSCO": 0.38,
+    "MERYL": 0.44,
     "MERQURY": 0.46,
 }
 
@@ -96,6 +99,7 @@ DEFAULT_TOOL_OUTPUT_SIZE_MULTIPLIER: Dict[str, float] = {
     "LIFTOFF": 0.02,
     "CAT": 0.04,
     "BUSCO": 0.01,
+    "MERYL": 0.65,
     "MERQURY": 0.03,
 }
 

@@ -252,6 +252,8 @@ export CAT_THREADS="$(get_env_value_or_default "CAT_THREADS" "auto")"
 export CAT_MEMORY_GB="$(get_env_value_or_default "CAT_MEMORY_GB" "auto")"
 export BUSCO_THREADS="$(get_env_value_or_default "BUSCO_THREADS" "auto")"
 export BUSCO_MEMORY_GB="$(get_env_value_or_default "BUSCO_MEMORY_GB" "auto")"
+export MERYL_THREADS="$(get_env_value_or_default "MERYL_THREADS" "auto")"
+export MERYL_MEMORY_GB="$(get_env_value_or_default "MERYL_MEMORY_GB" "auto")"
 export MERQURY_THREADS="$(get_env_value_or_default "MERQURY_THREADS" "auto")"
 export MERQURY_MEMORY_GB="$(get_env_value_or_default "MERQURY_MEMORY_GB" "auto")"
 export QUAST_THREADS="$(get_env_value_or_default "QUAST_THREADS" "auto")"
@@ -267,6 +269,7 @@ TOOL_IMAGES=(
   "liftoff:latest dockerized_tools/liftoff"
   "cat-tool:latest dockerized_tools/cat"
   "busco:latest dockerized_tools/busco"
+  "meryl:latest dockerized_tools/meryl"
   "merqury:latest dockerized_tools/merqury"
 )
 

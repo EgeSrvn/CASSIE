@@ -233,6 +233,8 @@ $env:CAT_THREADS = Get-EnvValueOrDefault -Name "CAT_THREADS" -DefaultValue "auto
 $env:CAT_MEMORY_GB = Get-EnvValueOrDefault -Name "CAT_MEMORY_GB" -DefaultValue "auto"
 $env:BUSCO_THREADS = Get-EnvValueOrDefault -Name "BUSCO_THREADS" -DefaultValue "auto"
 $env:BUSCO_MEMORY_GB = Get-EnvValueOrDefault -Name "BUSCO_MEMORY_GB" -DefaultValue "auto"
+$env:MERYL_THREADS = Get-EnvValueOrDefault -Name "MERYL_THREADS" -DefaultValue "auto"
+$env:MERYL_MEMORY_GB = Get-EnvValueOrDefault -Name "MERYL_MEMORY_GB" -DefaultValue "auto"
 $env:MERQURY_THREADS = Get-EnvValueOrDefault -Name "MERQURY_THREADS" -DefaultValue "auto"
 $env:MERQURY_MEMORY_GB = Get-EnvValueOrDefault -Name "MERQURY_MEMORY_GB" -DefaultValue "auto"
 $env:QUAST_THREADS = Get-EnvValueOrDefault -Name "QUAST_THREADS" -DefaultValue "auto"
@@ -248,8 +250,9 @@ $toolImages = @(
     @{ Image = "liftoff:latest"; Context = "dockerized_tools/liftoff" },
     @{ Image = "cat-tool:latest"; Context = "dockerized_tools/cat" },
     @{ Image = "busco:latest"; Context = "dockerized_tools/busco" },
+    @{ Image = "meryl:latest"; Context = "dockerized_tools/meryl" },
     @{ Image = "merqury:latest"; Context = "dockerized_tools/merqury" }
-)
+  )
 
 foreach ($tool in $toolImages) {
     Ensure-ToolImage -Image $tool.Image -Context $tool.Context

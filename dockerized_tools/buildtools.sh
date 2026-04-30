@@ -93,6 +93,8 @@ build_with_logs "CAT" "cat/Dockerfile" "cat-tool" "cat"
 
 build_with_logs "BUSCO" "busco/Dockerfile" "busco" "busco"
 
+build_with_logs "Meryl" "meryl/Dockerfile" "meryl" "meryl"
+
 build_with_logs "Merqury" "merqury/Dockerfile" "merqury" "merqury"
 
 log_build "[TOOLS] Verifying FastQC image..."

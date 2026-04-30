@@ -133,13 +133,21 @@ export const getAvailableTools = async (): Promise<Tool[]> => {
       type: 'qc',
       enabled: true,
     },
-    {
-      id: 10,
-      tool_id: 'MERQURY',
-      name: 'Merqury',
-      description: 'Reference-free k-mer-based assembly evaluation',
-      type: 'qc',
-      enabled: true,
+      {
+        id: 10,
+        tool_id: 'MERYL',
+        name: 'Meryl',
+        description: 'Build a read-derived meryl k-mer database archive for downstream Merqury evaluation',
+        type: 'transform',
+        enabled: true,
+      },
+      {
+        id: 11,
+        tool_id: 'MERQURY',
+        name: 'Merqury',
+        description: 'Reference-free k-mer-based assembly evaluation',
+        type: 'qc',
+        enabled: true,
     },
   ]
 }

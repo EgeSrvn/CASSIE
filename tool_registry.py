@@ -21,6 +21,8 @@ PRODUCED_ARTIFACT_COMPATIBILITY: Dict[str, set[str]] = {
     "assembly": {"assembly", "target_genome"},
     # Annotation outputs can satisfy tools that explicitly ask for a reference annotation.
     "annotation": {"annotation", "reference_annotation"},
+    # Meryl-generated read k-mer databases can be consumed by Merqury.
+    "read_kmer_db": {"read_kmer_db"},
 }
 
 COMPRESSED_FORMAT_ALIASES: Dict[str, List[str]] = {
@@ -542,6 +544,72 @@ process GENOMESCOPE2 {
         },
     },
     {
+        "id": "MERYL",
+        "name": "Meryl",
+        "type": "transform",
+        "description": "Build a read-derived meryl k-mer database archive for downstream Merqury evaluation",
+        "produces": ["read_kmer_db"],
+        "node_labels": [
+            "Read k-mer Database Build (Meryl)",
+            "Meryl",
+            "meryl",
+        ],
+        "input_requirements": [
+            {
+                "type": "reads",
+                "label": "Reads (FASTQ)",
+                "formats": ["fastq"],
+            }
+        ],
+        "docker": {
+            "image": "meryl:latest",
+            "dockerfile": "dockerized_tools/meryl/Dockerfile",
+            "context_dir": "dockerized_tools/meryl",
+            "runner_script": "dockerized_tools/runmeryl.sh",
+        },
+        "kubernetes": {
+            "command": ["bash", "-lc"],
+            "args_template": [
+                "runmeryl /data/meryl_out /data/<reads.fastq>..."
+            ],
+            "expected_outputs": ["meryl_out/reads.meryl.tar.gz"],
+        },
+        "process_template": r'''
+process MERYL {
+    publishDir "${params.outdir}/Meryl", mode: 'copy'
+
+    input:
+    path reads
+
+    output:
+    path "out/*"
+
+    script:
+    """
+    set -euo pipefail
+    mkdir -p out
+
+    rm -rf "/data/meryl_in/${workflow.runName}-${task.index}"
+    mkdir -p "/data/meryl_in/${workflow.runName}-${task.index}"
+
+    READ_ARGS=()
+    for read in $reads; do
+        staged="/data/meryl_in/${workflow.runName}-${task.index}/$(basename "$read")"
+        cp "$read" "$staged"
+        READ_ARGS+=("$staged")
+    done
+
+    rm -rf "/data/meryl_out/${workflow.runName}-${task.index}"
+    mkdir -p "/data/meryl_out/${workflow.runName}-${task.index}"
+
+    runmeryl "/data/meryl_out/${workflow.runName}-${task.index}" "${READ_ARGS[@]}"
+
+    cp -a "/data/meryl_out/${workflow.runName}-${task.index}"/. out/
+    """
+}
+''',
+    },
+    {
         "id": "MERQURY",
         "name": "Merqury",
         "type": "qc",
@@ -945,6 +1013,17 @@ TOOL_EDITABLE_FLAGS: Dict[str, List[Dict[str, Any]]] = {
             "default": "",
             "placeholder": "e.g. fly",
             "example": "fly",
+        },
+    ],
+    "MERYL": [
+        {
+            "key": "kmer_size",
+            "label": "k-mer Size",
+            "description": "k-mer size used when building the Meryl database.",
+            "type": "integer",
+            "default": 21,
+            "min": 15,
+            "max": 127,
         },
     ],
     "MERQURY": [],

@@ -168,6 +168,7 @@ load_tool_images_into_minikube() {
     "liftoff"
     "cat-tool"
     "busco"
+    "meryl"
     "merqury"
   )
   local image=""
@@ -267,4 +268,3 @@ retry_command "${CASSIE_DOCKER_RETRY_ATTEMPTS}" "${CASSIE_DOCKER_RETRY_DELAY_SEC
   "${COMPOSE_CMD[@]}" -f "${COMPOSE_FILE}" up -d --build --remove-orphans
 
 print_summary
-

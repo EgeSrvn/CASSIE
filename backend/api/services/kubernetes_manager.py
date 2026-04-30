@@ -2359,6 +2359,43 @@ exit "$CASSIE_STATUS"
                 ]
             )
 
+        if tool["id"] == "MERYL":
+            fastq_reads = classified["fastq"]
+            if not fastq_reads:
+                raise ValueError("Meryl requires FASTQ reads")
+            threads = tool_plan["threads"]
+            kmer_size = int(tool_config.get("kmer_size") or 21)
+            meryl_out = f"{output_dir}/meryl_out"
+            input_names = [os.path.basename(item["filename"]) for item in fastq_reads]
+            prep_commands: List[str] = [
+                profile_note,
+                "export TMPDIR=/workspace/tmp",
+                "mkdir -p /workspace/tmp",
+                f"mkdir -p {meryl_out} /workspace/meryl_inputs",
+            ]
+            input_args: List[str] = []
+            for input_name in input_names:
+                src = f"{input_dir}/{input_name}"
+                lowered = input_name.lower()
+                if lowered.endswith(".gz"):
+                    staged_name = input_name[:-3] or "reads.fastq"
+                    staged_path = f"/workspace/meryl_inputs/{staged_name}"
+                    prep_commands.append(f'gzip -dc "{src}" > "{staged_path}"')
+                    input_args.append(f'"{staged_path}"')
+                else:
+                    input_args.append(f'"{src}"')
+
+            prep_commands.extend(
+                [
+                    (
+                        f'meryl count k={kmer_size} threads={threads} '
+                        f'output "{meryl_out}/reads.meryl" {" ".join(input_args)}'
+                    ),
+                    f'tar -czf "{meryl_out}/reads.meryl.tar.gz" -C "{meryl_out}" "reads.meryl"',
+                ]
+            )
+            return self._wrap_tool_script(prep_commands)
+
         if tool["id"] == "HIFIASM":
             hifi_reads = classified["reads_like"]
             if not hifi_reads:
@@ -2913,6 +2950,23 @@ exit "$CASSIE_STATUS"
                 capacity=capacity,
             )
 
+        if tool_id == "MERYL":
+            threads = self._tool_threads(tool_id, self._dynamic_threads(whole_cpus, ratio=0.65))
+            memory_gb = min(self._tool_memory_gb(tool_id, self._dynamic_memory_gb(tool_memory_budget_mib, ratio=0.55)), max(1, tool_memory_budget_mib // 1024))
+            memory_limit = min(tool_memory_budget_mib, max((memory_gb * 1024) + 256, 2048))
+            return self._resource_plan(
+                tool_id=tool_id,
+                profile="adaptive",
+                threads=threads,
+                memory_gb=memory_gb,
+                memory_limit_mib=memory_limit,
+                cpu_limit_millis=self._cpu_limit_for_threads(threads, cpu_millis),
+                low_resource=memory_mib < 4096,
+                kmers="",
+                input_size_mib=input_size_mib,
+                capacity=capacity,
+            )
+
         if tool_id == "MERQURY":
             threads = self._tool_threads(tool_id, self._dynamic_threads(whole_cpus, ratio=0.7))
             memory_gb = min(self._tool_memory_gb(tool_id, self._dynamic_memory_gb(tool_memory_budget_mib, ratio=0.75)), max(1, tool_memory_budget_mib // 1024))
@@ -3065,6 +3119,8 @@ exit "$CASSIE_STATUS"
             return max(4096, padded_input * 3 + 2048)
         if tool_id == "BUSCO":
             return max(2048, padded_input * 2 + 2048)
+        if tool_id == "MERYL":
+            return max(2048, padded_input * 2 + 1536)
         if tool_id == "MERQURY":
             return max(3072, padded_input * 2 + 2048)
         return max(1024, padded_input + 1024)
