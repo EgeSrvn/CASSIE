@@ -4,6 +4,7 @@ import { useNavigate, useLocation } from 'react-router-dom'
 import {
   createJob,
   executeJob,
+  getJob,
   JobCreate,
   JobPipelineVisualization,
   PipelinePlanPreviewRequest,
@@ -14,6 +15,7 @@ import {
   RuntimeInputAssignment,
   VM,
 } from '../services/jobService'
+import { getFiles, File as JobFile } from '../services/fileService'
 import {
   EditableFlagDefinition,
   getAvailableTools,
@@ -233,6 +235,7 @@ const renderPageModal = (content: ReactNode) => {
 
 export default function CreateJob() {
   const location = useLocation()
+  const retryJobId = (location.state as { retryJobId?: number } | null)?.retryJobId
   const storedDraftRef = useRef<CreateJobDraft | null>(readCreateJobDraft())
   const shouldPersistDraftRef = useRef(true)
   const isDocumentUnloadingRef = useRef(false)
@@ -285,6 +288,10 @@ export default function CreateJob() {
   const [editingManualTool, setEditingManualTool] = useState<ToolRequirementInfo | null>(null)
   const [editingManualToolDraftValues, setEditingManualToolDraftValues] = useState<Record<string, FlagValue>>({})
   const [editingManualToolErrors, setEditingManualToolErrors] = useState<Record<string, string>>({})
+  const [retrySourceInputFiles, setRetrySourceInputFiles] = useState<JobFile[]>([])
+  const [retrySourcePreferences, setRetrySourcePreferences] = useState<Record<string, any> | null>(null)
+  const [retryPrefillApplied, setRetryPrefillApplied] = useState(false)
+  const [retryFileMappingsApplied, setRetryFileMappingsApplied] = useState(false)
   const navigate = useNavigate()
   const sharedRequirementCardStyle = {
     display: 'flex',
@@ -354,12 +361,100 @@ export default function CreateJob() {
 
   // Check if pipeline_id was passed via navigation state
   useEffect(() => {
-    const state = location.state as { pipelineId?: number } | null
+    const state = location.state as { pipelineId?: number; retryJobId?: number } | null
     if (state?.pipelineId) {
       setSelectionMode('pipeline')
       setSelectedPipelineId(state.pipelineId)
     }
   }, [location])
+
+  useEffect(() => {
+    if (!retryJobId || retryPrefillApplied || availableTools.length === 0) {
+      return
+    }
+
+    let cancelled = false
+
+    const prefillRetryJob = async () => {
+      try {
+        setError('')
+        clearCreateJobDraft()
+        const [sourceJob, sourceFilesResponse] = await Promise.all([
+          getJob(retryJobId),
+          getFiles(retryJobId, 'input', 1, 1000),
+        ])
+        if (cancelled) return
+
+        const sourceInputFiles = (sourceFilesResponse.data || []).filter(file => file.file_type === 'input')
+        const sourcePreferences = (sourceJob.execution_preferences || {}) as Record<string, any>
+        setRetrySourceInputFiles(sourceInputFiles)
+        setRetrySourcePreferences(sourcePreferences)
+        setJobName(sourceJob.name)
+        setSelectedVM(sourceJob.vm_name || '')
+        setSelectedIntentIds([])
+        setCurrentLevel(1)
+        setSlideDirection('forward')
+
+        if (sourceJob.pipeline_id) {
+          setSelectionMode('pipeline')
+          setSelectedPipelineId(sourceJob.pipeline_id)
+          setSelectedTools([])
+          setToolFileMappings({})
+        } else {
+          const snapshotStages = (sourcePreferences.visualization_snapshot?.stages || []) as Array<Record<string, any>>
+          const sourceToolIds = snapshotStages
+            .map(stage => String(stage.tool_id || '').trim().toUpperCase())
+            .filter(toolId => toolId && toolId !== 'CHECKPOINT')
+          const selectedToolIndices = availableTools
+            .filter(tool => sourceToolIds.includes(String(tool.tool_id || '').trim().toUpperCase()))
+            .map(tool => tool.id)
+          setSelectionMode('tools')
+          setSelectedTools(selectedToolIndices)
+          setSelectedPipelineId(null)
+          setSelectedPipelineDetails(null)
+          setPipelineRequirements(null)
+        }
+
+        const manualConfigs: Record<string, Record<string, FlagValue>> = {}
+        for (const entry of sourcePreferences.manual_tool_configs || []) {
+          const toolId = String(entry?.tool_id || '').trim().toUpperCase()
+          const toolConfig = entry?.tool_config
+          if (toolId && toolConfig && typeof toolConfig === 'object') {
+            manualConfigs[toolId] = toolConfig
+          }
+        }
+        if (Object.keys(manualConfigs).length > 0) {
+          setManualToolFlagValues(manualConfigs)
+        }
+
+        const sourceOverrides: Record<string, 'external' | 'upstream'> = {}
+        for (const item of sourcePreferences.input_source_overrides || []) {
+          const toolId = String(item?.tool_id || '').trim().toUpperCase()
+          const requirementType = String(item?.requirement_type || '').trim()
+          const source = String(item?.source || '').trim().toLowerCase()
+          if (toolId && requirementType && (source === 'external' || source === 'upstream')) {
+            sourceOverrides[`${toolId}:${requirementType}`] = source
+          }
+        }
+        if (Object.keys(sourceOverrides).length > 0) {
+          setRequirementSourceSelections(sourceOverrides)
+        }
+
+        setRetryPrefillApplied(true)
+      } catch (err: any) {
+        if (!cancelled) {
+          setError(err.message || 'Failed to load the original job for retry')
+          setRetryPrefillApplied(true)
+        }
+      }
+    }
+
+    void prefillRetryJob()
+
+    return () => {
+      cancelled = true
+    }
+  }, [availableTools, retryJobId, retryPrefillApplied])
 
   // Fetch available tools on component mount
   useEffect(() => {
@@ -732,6 +827,56 @@ export default function CreateJob() {
       .filter((toolId): toolId is string => Boolean(toolId)),
     [availableTools, selectedTools]
   )
+
+  useEffect(() => {
+    if (!retryJobId || retryFileMappingsApplied || retrySourceInputFiles.length === 0) {
+      return
+    }
+
+    const inputFileIds = retrySourceInputFiles.map(file => file.id)
+    if (selectionMode === 'pipeline' && pipelineInputRequirements.length > 0) {
+      const nextMappings: Record<string, number[]> = {}
+      pipelineInputRequirements.forEach((inputReq) => {
+        nextMappings[inputReq.id || inputReq.label] = inputFileIds
+      })
+      setPipelineInputMappings(nextMappings)
+      setRetryFileMappingsApplied(true)
+      return
+    }
+
+    if (selectionMode === 'tools' && activeToolRequirementCards.length > 0) {
+      const nextMappings: Record<string, Record<string, number[]>> = {}
+      activeToolRequirementCards.forEach((toolReq) => {
+        const toolKey = toolReq.tool_index.toString()
+        const requirementMappings: Record<string, number[]> = {}
+        toolReq.requirements.forEach((req) => {
+          const defaultSource = req.default_source || (req.is_intermediate ? 'upstream' : 'external')
+          const overrideSource = retrySourcePreferences?.input_source_overrides?.find((item: any) => (
+            String(item?.tool_id || '').trim().toUpperCase() === toolReq.tool_id &&
+            String(item?.requirement_type || '').trim() === req.type
+          ))?.source
+          const source = overrideSource || defaultSource
+          if (source !== 'upstream') {
+            requirementMappings[req.type] = inputFileIds
+          }
+        })
+        if (Object.keys(requirementMappings).length > 0) {
+          nextMappings[toolKey] = requirementMappings
+        }
+      })
+      setToolFileMappings(nextMappings)
+      setRetryFileMappingsApplied(true)
+    }
+  }, [
+    activeToolRequirementCards,
+    pipelineInputRequirements,
+    retryFileMappingsApplied,
+    retryJobId,
+    retrySourceInputFiles,
+    retrySourcePreferences,
+    selectionMode,
+  ])
+
   const defaultPriorityGroups = useMemo(() => {
     if (selectionMode === 'pipeline' && selectedPipeline) {
       return computePipelinePriorityGroups(selectedPipelineNodes as any[], selectedPipelineEdges as any[])
@@ -2104,7 +2249,7 @@ export default function CreateJob() {
       <Navigation />
       <div className="page-content">
         <header className="page-header">
-          <h1 className="page-title">Create New Job</h1>
+          <h1 className="page-title">{retryJobId ? 'Retry Job' : 'Create New Job'}</h1>
         </header>
 
         <div className="form-container create-job-form">

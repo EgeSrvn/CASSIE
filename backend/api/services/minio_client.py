@@ -527,6 +527,45 @@ class MinIOClient:
             error_msg = f"Failed to download file '{s3_key}': {e}"
             self._logger.error(error_msg)
             raise RuntimeError(error_msg)
+
+    def copy_file(
+        self,
+        user_id: int,
+        source_s3_key: str,
+        destination_s3_key: str,
+        username: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Copy an object inside the user's storage namespace."""
+        source_location = self._resolve_existing_location(user_id, source_s3_key, username)
+        if not source_location:
+            raise RuntimeError(f"Source file '{source_s3_key}' was not found in storage for user {user_id}")
+
+        destination_bucket, destination_object_key = self._get_primary_storage_location(
+            user_id,
+            destination_s3_key,
+            username,
+        )
+        source_bucket, source_object_key = source_location
+
+        try:
+            self.ensure_user_bucket(user_id, username)
+            self.s3_client.copy_object(
+                Bucket=destination_bucket,
+                Key=destination_object_key,
+                CopySource={"Bucket": source_bucket, "Key": source_object_key},
+            )
+            head = self._head_object(destination_bucket, destination_object_key)
+            return {
+                "bucket": destination_bucket,
+                "key": destination_s3_key,
+                "object_key": destination_object_key,
+                "size": int((head or {}).get("ContentLength", 0) or 0),
+                "etag": str((head or {}).get("ETag", "")).strip('"') if head else None,
+            }
+        except (ClientError, BotoCoreError) as e:
+            error_msg = f"Failed to copy file '{source_s3_key}' to '{destination_s3_key}': {e}"
+            self._logger.error(error_msg)
+            raise RuntimeError(error_msg)
     
     def list_files(
         self,

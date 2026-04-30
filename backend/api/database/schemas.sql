@@ -16,6 +16,8 @@ CREATE TABLE IF NOT EXISTS users (
     bucket_name VARCHAR(100) UNIQUE NOT NULL,
     cash_balance_usd NUMERIC(12, 2) NOT NULL DEFAULT 0,
     cash_reserved_usd NUMERIC(12, 2) NOT NULL DEFAULT 0,
+    storage_plan_id VARCHAR(120),
+    max_storage_gb NUMERIC(12, 3),
     email_verified BOOLEAN NOT NULL DEFAULT FALSE,
     login_two_factor_enabled BOOLEAN NOT NULL DEFAULT FALSE,
     job_notifications_enabled BOOLEAN NOT NULL DEFAULT FALSE,
@@ -104,6 +106,18 @@ BEGIN
         WHERE table_name = 'users' AND column_name = 'email_verified'
     ) THEN
         ALTER TABLE users ADD COLUMN email_verified BOOLEAN NOT NULL DEFAULT FALSE;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'users' AND column_name = 'storage_plan_id'
+    ) THEN
+        ALTER TABLE users ADD COLUMN storage_plan_id VARCHAR(120);
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'users' AND column_name = 'max_storage_gb'
+    ) THEN
+        ALTER TABLE users ADD COLUMN max_storage_gb NUMERIC(12, 3);
     END IF;
     IF NOT EXISTS (
         SELECT 1 FROM information_schema.columns
@@ -620,7 +634,7 @@ CREATE INDEX IF NOT EXISTS idx_job_executions_job_execution_number ON job_execut
 
 CREATE TABLE IF NOT EXISTS files (
     id SERIAL PRIMARY KEY,
-    job_id INTEGER REFERENCES jobs(id) ON DELETE CASCADE,
+    job_id INTEGER REFERENCES jobs(id) ON DELETE SET NULL,
     filename VARCHAR(255) NOT NULL,
     s3_key VARCHAR(500) NOT NULL,
     file_type VARCHAR(20) NOT NULL,
@@ -642,6 +656,36 @@ BEGIN
         ALTER TABLE files
         ADD CONSTRAINT chk_file_type
         CHECK (file_type IN ('input', 'output', 'intermediate', 'log'));
+    END IF;
+END $$;
+
+DO $$
+DECLARE
+    existing_constraint_name TEXT;
+BEGIN
+    SELECT tc.constraint_name INTO existing_constraint_name
+    FROM information_schema.table_constraints tc
+    JOIN information_schema.key_column_usage kcu
+      ON tc.constraint_name = kcu.constraint_name
+     AND tc.table_schema = kcu.table_schema
+    WHERE tc.table_name = 'files'
+      AND tc.constraint_type = 'FOREIGN KEY'
+      AND kcu.column_name = 'job_id'
+    LIMIT 1;
+
+    IF existing_constraint_name IS NOT NULL THEN
+        EXECUTE format('ALTER TABLE files DROP CONSTRAINT %I', existing_constraint_name);
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.table_constraints
+        WHERE table_name = 'files'
+          AND constraint_name = 'fk_files_job_id'
+    ) THEN
+        ALTER TABLE files
+        ADD CONSTRAINT fk_files_job_id
+        FOREIGN KEY (job_id) REFERENCES jobs(id) ON DELETE SET NULL;
     END IF;
 END $$;
 

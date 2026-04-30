@@ -26,7 +26,78 @@ GIB = 1024 * 1024 * 1024
 
 
 def get_user_limits(username: Optional[str]) -> dict:
-    return get_config().user_limits.get_limits_for_username(username)
+    limits = dict(get_config().user_limits.get_limits_for_username(username))
+    db_override = _get_user_storage_override_from_db(username)
+    if db_override.get("max_storage_gb") is not None:
+        max_storage_gb = max(float(db_override["max_storage_gb"] or 0), 0.0)
+        limits["max_storage_gb"] = max_storage_gb
+        limits["max_storage_bytes"] = int(max_storage_gb * GIB)
+    if db_override.get("storage_plan_id"):
+        limits["storage_plan_id"] = db_override["storage_plan_id"]
+    return limits
+
+
+def _get_user_storage_override_from_db(username: Optional[str]) -> Dict[str, Any]:
+    normalized_username = str(username or "").strip()
+    if not normalized_username:
+        return {}
+
+    try:
+        with get_db_connection() as conn:
+            cur = conn.cursor()
+            try:
+                cur.execute(
+                    """
+                    SELECT storage_plan_id, max_storage_gb
+                    FROM users
+                    WHERE username = %s
+                    """,
+                    (normalized_username,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return {}
+                return {
+                    "storage_plan_id": str(row[0] or "").strip() or None,
+                    "max_storage_gb": float(row[1]) if row[1] is not None else None,
+                }
+            finally:
+                cur.close()
+    except Exception:
+        return {}
+
+
+def _set_user_storage_override_in_db(
+    username: str,
+    *,
+    storage_plan_id: Optional[str],
+    max_storage_gb: Optional[float],
+) -> None:
+    normalized_username = str(username or "").strip()
+    if not normalized_username:
+        raise ValueError("Username is required to update storage subscription.")
+
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                """
+                UPDATE users
+                SET storage_plan_id = %s,
+                    max_storage_gb = %s,
+                    updated_at = NOW()
+                WHERE username = %s
+                """,
+                (storage_plan_id, max_storage_gb, normalized_username),
+            )
+            if cur.rowcount == 0:
+                raise ValueError("User not found.")
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            cur.close()
 
 
 def _user_limits_config_path() -> Path:
@@ -111,6 +182,11 @@ def set_user_max_storage_gb(username: str, max_storage_gb: float) -> Dict[str, A
     user_overrides["max_storage_gb"] = round(float(max_storage_gb), 3)
     config_payload["users"][normalized_username] = user_overrides
     _write_user_limits_config(config_payload)
+    _set_user_storage_override_in_db(
+        normalized_username,
+        storage_plan_id=user_overrides.get("storage_plan_id"),
+        max_storage_gb=round(float(max_storage_gb), 3),
+    )
     return get_user_limits(normalized_username)
 
 
@@ -127,6 +203,11 @@ def get_user_storage_plan_id(username: Optional[str]) -> Optional[str]:
     if not normalized_username:
         return None
     raw_users = get_config().user_limits.raw.get("users", {}) if isinstance(get_config().user_limits.raw, dict) else {}
+    db_override = _get_user_storage_override_from_db(normalized_username)
+    db_plan_id = str(db_override.get("storage_plan_id") or "").strip()
+    if db_plan_id:
+        return db_plan_id
+
     user_overrides = raw_users.get(normalized_username)
     if not isinstance(user_overrides, dict):
         return None
@@ -172,6 +253,11 @@ def set_user_storage_subscription(username: str, plan_id: str) -> Dict[str, Any]
     user_overrides["storage_plan_id"] = str(plan.get("id") or "")
     config_payload["users"][normalized_username] = user_overrides
     _write_user_limits_config(config_payload)
+    _set_user_storage_override_in_db(
+        normalized_username,
+        storage_plan_id=str(plan.get("id") or ""),
+        max_storage_gb=round(target_storage_gb, 3),
+    )
     return get_user_limits(normalized_username)
 
 
@@ -210,6 +296,11 @@ def clear_user_storage_subscription(username: str) -> Dict[str, Any]:
         config_payload["users"].pop(normalized_username, None)
 
     _write_user_limits_config(config_payload)
+    _set_user_storage_override_in_db(
+        normalized_username,
+        storage_plan_id=None,
+        max_storage_gb=None,
+    )
     return get_user_limits(normalized_username)
 
 

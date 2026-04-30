@@ -17,6 +17,7 @@ from datetime import datetime
 from pydantic import BaseModel, Field
 import asyncio
 import json
+import os
 import time
 # Use real JWT auth (Task 5.4 - now fixed)
 from backend.api.routes.auth import get_current_user, get_auth_context, AuthContext
@@ -32,6 +33,7 @@ from backend.api.models.job_model import (
     JobStatus,
     JobExecutionResponse,
 )
+from backend.api.models.pipeline_model import FileType
 from backend.api.services.job_service import (
     create_job,
     get_job_by_id,
@@ -74,6 +76,7 @@ from backend.api.utils.validators import (
 from backend.api.utils.logger import get_logger
 from tool_registry import get_tool_by_index, get_tool_registry
 from backend.api.services.auth_service import create_job_upload_token
+from backend.api.database.db_init import get_db_connection
 
 logger = get_logger(__name__)
 
@@ -232,24 +235,67 @@ def _cleanup_deleted_job_resources(
                 exc_info=True,
             )
 
-    try:
-        deleted_objects += minio_client.delete_prefix(
-            user_id=user_id,
-            prefix=f"jobs/{job_id}/",
-            username=username,
-        )
-    except Exception as cleanup_error:
-        logger.warning(
-            f"Failed to delete MinIO job prefix for deleted job {job_id}: {cleanup_error}",
-            exc_info=True,
-        )
-
     logger.info(
         "Finished asynchronous cleanup for deleted job %s. Deleted objects=%s, kubernetes_cleanup=%s",
         job_id,
         deleted_objects,
         k8s_cleanup_summary,
     )
+
+
+def _preserve_deleted_job_input_files(
+    *,
+    job_id: int,
+    user_id: int,
+    username: str,
+    input_files: List[Any],
+) -> int:
+    """Detach job input records and copy their objects to the user's staging area."""
+    if not input_files:
+        return 0
+
+    from backend.api.services.minio_client import get_minio_client
+
+    minio_client = get_minio_client()
+    preserved_count = 0
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        try:
+            for file_record in input_files:
+                source_key = str(getattr(file_record, "s3_key", "") or "").strip()
+                filename = os.path.basename(str(getattr(file_record, "filename", "") or "input"))
+                file_id = int(getattr(file_record, "id"))
+                if not source_key:
+                    continue
+
+                destination_key = f"staging/{user_id}/preserved_job_{job_id}_{file_id}_{filename}"
+                if source_key != destination_key:
+                    minio_client.copy_file(
+                        user_id=user_id,
+                        source_s3_key=source_key,
+                        destination_s3_key=destination_key,
+                        username=username,
+                    )
+
+                cur.execute(
+                    """
+                    UPDATE files
+                    SET job_id = NULL,
+                        s3_key = %s,
+                        file_type = 'input'
+                    WHERE id = %s
+                    """,
+                    (destination_key, file_id),
+                )
+                preserved_count += cur.rowcount
+
+            conn.commit()
+            return preserved_count
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            cur.close()
 
 
 def _infer_file_formats(file_record) -> set[str]:
@@ -671,9 +717,9 @@ async def create_job_endpoint(
         # Handle both staging files and data library files
         input_file_ids = []
         if selected_data_file_ids or selected_staged_file_ids:
-            from backend.api.services.storage_service import get_file_by_id, update_file
+            from backend.api.services.storage_service import create_file_record, get_file_by_id, update_file
             from backend.api.services.data_file_service import get_data_file_by_id, copy_data_file_to_job
-            from backend.api.models.pipeline_model import FileUpdate
+            from backend.api.models.pipeline_model import FileCreate, FileUpdate
             
             logger.info(
                 f"[JOB CREATE] Processing {len(selected_data_file_ids)} data library file(s) and "
@@ -692,30 +738,65 @@ async def create_job_endpoint(
                     else:
                         logger.warning(f"[JOB CREATE] Failed to copy data library file {file_id}")
                 else:
-                    # File is a staging file or already a job file, link it to this job
+                    # File is a staging file or an input from another job. Staging files can be
+                    # claimed by this job; existing job inputs must be cloned so retries do not
+                    # remove the input record from the original job.
                     file_record = get_file_by_id(file_id, user_id=current_user.id)
                     if file_record:
-                        # Update file to link it to this job
-                        update_data = FileUpdate(job_id=job.id)
-                        updated_file = update_file(file_id, current_user.id, update_data)
-                        if updated_file:
-                            input_file_ids.append(file_id)
-                            logger.info(f"[JOB CREATE] Linked file {file_id} to job {job.id}")
+                        if file_record.job_id is not None and file_record.job_id != job.id:
+                            cloned_file = create_file_record(FileCreate(
+                                job_id=job.id,
+                                filename=file_record.filename,
+                                s3_key=file_record.s3_key,
+                                file_type=FileType.INPUT,
+                                file_format=file_record.file_format,
+                                size_bytes=file_record.size_bytes,
+                                checksum=file_record.checksum,
+                                uploaded_at=file_record.uploaded_at,
+                            ))
+                            input_file_ids.append(cloned_file.id)
+                            logger.info(
+                                f"[JOB CREATE] Cloned existing job input file {file_id} "
+                                f"to job {job.id} as file {cloned_file.id}"
+                            )
                         else:
-                            logger.warning(f"[JOB CREATE] Failed to link file {file_id} to job {job.id}")
+                            update_data = FileUpdate(job_id=job.id)
+                            updated_file = update_file(file_id, current_user.id, update_data)
+                            if updated_file:
+                                input_file_ids.append(file_id)
+                                logger.info(f"[JOB CREATE] Linked file {file_id} to job {job.id}")
+                            else:
+                                logger.warning(f"[JOB CREATE] Failed to link file {file_id} to job {job.id}")
                     else:
                         logger.warning(f"[JOB CREATE] File {file_id} not found or doesn't belong to user {current_user.id}")
 
             for file_id in selected_staged_file_ids:
                 file_record = get_file_by_id(file_id, user_id=current_user.id)
                 if file_record:
-                    update_data = FileUpdate(job_id=job.id)
-                    updated_file = update_file(file_id, current_user.id, update_data)
-                    if updated_file:
-                        input_file_ids.append(file_id)
-                        logger.info(f"[JOB CREATE] Linked staged file {file_id} to job {job.id}")
+                    if file_record.job_id is not None and file_record.job_id != job.id:
+                        cloned_file = create_file_record(FileCreate(
+                            job_id=job.id,
+                            filename=file_record.filename,
+                            s3_key=file_record.s3_key,
+                            file_type=FileType.INPUT,
+                            file_format=file_record.file_format,
+                            size_bytes=file_record.size_bytes,
+                            checksum=file_record.checksum,
+                            uploaded_at=file_record.uploaded_at,
+                        ))
+                        input_file_ids.append(cloned_file.id)
+                        logger.info(
+                            f"[JOB CREATE] Cloned staged file {file_id} "
+                            f"to job {job.id} as file {cloned_file.id}"
+                        )
                     else:
-                        logger.warning(f"[JOB CREATE] Failed to link staged file {file_id} to job {job.id}")
+                        update_data = FileUpdate(job_id=job.id)
+                        updated_file = update_file(file_id, current_user.id, update_data)
+                        if updated_file:
+                            input_file_ids.append(file_id)
+                            logger.info(f"[JOB CREATE] Linked staged file {file_id} to job {job.id}")
+                        else:
+                            logger.warning(f"[JOB CREATE] Failed to link staged file {file_id} to job {job.id}")
                 else:
                     logger.warning(f"[JOB CREATE] Staged file {file_id} not found or doesn't belong to user {current_user.id}")
         
@@ -1658,7 +1739,24 @@ async def delete_job_endpoint(
             limit=1000,
             offset=0,
         )
-        file_s3_keys = [file_record.s3_key for file_record in job_files if getattr(file_record, "s3_key", None)]
+        input_files = [
+            file_record
+            for file_record in job_files
+            if getattr(file_record, "file_type", None) == FileType.INPUT
+        ]
+        cleanup_files = [
+            file_record
+            for file_record in job_files
+            if getattr(file_record, "file_type", None) != FileType.INPUT
+        ]
+        file_s3_keys = [file_record.s3_key for file_record in cleanup_files if getattr(file_record, "s3_key", None)]
+
+        preserved_input_count = _preserve_deleted_job_input_files(
+            job_id=job_id,
+            user_id=current_user.id,
+            username=current_user.username,
+            input_files=input_files,
+        )
 
         try:
             settle_job_charge(job_id, current_user.id)
@@ -1683,9 +1781,10 @@ async def delete_job_endpoint(
         return success_response(
             data={
                 "deleted_objects": len(file_s3_keys),
+                "preserved_input_files": preserved_input_count,
                 "cleanup_queued": True,
             },
-            message="Job and related data deleted successfully"
+            message="Job deleted successfully. Input files were preserved."
         )
     except Exception as e:
         logger.error(f"Error deleting job: {e}", exc_info=True)

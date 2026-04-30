@@ -11,7 +11,6 @@ import {
   getAvailableVMs,
   VM,
   cancelJob,
-  retryJob,
 } from '../services/jobService'
 import {
   getFiles,
@@ -36,6 +35,7 @@ import {
 import { formatDurationClock, formatLocalDateTime } from '../utils/dateTime'
 import Navigation from '../components/Navigation'
 import PipelineVisualization from '../components/PipelineVisualization'
+import RetryIcon from '../components/RetryIcon'
 import '../styles/globals.css'
 
 const formatVmCpu = (cpuMillis: number): string => `${(cpuMillis / 1000).toFixed(2)} cores`
@@ -84,9 +84,6 @@ export default function JobDetails() {
   const [jobPipeline, setJobPipeline] = useState<JobPipelineVisualization | null>(null)
   const [activeTab, setActiveTab] = useState<JobDetailTab>('information')
   const [cancellingJob, setCancellingJob] = useState(false)
-  const [preparingRetry, setPreparingRetry] = useState(false)
-  const [retryName, setRetryName] = useState('')
-  const [retryVM, setRetryVM] = useState('')
 
   useEffect(() => {
     if (jobId) {
@@ -123,12 +120,6 @@ export default function JobDetails() {
       setPipelineRequirements(null)
     }
   }, [job])
-
-  useEffect(() => {
-    if (!job) return
-    setRetryName(job.name)
-    setRetryVM(job.vm_name || '')
-  }, [job?.id, job?.name, job?.vm_name])
 
   const loadJob = async () => {
     if (!jobId) return
@@ -624,7 +615,6 @@ export default function JobDetails() {
       setCancellingJob(true)
       setError('')
       await cancelJob(parseInt(jobId))
-      await clearPendingJobUploads(parseInt(jobId))
       await refreshJobData()
     } catch (err: any) {
       setError(err.message || 'Failed to cancel job')
@@ -633,24 +623,9 @@ export default function JobDetails() {
     }
   }
 
-  const handlePrepareRetry = async () => {
+  const handleRetryJob = () => {
     if (!jobId) return
-
-    try {
-      setPreparingRetry(true)
-      setError('')
-      const updatedJob = await retryJob(parseInt(jobId), {
-        name: retryName.trim() || job?.name,
-        vm_name: retryVM || undefined,
-      })
-      setJob(updatedJob)
-      await refreshJobData()
-      setActiveTab('information')
-    } catch (err: any) {
-      setError(err.message || 'Failed to prepare job retry')
-    } finally {
-      setPreparingRetry(false)
-    }
+    navigate('/jobs/create', { state: { retryJobId: parseInt(jobId) } })
   }
 
   const getStatusColor = (status: string) => {
@@ -845,15 +820,6 @@ export default function JobDetails() {
         <header className="page-header">
           <h1 className="page-title">Job Details: {job.name}</h1>
           <div className="header-actions">
-            {canRetryJob && (
-              <button
-                onClick={handlePrepareRetry}
-                disabled={preparingRetry || !retryName.trim()}
-                className="btn-primary"
-              >
-                {preparingRetry ? 'Preparing...' : 'Retry Job'}
-              </button>
-            )}
             {(job.status === 'pending' || hasWaitingCheckpoint) && !jobUploadStatus && (
               <button
                 onClick={handleExecuteJob}
@@ -862,15 +828,6 @@ export default function JobDetails() {
                 title={getExecuteButtonMessage() || undefined}
               >
                 {executing ? 'Executing...' : hasWaitingCheckpoint ? 'Resume Checkpointed Branches' : 'Execute Job'}
-              </button>
-            )}
-            {canCancelJob && (
-              <button
-                onClick={handleCancelJob}
-                disabled={cancellingJob}
-                className="btn-secondary"
-              >
-                {cancellingJob ? 'Cancelling...' : 'Cancel Job'}
               </button>
             )}
             <button onClick={() => { loadJob(); loadFiles(); loadExecutions(); loadJobPipeline(); }} className="btn-secondary">
@@ -909,7 +866,34 @@ export default function JobDetails() {
         <div className="job-details-container">
           {activeTab === 'information' && (
           <div className="detail-section">
-            <h2>Job Information</h2>
+            <div className="section-header-with-action">
+              <div className="section-header-left">
+                <h2>Job Information</h2>
+              </div>
+              <div className="section-header-actions">
+                {canCancelJob && (
+                  <button
+                    onClick={handleCancelJob}
+                    disabled={cancellingJob}
+                    className="icon-button icon-button-danger"
+                    aria-label="Cancel job"
+                    title="Cancel job"
+                  >
+                    {cancellingJob ? '...' : '×'}
+                  </button>
+                )}
+                {canRetryJob && (
+                  <button
+                    onClick={handleRetryJob}
+                    className="icon-button icon-button-primary"
+                    aria-label="Retry job"
+                    title="Retry job"
+                  >
+                    <RetryIcon />
+                  </button>
+                )}
+              </div>
+            </div>
             <div className="detail-grid">
               <div><strong>Job ID:</strong> {job.id}</div>
               <div><strong>Status:</strong> 
@@ -962,16 +946,6 @@ export default function JobDetails() {
                     )}
                   </>
                 )}
-                {canCancelJob && (
-                  <button
-                    onClick={handleCancelJob}
-                    disabled={cancellingJob}
-                    className="btn-secondary"
-                    style={{ marginTop: '10px', marginLeft: '0.5rem' }}
-                  >
-                    {cancellingJob ? 'Cancelling...' : 'Cancel Job'}
-                  </button>
-                )}
               </div>
               <div><strong>Workflow ID:</strong> {job.workflow_id}</div>
               {job.vm_name && (
@@ -991,44 +965,6 @@ export default function JobDetails() {
                 <div><strong>Data Types:</strong> {job.data_types.join(', ')}</div>
               )}
             </div>
-            {(job.status === 'failed' || job.status === 'cancelled') && (
-              <div style={{ marginTop: '1rem', padding: '1rem', borderRadius: '8px', border: '1px solid #d9c7a5', backgroundColor: '#fffaf0' }}>
-                <h3 style={{ marginTop: 0 }}>Retry Settings</h3>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '0.85rem', alignItems: 'end' }}>
-                  <label style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', fontWeight: 600 }}>
-                    Job name
-                    <input
-                      type="text"
-                      value={retryName}
-                      onChange={(event) => setRetryName(event.target.value)}
-                      maxLength={100}
-                    />
-                  </label>
-                  <label style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', fontWeight: 600 }}>
-                    Virtual machine
-                    <select value={retryVM} onChange={(event) => setRetryVM(event.target.value)}>
-                      <option value="">Default VM</option>
-                      {availableVMs.map(vm => (
-                        <option key={vm.name} value={vm.name}>
-                          {vm.display_name} ({formatVmSlots(vm)})
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <button
-                    type="button"
-                    onClick={handlePrepareRetry}
-                    disabled={preparingRetry || !retryName.trim()}
-                    className="btn-primary"
-                  >
-                    {preparingRetry ? 'Preparing...' : 'Retry Job'}
-                  </button>
-                </div>
-                <p style={{ marginBottom: 0, color: '#64748b', fontSize: '0.9rem' }}>
-                  This keeps the job record and execution history, changes the editable settings above, and returns the job to pending so you can execute it again.
-                </p>
-              </div>
-            )}
             {selectedVMDetails && (
               <div style={{ marginTop: '1rem', padding: '0.875rem 1rem', borderRadius: '8px', backgroundColor: '#f1e5cf', border: '1px solid #d9c7a5' }}>
                 <div style={{ fontWeight: 600, color: '#183B4E', marginBottom: '0.35rem' }}>

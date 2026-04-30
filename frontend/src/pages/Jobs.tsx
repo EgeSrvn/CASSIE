@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { getJobs, Job, deleteJob, cancelJob, retryJob } from '../services/jobService'
+import { getJobs, Job, deleteJob, cancelJob } from '../services/jobService'
 import { getToken } from '../services/authService'
 import { clearPendingJobUploads } from '../services/pendingJobUploadService'
 import { formatLocalDateTime } from '../utils/dateTime'
@@ -67,7 +67,6 @@ export default function Jobs() {
     try {
       setActioningJobId(job.id)
       await cancelJob(job.id)
-      await clearPendingJobUploads(job.id)
       await loadJobs()
     } catch (err: any) {
       alert(err.message || 'Failed to cancel job')
@@ -77,19 +76,7 @@ export default function Jobs() {
   }
 
   const handleRetry = async (job: Job) => {
-    try {
-      setActioningJobId(job.id)
-      await retryJob(job.id, {
-        name: job.name,
-        vm_name: job.vm_name,
-      })
-      await loadJobs()
-      navigate(`/jobs/${job.id}`)
-    } catch (err: any) {
-      alert(err.message || 'Failed to prepare job retry')
-    } finally {
-      setActioningJobId(null)
-    }
+    navigate('/jobs/create', { state: { retryJobId: job.id } })
   }
 
   const getStatusColor = (status: string) => {
@@ -170,9 +157,8 @@ export default function Jobs() {
                     <button
                       onClick={() => handleRetry(job)}
                       className="btn-primary"
-                      disabled={actioningJobId === job.id}
                     >
-                      {actioningJobId === job.id ? 'Preparing...' : 'Retry Job'}
+                      Retry Job
                     </button>
                   )}
                   {(job.status === 'pending' || job.status === 'running') && (
