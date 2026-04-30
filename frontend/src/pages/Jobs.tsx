@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { getJobs, Job, deleteJob } from '../services/jobService'
+import { getJobs, Job, deleteJob, cancelJob, retryJob } from '../services/jobService'
 import { getToken } from '../services/authService'
 import { clearPendingJobUploads } from '../services/pendingJobUploadService'
 import { formatLocalDateTime } from '../utils/dateTime'
@@ -14,6 +14,7 @@ export default function Jobs() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string>('')
   const [statusFilter, setStatusFilter] = useState<string>('')
+  const [actioningJobId, setActioningJobId] = useState<number | null>(null)
   const navigate = useNavigate()
   const isAuthenticated = !!getToken()
 
@@ -57,6 +58,37 @@ export default function Jobs() {
       loadJobs()
     } catch (err) {
       alert('Failed to delete job')
+    }
+  }
+
+  const handleCancel = async (job: Job) => {
+    if (!confirm(`Cancel job "${job.name}"? Running Kubernetes stages will be stopped, but the job will stay in your list.`)) return
+
+    try {
+      setActioningJobId(job.id)
+      await cancelJob(job.id)
+      await clearPendingJobUploads(job.id)
+      await loadJobs()
+    } catch (err: any) {
+      alert(err.message || 'Failed to cancel job')
+    } finally {
+      setActioningJobId(null)
+    }
+  }
+
+  const handleRetry = async (job: Job) => {
+    try {
+      setActioningJobId(job.id)
+      await retryJob(job.id, {
+        name: job.name,
+        vm_name: job.vm_name,
+      })
+      await loadJobs()
+      navigate(`/jobs/${job.id}`)
+    } catch (err: any) {
+      alert(err.message || 'Failed to prepare job retry')
+    } finally {
+      setActioningJobId(null)
     }
   }
 
@@ -134,6 +166,24 @@ export default function Jobs() {
                   )}
                 </div>
                 <div className="job-actions">
+                  {(job.status === 'failed' || job.status === 'cancelled') && (
+                    <button
+                      onClick={() => handleRetry(job)}
+                      className="btn-primary"
+                      disabled={actioningJobId === job.id}
+                    >
+                      {actioningJobId === job.id ? 'Preparing...' : 'Retry Job'}
+                    </button>
+                  )}
+                  {(job.status === 'pending' || job.status === 'running') && (
+                    <button
+                      onClick={() => handleCancel(job)}
+                      className="btn-secondary"
+                      disabled={actioningJobId === job.id}
+                    >
+                      {actioningJobId === job.id ? 'Cancelling...' : 'Cancel Job'}
+                    </button>
+                  )}
                   <button
                     onClick={() => navigate(`/jobs/${job.id}`)}
                     className="btn-primary"

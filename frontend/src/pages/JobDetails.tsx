@@ -592,6 +592,21 @@ export default function JobDetails() {
     }
   }
 
+  const handleExecuteJob = async () => {
+    if (!jobId) return
+    try {
+      setExecuting(true)
+      setError('')
+      const result = await executeJob(parseInt(jobId))
+      await refreshJobData()
+      alert(result.message || 'Job execution started successfully!')
+    } catch (err: any) {
+      setError(err.message || 'Failed to execute job')
+    } finally {
+      setExecuting(false)
+    }
+  }
+
   const refreshJobData = async () => {
     await Promise.all([
       loadJob(),
@@ -800,6 +815,8 @@ export default function JobDetails() {
     // For tool-based jobs, at least one file is required (already checked above)
     return true
   })()
+  const canCancelJob = job.status === 'pending' || job.status === 'running'
+  const canRetryJob = job.status === 'failed' || job.status === 'cancelled'
 
   const getExecuteButtonMessage = () => {
     if (hasWaitingCheckpoint) {
@@ -828,6 +845,34 @@ export default function JobDetails() {
         <header className="page-header">
           <h1 className="page-title">Job Details: {job.name}</h1>
           <div className="header-actions">
+            {canRetryJob && (
+              <button
+                onClick={handlePrepareRetry}
+                disabled={preparingRetry || !retryName.trim()}
+                className="btn-primary"
+              >
+                {preparingRetry ? 'Preparing...' : 'Retry Job'}
+              </button>
+            )}
+            {(job.status === 'pending' || hasWaitingCheckpoint) && !jobUploadStatus && (
+              <button
+                onClick={handleExecuteJob}
+                disabled={executing || !canExecute}
+                className="btn-primary"
+                title={getExecuteButtonMessage() || undefined}
+              >
+                {executing ? 'Executing...' : hasWaitingCheckpoint ? 'Resume Checkpointed Branches' : 'Execute Job'}
+              </button>
+            )}
+            {canCancelJob && (
+              <button
+                onClick={handleCancelJob}
+                disabled={cancellingJob}
+                className="btn-secondary"
+              >
+                {cancellingJob ? 'Cancelling...' : 'Cancel Job'}
+              </button>
+            )}
             <button onClick={() => { loadJob(); loadFiles(); loadExecutions(); loadJobPipeline(); }} className="btn-secondary">
               Refresh
             </button>
@@ -901,23 +946,7 @@ export default function JobDetails() {
                   <>
                     {!jobUploadStatus && (
                       <button
-                        onClick={async () => {
-                          if (!jobId) return
-                          try {
-                            setExecuting(true)
-                            setError('')
-                            const result = await executeJob(parseInt(jobId))
-                            await loadJob()
-                            await loadFiles() // Refresh files after execution
-                            await loadExecutions()
-                            await loadJobPipeline()
-                            alert(result.message || 'Job execution started successfully!')
-                          } catch (err: any) {
-                            setError(err.message || 'Failed to execute job')
-                          } finally {
-                            setExecuting(false)
-                          }
-                        }}
+                        onClick={handleExecuteJob}
                         disabled={executing || !canExecute}
                         className="btn-primary"
                         style={{ marginTop: '10px' }}
@@ -933,7 +962,7 @@ export default function JobDetails() {
                     )}
                   </>
                 )}
-                {(job.status === 'pending' || job.status === 'running') && (
+                {canCancelJob && (
                   <button
                     onClick={handleCancelJob}
                     disabled={cancellingJob}
@@ -992,11 +1021,11 @@ export default function JobDetails() {
                     disabled={preparingRetry || !retryName.trim()}
                     className="btn-primary"
                   >
-                    {preparingRetry ? 'Preparing...' : 'Prepare Retry'}
+                    {preparingRetry ? 'Preparing...' : 'Retry Job'}
                   </button>
                 </div>
                 <p style={{ marginBottom: 0, color: '#64748b', fontSize: '0.9rem' }}>
-                  This keeps the job record and execution history, changes the editable settings above, and returns the job to pending so you can run it again.
+                  This keeps the job record and execution history, changes the editable settings above, and returns the job to pending so you can execute it again.
                 </p>
               </div>
             )}
