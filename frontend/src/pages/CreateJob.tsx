@@ -292,6 +292,7 @@ export default function CreateJob() {
   const [retrySourcePreferences, setRetrySourcePreferences] = useState<Record<string, any> | null>(null)
   const [retryPrefillApplied, setRetryPrefillApplied] = useState(false)
   const [retryFileMappingsApplied, setRetryFileMappingsApplied] = useState(false)
+  const [retryMissingInputMessages, setRetryMissingInputMessages] = useState<Record<string, string[]>>({})
   const navigate = useNavigate()
   const sharedRequirementCardStyle = {
     display: 'flex',
@@ -833,13 +834,59 @@ export default function CreateJob() {
       return
     }
 
-    const inputFileIds = retrySourceInputFiles.map(file => file.id)
+    if (loadingDataTree) {
+      return
+    }
+
+    const storageFiles = flattenFiles(dataFileTree)
+    const fileMatchesOriginal = (candidate: FileItem & { folderPath?: string }, original: JobFile): boolean => {
+      const sameS3Key = Boolean(candidate.s3_key && original.s3_key && candidate.s3_key === original.s3_key)
+      const sameChecksum = Boolean(candidate.checksum && original.checksum && candidate.checksum === original.checksum)
+      const sameSize = Number(candidate.size_bytes || 0) === Number(original.size_bytes || 0)
+      const sameName = candidate.filename === original.filename
+      return sameS3Key || (sameChecksum && sameSize) || (sameName && sameSize)
+    }
+    const resolveRetryInputSelection = (requirement: { type: string; formats: string[] }) => {
+      const compatibleOriginals = retrySourceInputFiles.filter((file) => fileMatchesRequirement(file as any, requirement))
+      const intendedOriginalIds = new Set(getCompatibleCandidateFileIds(requirement, compatibleOriginals as any))
+      const selectedIds: number[] = []
+      const missingNames: string[] = []
+
+      compatibleOriginals.forEach((original) => {
+        if (!intendedOriginalIds.has(original.id)) {
+          return
+        }
+        const match = storageFiles.find((candidate) => (
+          fileMatchesRequirement(candidate, requirement) && fileMatchesOriginal(candidate, original)
+        ))
+        if (match) {
+          selectedIds.push(match.id)
+        } else {
+          missingNames.push(original.filename)
+        }
+      })
+
+      return {
+        selectedIds: Array.from(new Set(selectedIds)),
+        missingNames,
+      }
+    }
+
+    const nextMissingMessages: Record<string, string[]> = {}
     if (selectionMode === 'pipeline' && pipelineInputRequirements.length > 0) {
       const nextMappings: Record<string, number[]> = {}
       pipelineInputRequirements.forEach((inputReq) => {
-        nextMappings[inputReq.id || inputReq.label] = inputFileIds
+        const inputKey = inputReq.id || inputReq.label
+        const { selectedIds, missingNames } = resolveRetryInputSelection(inputReq)
+        if (selectedIds.length > 0) {
+          nextMappings[inputKey] = selectedIds
+        }
+        if (missingNames.length > 0) {
+          nextMissingMessages[`pipeline:${inputKey}`] = missingNames
+        }
       })
       setPipelineInputMappings(nextMappings)
+      setRetryMissingInputMessages(nextMissingMessages)
       setRetryFileMappingsApplied(true)
       return
     }
@@ -857,7 +904,13 @@ export default function CreateJob() {
           ))?.source
           const source = overrideSource || defaultSource
           if (source !== 'upstream') {
-            requirementMappings[req.type] = inputFileIds
+            const { selectedIds, missingNames } = resolveRetryInputSelection(req)
+            if (selectedIds.length > 0) {
+              requirementMappings[req.type] = selectedIds
+            }
+            if (missingNames.length > 0) {
+              nextMissingMessages[`tool:${toolKey}:${req.type}`] = missingNames
+            }
           }
         })
         if (Object.keys(requirementMappings).length > 0) {
@@ -865,10 +918,13 @@ export default function CreateJob() {
         }
       })
       setToolFileMappings(nextMappings)
+      setRetryMissingInputMessages(nextMissingMessages)
       setRetryFileMappingsApplied(true)
     }
   }, [
     activeToolRequirementCards,
+    dataFileTree,
+    loadingDataTree,
     pipelineInputRequirements,
     retryFileMappingsApplied,
     retryJobId,
@@ -1497,29 +1553,7 @@ export default function CreateJob() {
   }
 
   const getCombinedSelectableFiles = (): Array<FileItem & { folderPath?: string }> => {
-    const files = flattenFiles(dataFileTree)
-    const seenIds = new Set(files.map(file => file.id))
-
-    retrySourceInputFiles.forEach((file) => {
-      if (seenIds.has(file.id)) {
-        return
-      }
-
-      files.push({
-        id: file.id,
-        filename: file.filename,
-        s3_key: file.s3_key,
-        file_type: file.file_type,
-        file_format: file.file_format || null,
-        size_bytes: file.size_bytes ?? null,
-        checksum: file.checksum || null,
-        uploaded_at: file.uploaded_at || null,
-        created_at: file.created_at,
-      })
-      seenIds.add(file.id)
-    })
-
-    return files
+    return flattenFiles(dataFileTree)
   }
 
   const getRuntimeInputAssignments = (): RuntimeInputAssignment[] => {
@@ -1793,11 +1827,7 @@ export default function CreateJob() {
   )
   const combinedSelectableFiles = useMemo(
     () => getCombinedSelectableFiles(),
-    [dataFileTree, retrySourceInputFiles]
-  )
-  const combinedSelectableFilesById = useMemo(
-    () => new Map(combinedSelectableFiles.map((file) => [file.id, file])),
-    [combinedSelectableFiles]
+    [dataFileTree]
   )
   const canAdvanceFromLevelTwo = inputStepMappingsComplete
 
@@ -2709,7 +2739,7 @@ export default function CreateJob() {
                         const inputKey = inputReq.id || inputReq.label
                         const mappedFileIds = pipelineInputMappings[inputKey] || []
                         const compatibleFiles = combinedSelectableFiles.filter(file => fileMatchesRequirement(file, inputReq))
-                        const missingMappedFileCount = mappedFileIds.filter((fileId) => !combinedSelectableFilesById.has(fileId)).length
+                        const missingOriginalFileNames = retryMissingInputMessages[`pipeline:${inputKey}`] || []
 
                         return (
                           <div key={inputKey} className="builder-requirement-card builder-block-card">
@@ -2740,9 +2770,9 @@ export default function CreateJob() {
                                 Used by: {inputReq.used_by.join(', ')}
                               </p>
                             )}
-                            {missingMappedFileCount > 0 && (
+                            {missingOriginalFileNames.length > 0 && (
                               <p style={{ margin: '0 0 0.65rem 0', color: '#b45309', fontSize: '0.85rem', fontWeight: 500 }}>
-                                {missingMappedFileCount} original job input file{missingMappedFileCount !== 1 ? 's are' : ' is'} no longer available.
+                                Original file{missingOriginalFileNames.length !== 1 ? 's were' : ' was'} {missingOriginalFileNames.join(', ')} and {missingOriginalFileNames.length !== 1 ? 'are' : 'is'} no longer available.
                               </p>
                             )}
                             {compatibleFiles.length === 0 && mappedFileIds.length === 0 ? (
@@ -2899,7 +2929,7 @@ export default function CreateJob() {
                                 const requirementSource = getRequirementSource(block.toolReq, req)
                                 const mappedFileIds = toolFileMappings[toolKey]?.[req.type] || []
                                 const compatibleFiles = combinedSelectableFiles.filter((file) => fileMatchesRequirement(file, req))
-                                const missingMappedFileCount = mappedFileIds.filter((fileId) => !combinedSelectableFilesById.has(fileId)).length
+                                const missingOriginalFileNames = retryMissingInputMessages[`tool:${toolKey}:${req.type}`] || []
 
                                 return (
                                   <div key={`${block.id}-${req.type}`} style={{ paddingTop: '0.25rem', borderTop: '1px solid #ece5d2' }}>
@@ -2957,9 +2987,9 @@ export default function CreateJob() {
                                       </p>
                                     ) : null}
 
-                                    {missingMappedFileCount > 0 && requirementSource !== 'upstream' && (
+                                    {missingOriginalFileNames.length > 0 && requirementSource !== 'upstream' && (
                                       <p style={{ margin: '0 0 0.65rem 0', color: '#b45309', fontSize: '0.85rem', fontWeight: 500 }}>
-                                        {missingMappedFileCount} original job input file{missingMappedFileCount !== 1 ? 's are' : ' is'} no longer available.
+                                        Original file{missingOriginalFileNames.length !== 1 ? 's were' : ' was'} {missingOriginalFileNames.join(', ')} and {missingOriginalFileNames.length !== 1 ? 'are' : 'is'} no longer available.
                                       </p>
                                     )}
 
