@@ -312,12 +312,39 @@ def _preserve_deleted_job_input_files(
 
                 destination_key = f"staging/{user_id}/preserved_job_{job_id}_{file_id}_{filename}"
                 if source_key != destination_key:
-                    minio_client.copy_file(
-                        user_id=user_id,
-                        source_s3_key=source_key,
-                        destination_s3_key=destination_key,
-                        username=username,
-                    )
+                    try:
+                        minio_client.copy_file(
+                            user_id=user_id,
+                            source_s3_key=source_key,
+                            destination_s3_key=destination_key,
+                            username=username,
+                        )
+                    except Exception as copy_error:
+                        logger.warning(
+                            "Could not copy input file %s for deleted job %s into staging. "
+                            "Detaching the database record without blocking job deletion: %s",
+                            file_id,
+                            job_id,
+                            copy_error,
+                            exc_info=True,
+                        )
+                        destination_key = source_key
+
+                cur.execute(
+                    """
+                    SELECT id
+                    FROM files
+                    WHERE job_id IS NULL
+                      AND s3_key = %s
+                      AND id <> %s
+                    LIMIT 1
+                    """,
+                    (destination_key, file_id),
+                )
+                if cur.fetchone():
+                    cur.execute("DELETE FROM files WHERE id = %s", (file_id,))
+                    preserved_count += cur.rowcount
+                    continue
 
                 cur.execute(
                     """

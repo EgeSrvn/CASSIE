@@ -1788,6 +1788,10 @@ export default function CreateJob() {
   }
 
   const shouldShowRuntimeEstimateCard = Boolean(loadingRuntimeEstimate || runtimeEstimate || runtimeEstimateError)
+  const storageSelectableFiles = useMemo(
+    () => flattenFiles(dataFileTree),
+    [dataFileTree]
+  )
   const combinedSelectableFiles = useMemo(
     () => getCombinedSelectableFiles(),
     [dataFileTree, retrySourceInputFiles]
@@ -2685,11 +2689,11 @@ export default function CreateJob() {
                       </p>
                     ) : (
                       <>
-                      {combinedSelectableFiles.length > 0 && (
+                      {storageSelectableFiles.length > 0 && (
                         <div className="builder-section-card builder-input-file-context">
                           <p className="builder-card-kicker">Storage Files</p>
                       <div className="builder-file-chip-grid">
-                            {combinedSelectableFiles.map((file) => renderSelectableFileChip(
+                            {storageSelectableFiles.map((file) => renderSelectableFileChip(
                               file,
                               'pipeline-context',
                               selectedLibraryFiles.some((item) => item.id === file.id)
@@ -2779,11 +2783,11 @@ export default function CreateJob() {
                     <p style={{ color: '#666', fontStyle: 'italic' }}>Loading tool inputs...</p>
                   ) : (
                     <>
-                  {combinedSelectableFiles.length > 0 && (
+                  {storageSelectableFiles.length > 0 && (
                     <div className="builder-section-card builder-input-file-context">
                       <p className="builder-card-kicker">Storage Files</p>
                       <div className="builder-file-chip-grid">
-                        {combinedSelectableFiles.map((file) => renderSelectableFileChip(
+                        {storageSelectableFiles.map((file) => renderSelectableFileChip(
                           file,
                           'tool-context',
                           selectedLibraryFiles.some((item) => item.id === file.id)
