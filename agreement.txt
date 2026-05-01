@@ -1,0 +1,200 @@
+CASSIE USER AGREEMENT
+Terms of Service
+
+Effective Date: [Insert Date]
+Last Updated: [Insert Date]
+
+IMPORTANT NOTE: This template is provided for general informational purposes and is not legal advice. You should have this agreement reviewed by qualified legal counsel before using it with users, customers, research partners, or the public.
+
+This User Agreement ("Agreement") governs access to and use of CASSIE, the Cloud-based Assembly Streamlined Service Integration Engine, including its web application, backend services, APIs, workflow tools, data storage features, job execution features, collaboration features, documentation, and related services (collectively, the "Service").
+
+This Agreement is between [Insert Legal Entity Name], located at [Insert Address] ("Provider," "we," "us," or "our"), and the individual or organization accessing or using the Service ("User," "you," or "your").
+
+By creating an account, accessing the Service, uploading data, submitting jobs, or otherwise using the Service, you agree to this Agreement. If you use the Service on behalf of an organization, you represent that you have authority to bind that organization to this Agreement.
+
+1. Eligibility and Accounts
+
+You must be at least 18 years old, or the age of legal majority in your jurisdiction, to use the Service. You agree to provide accurate registration information and to keep your account information current.
+
+You are responsible for maintaining the confidentiality of your account credentials and for all activity under your account. You must promptly notify us of any unauthorized access, security incident, or suspected compromise of your account.
+
+We may suspend, restrict, or terminate accounts that violate this Agreement, create security risk, disrupt the Service, or expose us or other users to legal or operational risk.
+
+2. Description of the Service
+
+CASSIE is a cloud-native genomics analysis platform designed to help users create, execute, monitor, and manage bioinformatics workflows, including genome assembly and annotation workflows. The Service may include visual pipeline building, containerized tool execution, storage of input and output files, job logs, user management, forums, collaboration features, administrative controls, and integration with cloud or storage infrastructure.
+
+The Service may change over time. We may add, modify, suspend, or discontinue features at any time, subject to any separate written agreement that applies to your use.
+
+3. Acceptable Use
+
+You agree to use the Service only for lawful, authorized, and appropriate purposes. You must not:
+
+a. Violate any applicable law, regulation, contractual obligation, export control rule, research ethics requirement, institutional policy, or third-party right.
+
+b. Upload, process, share, or transmit data that you do not have the legal right or authorization to use.
+
+c. Attempt to gain unauthorized access to the Service, accounts, systems, networks, containers, storage buckets, databases, or infrastructure.
+
+d. Interfere with, disrupt, overload, reverse engineer, scan, probe, or compromise the Service or related infrastructure.
+
+e. Introduce malware, malicious code, harmful containers, unauthorized scripts, or workloads intended to damage, exfiltrate, mine cryptocurrency, or misuse resources.
+
+f. Circumvent usage limits, security controls, authentication systems, audit logs, or billing mechanisms.
+
+g. Use the Service to identify, target, discriminate against, or harm individuals or groups.
+
+h. Upload or process data that requires special legal handling, such as protected health information, human subject research data, personally identifiable genetic data, controlled data, or regulated clinical data, unless you have obtained our prior written approval and all required legal, ethical, security, and institutional authorizations.
+
+i. Use the Service for clinical diagnosis, treatment decisions, emergency use, or regulated medical device purposes unless a separate written agreement expressly permits that use.
+
+4. User Data
+
+"User Data" means data, files, job definitions, workflow configurations, metadata, logs, results, forum posts, comments, and other content submitted to or generated through the Service by or for you.
+
+You retain ownership of your User Data. You grant us a limited, worldwide, non-exclusive license to host, store, copy, process, transmit, display, and use your User Data as necessary to provide, secure, maintain, support, improve, and troubleshoot the Service, and to comply with applicable law.
+
+You are solely responsible for the accuracy, legality, integrity, quality, backup, and suitability of User Data. You represent and warrant that you have all rights, consents, approvals, permits, and authorizations required to upload, process, analyze, store, and share User Data through the Service.
+
+You should not use the Service as your sole repository for important data. You are responsible for maintaining independent backups of input files, workflows, results, and other important materials.
+
+5. Genomic, Biological, and Research Data
+
+The Service may be used to process genomic, biological, sequencing, sample, organism, or research-related data. Such data may be sensitive, confidential, proprietary, ethically restricted, or regulated.
+
+You are responsible for determining whether your data is subject to laws or obligations relating to privacy, human subject research, biosecurity, export control, institutional review, data use agreements, clinical research, controlled access repositories, or other restrictions.
+
+Unless we enter into a separate written agreement, we do not represent that the Service is compliant with HIPAA, GDPR, CLIA, CAP, FDA, MDR, IVDR, GxP, FedRAMP, controlled-access genomic repository requirements, or any other specialized regulatory framework.
+
+You must not upload identifiable human genomic data, protected health information, clinical data, or controlled-access data unless your use has been expressly approved by us in writing and is governed by appropriate additional terms.
+
+6. Security
+
+We will use commercially reasonable administrative, technical, and organizational measures designed to protect the Service. However, no system is completely secure, and we do not guarantee that unauthorized access, data loss, corruption, service interruption, or security incidents will never occur.
+
+You are responsible for using strong passwords, protecting credentials and API keys, configuring access controls appropriately, limiting access to authorized users, and promptly reporting suspected security issues.
+
+7. Computational Jobs and Results
+
+The Service may execute jobs using third-party bioinformatics tools, containers, workflow engines, cloud services, storage services, and compute infrastructure. Job execution may fail, timeout, produce incomplete results, or produce results affected by tool versions, parameters, input quality, compute environment, or user configuration.
+
+You are solely responsible for reviewing, validating, interpreting, and independently confirming all outputs, logs, analyses, annotations, assemblies, reports, and other results generated through the Service.
+
+The Service is not a substitute for professional scientific judgment, laboratory validation, clinical review, regulatory review, or institutional oversight.
+
+8. Third-Party Tools and Services
+
+The Service may integrate with or rely on third-party software, open-source tools, container images, databases, cloud providers, storage systems, APIs, and infrastructure. Third-party components may be subject to their own licenses, terms, privacy practices, usage limits, fees, and availability.
+
+We are not responsible for third-party tools or services, and we do not guarantee their accuracy, security, availability, performance, compatibility, or continued operation.
+
+9. Fees and Payment
+
+If fees apply to your use of the Service, you agree to pay all applicable fees according to the pricing, order form, subscription terms, or other written terms provided to you.
+
+You may be responsible for compute, storage, bandwidth, data transfer, cloud infrastructure, third-party tool, and related usage charges. Fees are non-refundable except as expressly stated in a separate written agreement or required by law.
+
+We may suspend or limit access for non-payment, suspected abuse, excessive usage, or usage that threatens Service reliability.
+
+10. Intellectual Property
+
+We and our licensors retain all rights, title, and interest in and to the Service, including software, source code, object code, interfaces, designs, documentation, trademarks, logos, workflows provided by us, and all related intellectual property.
+
+Except for the limited right to use the Service under this Agreement, no rights are granted to you by implication or otherwise.
+
+You may provide feedback, suggestions, or ideas about the Service. You grant us a perpetual, irrevocable, worldwide, royalty-free license to use that feedback without restriction or obligation to you.
+
+11. Confidentiality
+
+If you receive non-public information about the Service, our systems, our operations, or other users, you must keep it confidential and use it only as permitted by this Agreement.
+
+You must not disclose another user's data, confidential information, logs, results, or account information unless authorized.
+
+12. Privacy
+
+Our collection and use of personal information is described in our Privacy Policy, available at [Insert Privacy Policy URL]. By using the Service, you acknowledge that we may collect, use, store, and process information as described in the Privacy Policy.
+
+If you submit personal information about others, you represent that you have provided all required notices and obtained all required consents.
+
+13. Public and Shared Content
+
+The Service may include collaboration, forum, sharing, or publication features. Content you post or share through these features may be visible to other users or administrators depending on your settings and the design of the Service.
+
+You are responsible for ensuring that shared content does not disclose confidential, restricted, proprietary, personal, regulated, or unauthorized data.
+
+We may remove or restrict access to content that violates this Agreement, creates risk, or is reported as unlawful or inappropriate.
+
+14. Availability and Support
+
+We may provide maintenance, updates, bug fixes, and support at our discretion or as described in a separate written agreement.
+
+The Service may be unavailable from time to time due to maintenance, updates, failures, security incidents, third-party outages, infrastructure issues, or events beyond our control. We do not guarantee uninterrupted or error-free operation unless expressly stated in a separate written service level agreement.
+
+15. Termination
+
+You may stop using the Service at any time. We may suspend or terminate your access if you violate this Agreement, create legal or security risk, fail to pay applicable fees, misuse resources, or if we discontinue the Service.
+
+Upon termination, your right to access and use the Service ends immediately. We may delete, retain, or export User Data according to our data retention policies, applicable law, and any separate written agreement. You are responsible for exporting your data before termination where possible.
+
+Sections that by their nature should survive termination will survive, including provisions relating to User Data responsibilities, intellectual property, confidentiality, disclaimers, limitation of liability, indemnification, governing law, and dispute resolution.
+
+16. Disclaimers
+
+THE SERVICE IS PROVIDED "AS IS" AND "AS AVAILABLE." TO THE MAXIMUM EXTENT PERMITTED BY LAW, WE DISCLAIM ALL WARRANTIES, EXPRESS, IMPLIED, STATUTORY, OR OTHERWISE, INCLUDING WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, TITLE, NON-INFRINGEMENT, ACCURACY, AVAILABILITY, SECURITY, AND RELIABILITY.
+
+WE DO NOT WARRANT THAT THE SERVICE OR ANY RESULTS WILL BE ERROR-FREE, COMPLETE, ACCURATE, VALIDATED, SECURE, UNINTERRUPTED, OR SUITABLE FOR ANY PARTICULAR SCIENTIFIC, COMMERCIAL, CLINICAL, REGULATORY, OR RESEARCH PURPOSE.
+
+17. Limitation of Liability
+
+TO THE MAXIMUM EXTENT PERMITTED BY LAW, WE WILL NOT BE LIABLE FOR INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, EXEMPLARY, OR PUNITIVE DAMAGES, OR FOR LOST PROFITS, LOST REVENUE, LOST DATA, BUSINESS INTERRUPTION, RESEARCH DELAY, LOSS OF GOODWILL, COST OF SUBSTITUTE SERVICES, OR DATA CORRUPTION, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGES.
+
+TO THE MAXIMUM EXTENT PERMITTED BY LAW, OUR TOTAL LIABILITY ARISING OUT OF OR RELATING TO THIS AGREEMENT OR THE SERVICE WILL NOT EXCEED THE GREATER OF: (A) THE AMOUNT YOU PAID TO US FOR THE SERVICE IN THE THREE MONTHS BEFORE THE EVENT GIVING RISE TO LIABILITY; OR (B) USD $100.
+
+Some jurisdictions do not allow certain limitations of liability, so some limitations may not apply to you.
+
+18. Indemnification
+
+You agree to defend, indemnify, and hold harmless us, our affiliates, officers, directors, employees, contractors, licensors, and service providers from and against any claims, damages, losses, liabilities, costs, and expenses, including reasonable attorneys' fees, arising out of or related to:
+
+a. Your use or misuse of the Service.
+
+b. Your User Data, including claims that User Data violates law, infringes rights, or was uploaded without required authorization.
+
+c. Your violation of this Agreement.
+
+d. Your violation of applicable law, research obligations, institutional policies, data use agreements, privacy obligations, or third-party rights.
+
+19. Export Control and Sanctions
+
+You must comply with all applicable export control, trade sanctions, and import laws. You must not use the Service if you are located in, organized under the laws of, or ordinarily resident in a restricted jurisdiction, or if you are listed on any applicable restricted-party list.
+
+You must not use the Service to process, transmit, or develop materials, data, software, or technology in violation of export control, sanctions, biosecurity, or similar laws.
+
+20. Changes to this Agreement
+
+We may update this Agreement from time to time. If we make material changes, we will provide notice by posting the updated Agreement, sending notice through the Service, or using other reasonable means.
+
+Your continued use of the Service after the effective date of an updated Agreement constitutes acceptance of the updated Agreement.
+
+21. Governing Law and Dispute Resolution
+
+This Agreement is governed by the laws of [Insert Governing Law Jurisdiction], without regard to conflict of law principles.
+
+Any dispute arising out of or relating to this Agreement or the Service will be resolved in the courts located in [Insert Venue], unless a separate written agreement provides otherwise.
+
+22. Miscellaneous
+
+This Agreement, together with any referenced policies or separate written terms, is the entire agreement between you and us regarding the Service.
+
+If any provision is found unenforceable, the remaining provisions will remain in effect. Our failure to enforce a provision is not a waiver. You may not assign this Agreement without our prior written consent. We may assign this Agreement in connection with a merger, acquisition, reorganization, sale of assets, or by operation of law.
+
+23. Contact
+
+For questions about this Agreement, contact:
+
+[Insert Legal Entity Name]
+[Insert Mailing Address]
+[Insert Email Address]
+[Insert Phone Number, if applicable]
+
+By using the Service, you acknowledge that you have read, understood, and agree to this User Agreement.

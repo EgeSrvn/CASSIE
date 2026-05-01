@@ -1227,12 +1227,12 @@ export default function JobDetails() {
                 ].map(resource => {
                   const percent = hasLivePodMetrics ? resourcePercent(resource.used, resource.limit) : 0
                   return (
-                    <div key={`pod-${resource.label}`} style={{ padding: '1rem', borderRadius: '10px', border: '1px solid #d3dce7', background: '#f8fafc' }}>
+                    <div key={`pod-${resource.label}`} style={{ padding: '1rem', borderRadius: '10px', border: '1px solid #e2d1ad', background: '#fffaf0' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem', marginBottom: '0.6rem' }}>
                         <strong>{resource.label}</strong>
                         <span>{resource.display}</span>
                       </div>
-                      <div style={{ height: '10px', borderRadius: '999px', backgroundColor: '#dbe5f0', overflow: 'hidden' }}>
+                      <div style={{ height: '10px', borderRadius: '999px', backgroundColor: '#eadfca', overflow: 'hidden' }}>
                         <div style={{ width: `${percent}%`, height: '100%', backgroundColor: percent > 85 ? '#b6786d' : '#2f7d6d' }} />
                       </div>
                       <div style={{ marginTop: '0.4rem', color: '#64748b', fontSize: '0.875rem' }}>
@@ -1251,7 +1251,7 @@ export default function JobDetails() {
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
                 {activeStages.map(stage => (
-                  <div key={`${stage.stage_id || stage.stage_number}-${stage.tool_id}`} style={{ padding: '0.875rem 1rem', borderRadius: '8px', border: '1px solid #e2e8f0', backgroundColor: '#f8fafc' }}>
+                  <div key={`${stage.stage_id || stage.stage_number}-${stage.tool_id}`} style={{ padding: '0.875rem 1rem', borderRadius: '8px', border: '1px solid #e2d1ad', backgroundColor: '#fffaf0' }}>
                     <strong>{stage.tool_name || stage.tool_id}</strong>
                     <div style={{ marginTop: '0.35rem', color: '#475569' }}>
                       Allocated CPU: {formatVmCpu(stage.cpu_limit_millis || (stage.threads || 0) * 1000)}
@@ -1268,7 +1268,7 @@ export default function JobDetails() {
                     {(stage.live_pods || []).length > 0 && (
                       <div style={{ marginTop: '0.75rem', display: 'grid', gap: '0.5rem' }}>
                         {(stage.live_pods || []).map(pod => (
-                          <div key={pod.pod_name} style={{ padding: '0.65rem 0.75rem', borderRadius: '8px', border: '1px solid #dbe5f0', backgroundColor: '#ffffff' }}>
+                          <div key={pod.pod_name} style={{ padding: '0.65rem 0.75rem', borderRadius: '8px', border: '1px solid #dcc89f', backgroundColor: '#f8efd9' }}>
                             <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem', flexWrap: 'wrap', color: '#334155' }}>
                               <strong>{pod.pod_name}</strong>
                               <span>{pod.pod_phase || 'Unknown'}</span>
@@ -1556,9 +1556,9 @@ export default function JobDetails() {
                       <div style={{ 
                         marginBottom: '1.5rem', 
                         padding: '1rem', 
-                        border: '1px solid #e5e7eb', 
+                        border: '1px solid #e2d1ad', 
                         borderRadius: '8px',
-                        backgroundColor: '#f9fafb'
+                        backgroundColor: '#fffaf0'
                       }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
                           <h3 style={{ margin: 0, fontSize: '1rem', fontWeight: '600' }}>
@@ -1595,7 +1595,7 @@ export default function JobDetails() {
                               </>
                             )}
                             {currentViewingFile.filename.toLowerCase().endsWith('.html') && (
-                              <div style={{ display: 'flex', gap: '0.25rem', alignItems: 'center', marginLeft: '0.5rem', padding: '0.25rem', border: '1px solid #ddd', borderRadius: '4px' }}>
+                              <div style={{ display: 'flex', gap: '0.25rem', alignItems: 'center', marginLeft: '0.5rem', padding: '0.25rem', border: '1px solid #dcc89f', borderRadius: '4px', backgroundColor: '#f8efd9' }}>
                                 <button
                                   onClick={() => setHtmlZoom(prev => Math.max(0.25, prev - 0.1))}
                                   className="btn-secondary"
@@ -1644,10 +1644,10 @@ export default function JobDetails() {
                           </div>
                         </div>
                         <div style={{ 
-                          border: '1px solid #ddd', 
+                          border: '1px solid #dcc89f', 
                           borderRadius: '4px', 
                           overflow: 'hidden',
-                          backgroundColor: '#F5EEDC',
+                          backgroundColor: '#f8efd9',
                           display: 'flex',
                           justifyContent: 'center',
                           alignItems: 'flex-start'
@@ -1667,7 +1667,7 @@ export default function JobDetails() {
                                   height: '100%',
                                   overflow: 'auto',
                                   position: 'relative',
-                                  border: '1px solid #e5e7eb',
+                                  border: '1px solid #dcc89f',
                                   borderRadius: '4px'
                                 }}>
                                   <iframe
