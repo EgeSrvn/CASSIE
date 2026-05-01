@@ -4837,6 +4837,20 @@ exit "$CASSIE_STATUS"
         *,
         container_name: str,
     ) -> Dict[str, Any]:
+        cgroup_usage = self._get_pod_container_cgroup_usage(
+            pod_name,
+            namespace,
+            container_name=container_name,
+        )
+        if (
+            isinstance(cgroup_usage.get("live_cpu_millis"), int)
+            or isinstance(cgroup_usage.get("live_memory_mib"), int)
+        ):
+            return cgroup_usage
+        cgroup_error = str(cgroup_usage.get("live_metrics_error") or "").strip()
+        if cgroup_error and self._is_transient_pod_metrics_error(cgroup_error):
+            return {"live_metrics_error": None}
+
         result = self._run_kubectl(
             ["top", "pod", pod_name, "-n", namespace, "--containers", "--no-headers"],
             timeout=20,
@@ -4845,15 +4859,8 @@ exit "$CASSIE_STATUS"
             message = (result.stderr or result.stdout or "").strip()
             if self._is_transient_pod_metrics_error(message):
                 return {"live_metrics_error": None}
-            fallback_usage = self._get_pod_container_cgroup_usage(
-                pod_name,
-                namespace,
-                container_name=container_name,
-            )
-            if fallback_usage:
-                if fallback_usage.get("live_metrics_error") and message:
-                    fallback_usage["live_metrics_error"] = f"{message[:160]}; {fallback_usage['live_metrics_error']}"
-                return fallback_usage
+            if cgroup_error:
+                return {"live_metrics_error": f"{message[:160]}; {cgroup_error}" if message else cgroup_error}
             if message:
                 return {"live_metrics_error": message[:240]}
             return {"live_metrics_error": "Pod metrics are not available."}

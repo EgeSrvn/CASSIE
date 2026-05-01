@@ -323,15 +323,16 @@ def _preserve_deleted_job_input_files(
     with get_db_connection() as conn:
         cur = conn.cursor()
         try:
+            placeholders = ", ".join(["%s"] * len(file_ids))
             cur.execute(
-                """
+                f"""
                 UPDATE files
                 SET job_id = NULL,
                     file_type = 'input'
                 WHERE user_id = %s
-                  AND id = ANY(%s)
+                  AND id IN ({placeholders})
                 """,
-                (user_id, file_ids),
+                [user_id, *file_ids],
             )
             preserved_count = cur.rowcount
             conn.commit()
