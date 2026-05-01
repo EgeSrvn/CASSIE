@@ -17,6 +17,7 @@ export default function Register({ onRegister }: RegisterProps) {
   })
   const [error, setError] = useState<string>('')
   const [confirmPassword, setConfirmPassword] = useState('')
+  const [acceptedLegalTerms, setAcceptedLegalTerms] = useState(false)
   const [loading, setLoading] = useState(false)
   const submitLockedRef = useRef(false)
   const navigate = useNavigate()
@@ -41,6 +42,12 @@ export default function Register({ onRegister }: RegisterProps) {
 
     if (formData.password !== confirmPassword) {
       setError('Passwords do not match.')
+      submitLockedRef.current = false
+      return
+    }
+
+    if (!acceptedLegalTerms) {
+      setError('Please accept the Terms of Service and KVKK notice to continue.')
       submitLockedRef.current = false
       return
     }
@@ -130,8 +137,21 @@ export default function Register({ onRegister }: RegisterProps) {
               <small style={{ color: '#b91c1c' }}>Passwords must match.</small>
             )}
           </div>
+
+          <label className="legal-consent-row">
+            <input
+              type="checkbox"
+              checked={acceptedLegalTerms}
+              onChange={(event) => setAcceptedLegalTerms(event.target.checked)}
+              disabled={loading}
+              required
+            />
+            <span>
+              I have read and accept the <Link to="/terms">Terms of Service</Link> and acknowledge the <Link to="/kvkk">KVKK Aydinlatma Metni</Link>.
+            </span>
+          </label>
           
-          <button type="submit" disabled={loading} className="btn-primary auth-submit">
+          <button type="submit" disabled={loading || !acceptedLegalTerms} className="btn-primary auth-submit">
             {loading ? 'Registering...' : 'Register'}
           </button>
         </form>
@@ -143,4 +163,3 @@ export default function Register({ onRegister }: RegisterProps) {
     </div>
   )
 }
-

@@ -1,6 +1,6 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { useNavigate, useLocation } from 'react-router-dom'
+import { Link, useNavigate, useLocation } from 'react-router-dom'
 import {
   createJob,
   executeJob,
@@ -117,6 +117,7 @@ interface CreateJobDraft {
   manualToolFlagValues: Record<string, Record<string, FlagValue>>
   selectedVM: string
   reviewPipelinePreview: JobPipelineVisualization | null
+  executionDataImprovementConsent?: boolean
 }
 
 const shouldRestoreCreateJobDraft = (): boolean => {
@@ -293,6 +294,9 @@ export default function CreateJob() {
   const [retryPrefillApplied, setRetryPrefillApplied] = useState(false)
   const [retryFileMappingsApplied, setRetryFileMappingsApplied] = useState(false)
   const [retryMissingInputMessages, setRetryMissingInputMessages] = useState<Record<string, string[]>>({})
+  const [executionDataImprovementConsent, setExecutionDataImprovementConsent] = useState(
+    () => Boolean(storedDraftRef.current?.executionDataImprovementConsent)
+  )
   const navigate = useNavigate()
   const sharedRequirementCardStyle = {
     display: 'flex',
@@ -2086,12 +2090,14 @@ export default function CreateJob() {
       manualToolFlagValues,
       selectedVM,
       reviewPipelinePreview: effectiveReviewPipelinePreview || persistedReviewPipelinePreview,
+      executionDataImprovementConsent,
     }
 
     window.sessionStorage.setItem(CREATE_JOB_DRAFT_STORAGE_KEY, JSON.stringify(draft))
   }, [
     currentLevel,
     effectiveReviewPipelinePreview,
+    executionDataImprovementConsent,
     inputBlockNames,
     jobName,
     manualToolFlagValues,
@@ -2277,6 +2283,16 @@ export default function CreateJob() {
           ...(jobData.execution_preferences || {}),
           input_source_overrides: inputSourceOverrides,
         }
+      }
+
+      jobData.execution_preferences = {
+        ...(jobData.execution_preferences || {}),
+        product_improvement_execution_data_consent: {
+          granted: executionDataImprovementConsent,
+          captured_at: new Date().toISOString(),
+          source: 'create_job_submit',
+          text: 'Use my job execution metadata, tool settings, runtime metrics, logs, and non-identifying outputs to improve CASSIE products.',
+        },
       }
       
       // Remove undefined values to ensure clean JSON serialization
@@ -3180,6 +3196,18 @@ export default function CreateJob() {
                     </div>
                   </div>
                 )}
+
+                <label className="legal-consent-row job-consent-row">
+                  <input
+                    type="checkbox"
+                    checked={executionDataImprovementConsent}
+                    onChange={(event) => setExecutionDataImprovementConsent(event.target.checked)}
+                    disabled={creating}
+                  />
+                  <span>
+                    I agree that CASSIE may use this job's execution metadata, tool settings, runtime metrics, logs, and non-identifying outputs to improve its products, as described in the <Link to="/terms">Terms</Link> and <Link to="/kvkk">KVKK notice</Link>.
+                  </span>
+                </label>
               </div>
             </div>
           )}

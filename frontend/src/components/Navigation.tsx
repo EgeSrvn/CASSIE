@@ -151,6 +151,12 @@ export default function Navigation({ onLogout }: NavigationProps) {
           <button type="button" className="nav-user-menu-item" onClick={() => navigateAndClose('/faq')}>
             FAQ
           </button>
+          <button type="button" className="nav-user-menu-item" onClick={() => navigateAndClose('/terms')}>
+            Terms
+          </button>
+          <button type="button" className="nav-user-menu-item" onClick={() => navigateAndClose('/kvkk')}>
+            KVKK
+          </button>
           <button type="button" className="nav-user-menu-item nav-user-menu-item-danger" onClick={handleLogout}>
             Logout
           </button>
@@ -171,6 +177,12 @@ export default function Navigation({ onLogout }: NavigationProps) {
         </button>
         <button type="button" className="nav-user-menu-item" onClick={() => navigateAndClose('/faq')}>
           FAQ
+        </button>
+        <button type="button" className="nav-user-menu-item" onClick={() => navigateAndClose('/terms')}>
+          Terms
+        </button>
+        <button type="button" className="nav-user-menu-item" onClick={() => navigateAndClose('/kvkk')}>
+          KVKK
         </button>
       </div>
     )
@@ -326,4 +338,3 @@ export default function Navigation({ onLogout }: NavigationProps) {
     </nav>
   )
 }
-

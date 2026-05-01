@@ -1,0 +1,147 @@
+CASSIE KVKK AYDINLATMA METNI
+Kisisel Verilerin Korunmasi Hakkinda Bilgilendirme
+
+Yururluk Tarihi: [Tarih Giriniz]
+Son Guncelleme: [Tarih Giriniz]
+
+ONEMLI NOT: Bu metin genel bilgilendirme amacli bir taslaktir ve hukuki danismanlik niteliginde degildir. CASSIE'yi kullanicilara, musteri kurumlara, arastirma ortaklarina veya kamuya acmadan once bu metni KVKK konusunda yetkin bir hukuk danismanina inceletmeniz onerilir.
+
+Bu Aydinlatma Metni, [Sirket/Kurum Unvani] ("Veri Sorumlusu", "biz" veya "CASSIE") tarafindan sunulan CASSIE platformunun kullanimi sirasinda islenen kisisel verilere iliskin olarak 6698 sayili Kisisel Verilerin Korunmasi Kanunu ("KVKK") kapsaminda hazirlanmistir.
+
+1. Veri Sorumlusu
+
+Veri Sorumlusu:
+
+[Sirket/Kurum Unvani]
+[Adres]
+[E-posta Adresi]
+[Telefon, varsa]
+
+2. Islenen Kisisel Veri Kategorileri
+
+CASSIE'nin kullanimi kapsaminda asagidaki veri kategorileri islenebilir:
+
+a. Kimlik ve hesap verileri: kullanici adi, ad-soyad veya gorunen ad, e-posta adresi, sifre ozeti, hesap durumu, rol ve yetki bilgileri.
+
+b. Iletisim verileri: e-posta adresi, bildirim tercihleri ve destek talebi iletisim bilgileri.
+
+c. Islem guvenligi verileri: IP adresi, oturum bilgileri, erisim loglari, kimlik dogrulama kayitlari, iki asamali dogrulama kayitlari, sistem olaylari ve guvenlik loglari.
+
+d. Kullanim ve islem verileri: olusturulan isler, pipeline tanimlari, secilen araclar, calistirma parametreleri, zaman damgalari, is durumu, hata mesajlari, kaynak kullanim olcumleri, hesap ve depolama hareketleri.
+
+e. Depolama ve dosya metaverileri: dosya adi, dosya boyutu, dosya turu, dosya formati, klasor bilgisi, yukleme tarihi, dosya kaynagi, checksum ve nesne depolama anahtari.
+
+f. Icerik verileri: kullanicinin yukledigi dosyalar, is sonuclari, pipeline ciktisi, yorumlar, forum gonderileri, destek mesajlari ve kullanici tarafindan paylasilan diger icerikler.
+
+g. Finansal ve abonelik verileri: bakiye, ucret tahmini, rezervasyon, odeme veya abonelik bilgileri. Odeme karti gibi hassas odeme bilgileri kullaniliyorsa bunlar ilgili odeme hizmeti saglayicisi tarafindan ayrica islenebilir.
+
+3. Genomik, Biyolojik ve Arastirma Verileri
+
+CASSIE genomik, biyolojik, dizileme, ornek veya arastirma verilerinin islenmesi icin kullanilabilir. Bu tur veriler kisisel veri, ozel nitelikli kisisel veri, ticari sir, fikri mulkiyet, kontrollu erisim verisi veya etik izinlere tabi arastirma verisi niteliginde olabilir.
+
+Kullanicilar, CASSIE'ye yukledikleri verilerin hukuka uygun olarak toplandigini, yuklendigini, islendigi ve paylasildigini saglamakla sorumludur. Kimligi belirli veya belirlenebilir kisilere ait insan genomik verileri, saglik verileri, klinik veriler veya ozel nitelikli kisisel veriler ancak gerekli acik riza, etik kurul izni, kurum izni, veri kullanim anlasmasi ve diger yasal sartlar saglanmis ise islenmelidir.
+
+Aksi yazili olarak kararlastirilmadikca CASSIE; klinik tani, tedavi karari, tibbı cihaz amaci, HIPAA, CLIA, CAP, GxP, kontrollu genomik veri depolari veya benzeri ozel mevzuatlara uygunluk taahhudu vermez.
+
+4. Kisisel Verilerin Islenme Amaclari
+
+Kisisel veriler asagidaki amaclarla islenebilir:
+
+a. Hesap olusturma, kimlik dogrulama ve kullanici yonetimi.
+
+b. CASSIE hizmetlerinin sunulmasi, pipeline olusturma, is calistirma, dosya yukleme, cikti uretme ve kullanici depolama alaninin yonetimi.
+
+c. Sistem guvenliginin saglanmasi, yetkisiz erisimin onlenmesi, hata tespiti, loglama, denetim ve kotuye kullanimla mucadele.
+
+d. Kullanicilara bildirim, destek, sifre sifirlama, e-posta dogrulama ve hizmet iletisimleri gonderilmesi.
+
+e. Ucretlendirme, bakiye, abonelik, kapasite ve kaynak kullanimi yonetimi.
+
+f. Hizmet kalitesinin olculmesi, performans iyilestirmeleri, hata ayiklama ve urun gelistirme.
+
+g. Kullanici acik riza veya tercih verdiyse, is yurutme verileri ve calistirma metaverilerinin CASSIE urunlerini, tahmin modellerini, kaynak planlamasini ve arac calisma profillerini iyilestirmek icin kullanilmasi.
+
+h. Yasal yukumluluklerin yerine getirilmesi ve yetkili kurum veya kuruluslardan gelen hukuka uygun taleplerin karsilanmasi.
+
+5. Kisisel Verilerin Islenme Hukuki Sebepleri
+
+Kisisel veriler KVKK madde 5 ve ilgili mevzuat kapsaminda asagidaki hukuki sebeplere dayanarak islenebilir:
+
+a. Bir sozlesmenin kurulmasi veya ifasi icin gerekli olmasi.
+
+b. Veri sorumlusunun hukuki yukumlulugunu yerine getirmesi.
+
+c. Bir hakkin tesisi, kullanilmasi veya korunmasi icin veri islemenin zorunlu olmasi.
+
+d. Ilgili kisinin temel hak ve ozgurluklerine zarar vermemek kaydiyla veri sorumlusunun mesru menfaati.
+
+e. Kanunlarda acikca ongorulmesi.
+
+f. Gerekli hallerde ilgili kisinin acik rizasi.
+
+Ozel nitelikli kisisel veriler, ancak KVKK ve ilgili mevzuatta ongorulen sartlar saglandiginda ve gerekli guvenlik onlemleri alindiginda islenmelidir.
+
+6. Kisisel Verilerin Aktarilmasi
+
+Kisisel veriler, isleme amaclariyla sinirli olmak uzere asagidaki taraflarla paylasilabilir:
+
+a. Bulut altyapi, depolama, veritabani, yedekleme, e-posta, izleme, guvenlik ve destek hizmeti saglayicilari.
+
+b. CASSIE'nin barindirma, bakim, operasyon, gelistirme ve teknik destek sureclerinde gorev alan yetkili calisanlar, danismanlar ve hizmet saglayicilar.
+
+c. Odeme veya abonelik hizmeti saglayicilari.
+
+d. Yetkili kamu kurumlari, mahkemeler, kolluk birimleri veya yasal olarak bilgi talep etmeye yetkili diger merciler.
+
+Kisisel veriler yurt disinda bulunan hizmet saglayicilara aktarilacaksa, bu aktarim KVKK ve ilgili ikincil mevzuata uygun olarak gerceklestirilmelidir.
+
+7. Saklama Suresi
+
+Kisisel veriler, isleme amaclari icin gerekli olan sure boyunca ve ilgili mevzuatta ongorulen zamana kadar saklanir. Saklama suresi sona erdiginde veya isleme amaci ortadan kalktiginda kisisel veriler silinir, yok edilir veya anonim hale getirilir.
+
+Kullanici tarafindan yuklenen dosyalar, is ciktisi ve loglar; hesap ayarlari, abonelik durumu, saklama politikalari, yasal yukumlulukler ve ayrica imzalanmis sozlesmeler dikkate alinarak saklanabilir veya silinebilir.
+
+8. Veri Guvenligi
+
+CASSIE, kisisel verilerin guvenligini saglamak icin makul teknik ve idari tedbirler uygular. Bu tedbirler erisim kontrolu, kimlik dogrulama, yetkilendirme, loglama, sifreleme, ag guvenligi, yedekleme ve guvenlik izleme sureclerini icerebilir.
+
+Kullanicilar guclu sifre kullanmak, hesap bilgilerini korumak, yetkisiz kisilerle veri paylasmamak ve veri yuklemeden once gerekli yasal izinleri almakla sorumludur.
+
+9. Ilgili Kisi Haklari
+
+KVKK madde 11 kapsaminda ilgili kisiler asagidaki haklara sahiptir:
+
+a. Kisisel veri islenip islenmedigini ogrenme.
+
+b. Kisisel verileri islenmisse buna iliskin bilgi talep etme.
+
+c. Islenme amacini ve verilerin amacina uygun kullanilip kullanilmadigini ogrenme.
+
+d. Yurt icinde veya yurt disinda kisisel verilerin aktarildigi ucuncu kisileri bilme.
+
+e. Eksik veya yanlis islenmis verilerin duzeltilmesini isteme.
+
+f. KVKK kapsaminda silme veya yok etme talep etme.
+
+g. Duzeltme, silme veya yok etme islemlerinin aktarim yapilan ucuncu kisilere bildirilmesini isteme.
+
+h. Otomatik sistemler araciligiyla analiz sonucu kisinin aleyhine bir sonucun ortaya cikmasina itiraz etme.
+
+i. Kanuna aykiri isleme sebebiyle zarara ugramasi halinde zararin giderilmesini talep etme.
+
+10. Basvuru Yontemi
+
+KVKK kapsamindaki haklarinizi kullanmak icin [E-posta Adresi] adresinden veya [Posta Adresi] uzerinden bizimle iletisime gecebilirsiniz. Basvurunuzda kimliginizi dogrulamaya yetecek bilgileri ve talebinizi acik sekilde belirtmeniz gerekir.
+
+Basvurular, KVKK ve ilgili mevzuatta ongorulen sureler icinde degerlendirilir.
+
+11. Degisiklikler
+
+Bu Aydinlatma Metni zaman zaman guncellenebilir. Guncel metin CASSIE arayuzunde veya ilgili web sayfasinda yayinlanir. Degisikliklerden sonra hizmeti kullanmaya devam etmeniz, guncel metni okudugunuz ve bilgilendirildiginiz anlamina gelir.
+
+12. Iletisim
+
+[Sirket/Kurum Unvani]
+[Adres]
+[E-posta Adresi]
+[Telefon, varsa]

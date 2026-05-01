@@ -1114,6 +1114,32 @@ body {
   color: var(--gray-700);
 }
 
+.legal-consent-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.7rem;
+  color: var(--gray-700);
+  font-size: 0.92rem;
+  line-height: 1.45;
+}
+
+.legal-consent-row input {
+  flex: 0 0 auto;
+  margin-top: 0.2rem;
+}
+
+.legal-consent-row a {
+  color: var(--primary);
+  font-weight: 700;
+}
+
+.job-consent-row {
+  padding: 1rem 1.1rem;
+  border: 1px solid var(--gray-200);
+  border-radius: var(--radius-lg);
+  background: var(--bg-primary);
+}
+
 .builder-stage-badge {
   display: inline-flex;
   margin-bottom: 0.65rem;
@@ -4061,6 +4087,18 @@ body::before {
 
 .static-page-section p + p {
   margin-top: 0.6rem;
+}
+
+.static-page-document {
+  display: grid;
+  gap: 0.8rem;
+  color: var(--gray-700);
+  line-height: 1.65;
+}
+
+.static-page-document p {
+  margin: 0;
+  white-space: pre-wrap;
 }
 
 .static-page-faq-list {

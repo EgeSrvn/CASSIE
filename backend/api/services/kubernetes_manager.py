@@ -2543,6 +2543,7 @@ exit "$CASSIE_STATUS"
                         f'<({stream_expr}) -o "{gs_out}/reads.jf"'
                     ),
                     f'jellyfish histo "{gs_out}/reads.jf" > "{gs_out}/reads.histo"',
+                    f'rm -f "{gs_out}/reads.jf"',
                     f'Rscript /opt/genomescope2.0/genomescope.R -i "{gs_out}/reads.histo" -o "{gs_out}" -k {kmer_length} -p {ploidy}{optional_fit_flag_str}',
                 ]
             )

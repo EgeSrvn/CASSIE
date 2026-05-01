@@ -27,7 +27,17 @@ export default function StaticPage({ slugOverride }: StaticPageProps) {
             <h2>{content.title}</h2>
             {content.description ? <p>{content.description}</p> : null}
           </div>
-          {page.type === 'faq' ? (
+          {page.type === 'document' ? (
+            <div className="static-page-document">
+              {page.content.document
+                .split(/\n{2,}/)
+                .map((paragraph) => paragraph.trim())
+                .filter(Boolean)
+                .map((paragraph, index) => (
+                  <p key={`${index}-${paragraph.slice(0, 24)}`}>{paragraph}</p>
+                ))}
+            </div>
+          ) : page.type === 'faq' ? (
             <div className="static-page-faq-list">
               {page.content.items.map((item) => (
                 <details key={item.question} className="static-page-faq-item">

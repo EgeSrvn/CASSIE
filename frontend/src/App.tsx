@@ -153,6 +153,14 @@ function App() {
             element={<StaticPage slugOverride="faq" />}
           />
           <Route
+            path="/terms"
+            element={<StaticPage slugOverride="terms" />}
+          />
+          <Route
+            path="/kvkk"
+            element={<StaticPage slugOverride="kvkk" />}
+          />
+          <Route
             path="/help"
             element={<Navigate to="/faq" replace />}
           />

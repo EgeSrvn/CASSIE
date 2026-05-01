@@ -1,1 +1,0 @@
-{"tool_indices":[0],"vm_name":"vm2","input_assignments":[{"tool_id":"FASTQC","requirement_type":"FASTQ","total_input_size_mib":800,"compressed_input_size_mib":0,"file_formats":["fastq"]}]}
