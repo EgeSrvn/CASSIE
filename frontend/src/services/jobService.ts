@@ -287,7 +287,14 @@ export const previewPipelinePlan = async (request: PipelinePlanPreviewRequest): 
 }
 
 export const deleteJob = async (jobId: number): Promise<void> => {
-  await apiClient.delete(`/api/jobs/${jobId}`)
+  try {
+    await apiClient.delete(`/api/jobs/${jobId}`)
+  } catch (error: any) {
+    if (error.response?.data) {
+      throw new Error(extractApiErrorMessage(error.response.data, 'Failed to delete job'))
+    }
+    throw error
+  }
 }
 
 export interface JobUpdate {

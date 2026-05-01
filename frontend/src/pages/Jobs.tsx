@@ -56,8 +56,8 @@ export default function Jobs() {
       await deleteJob(jobId)
       await clearPendingJobUploads(jobId)
       loadJobs()
-    } catch (err) {
-      alert('Failed to delete job')
+    } catch (err: any) {
+      alert(err.message || 'Failed to delete job')
     }
   }
 

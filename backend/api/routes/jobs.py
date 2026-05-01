@@ -312,9 +312,61 @@ def _preserve_deleted_job_input_files(
     if not input_files:
         return 0
 
+    preserved_count = 0
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        try:
+            for file_record in input_files:
+                file_id = getattr(file_record, "id", None)
+                if file_id is None:
+                    continue
+                source_key = str(getattr(file_record, "s3_key", "") or "").strip()
+                if source_key:
+                    cur.execute(
+                        """
+                        SELECT id
+                        FROM files
+                        WHERE job_id IS NULL
+                          AND s3_key = %s
+                          AND id <> %s
+                        LIMIT 1
+                        """,
+                        (source_key, int(file_id)),
+                    )
+                    if cur.fetchone():
+                        cur.execute("DELETE FROM files WHERE id = %s AND user_id = %s", (int(file_id), user_id))
+                        preserved_count += cur.rowcount
+                        continue
+
+                cur.execute(
+                    """
+                    UPDATE files
+                    SET job_id = NULL,
+                        file_type = 'input'
+                    WHERE id = %s
+                      AND user_id = %s
+                    """,
+                    (int(file_id), user_id),
+                )
+                preserved_count += cur.rowcount
+
+            conn.commit()
+            return preserved_count
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            cur.close()
+
+
+def _delete_job_output_file_records(
+    *,
+    user_id: int,
+    output_files: List[Any],
+) -> int:
     file_ids = [
         int(getattr(file_record, "id"))
-        for file_record in input_files
+        for file_record in output_files
         if getattr(file_record, "id", None) is not None
     ]
     if not file_ids:
@@ -326,17 +378,15 @@ def _preserve_deleted_job_input_files(
             placeholders = ", ".join(["%s"] * len(file_ids))
             cur.execute(
                 f"""
-                UPDATE files
-                SET job_id = NULL,
-                    file_type = 'input'
+                DELETE FROM files
                 WHERE user_id = %s
                   AND id IN ({placeholders})
                 """,
                 [user_id, *file_ids],
             )
-            preserved_count = cur.rowcount
+            deleted_count = cur.rowcount
             conn.commit()
-            return preserved_count
+            return deleted_count
         except Exception:
             conn.rollback()
             raise
@@ -1804,6 +1854,10 @@ async def delete_job_endpoint(
             username=current_user.username,
             input_files=input_files,
         )
+        deleted_output_record_count = _delete_job_output_file_records(
+            user_id=current_user.id,
+            output_files=cleanup_files,
+        )
 
         try:
             settle_job_charge(job_id, current_user.id)
@@ -1830,6 +1884,7 @@ async def delete_job_endpoint(
             data={
                 "deleted_objects": len(file_s3_keys),
                 "preserved_input_files": preserved_input_count,
+                "deleted_output_records": deleted_output_record_count,
                 "cleanup_queued": True,
             },
             message="Job deleted successfully. Input files were preserved."
