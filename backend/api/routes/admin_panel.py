@@ -33,6 +33,7 @@ from backend.api.services.engagement_service import (
 )
 from backend.api.services.job_execution_service import get_executions_by_job, update_job_execution
 from backend.api.services.job_service import get_job_by_id, update_job
+from backend.api.services.invitation_code_service import create_invitation_code, list_invitation_codes
 from backend.api.services.kubernetes_manager import (
     get_kubernetes_pipeline_runner,
     kubernetes_is_available,
@@ -1534,6 +1535,7 @@ def _collect_dashboard_data(selected_job_id: int | None = None) -> dict[str, Any
         "users": users,
         "recent_jobs": recent_jobs,
         "all_jobs": all_jobs,
+        "invitation_codes": list_invitation_codes(),
         "reports": list_reports_for_admin(),
         "selected_job": _collect_job_details(selected_job_id) if selected_job_id is not None else None,
     }
@@ -1601,6 +1603,24 @@ def _dashboard_page(
             "running": str(user["running_job_count"]),
         }
         for user in data["users"]
+    ]
+    usernames_by_id = {user["user_id"]: user["username"] for user in data["users"]}
+
+    invitation_rows = [
+        {
+            "code": f'<code>{escape(invitation.code)}</code>',
+            "note": escape(invitation.note or "-"),
+            "created": escape(_format_datetime(invitation.created_at)),
+            "created_by": escape(usernames_by_id.get(invitation.created_by_user_id, "-")),
+            "status": (
+                f'<span class="{_status_class("completed")}">used</span>'
+                if invitation.used_at
+                else f'<span class="{_status_class("pending")}">available</span>'
+            ),
+            "used_by": escape(usernames_by_id.get(invitation.used_by_user_id, "-")),
+            "used_at": escape(_format_datetime(invitation.used_at)),
+        }
+        for invitation in data["invitation_codes"]
     ]
 
     recent_rows = [
@@ -1771,6 +1791,29 @@ def _dashboard_page(
             ("running", "Running"),
           ],
           user_rows,
+        )}
+      </div>
+      <div class="section">
+        <h2>Invitation Codes</h2>
+        <p>Registration is locked to one-time invitation codes generated here.</p>
+        <form method="post" action="{escape(config.admin_panel.path)}/invitation-codes">
+          <label for="invitation_note">Note</label>
+          <input id="invitation_note" name="note" maxlength="255" placeholder="Optional recipient or campaign note">
+          <div class="row">
+            <button type="submit">Generate Invitation Code</button>
+          </div>
+        </form>
+        {_html_table(
+          [
+            ("code", "Code"),
+            ("note", "Note"),
+            ("created", "Created"),
+            ("created_by", "Created By"),
+            ("status", "Status"),
+            ("used_by", "Used By"),
+            ("used_at", "Used At"),
+          ],
+          invitation_rows,
         )}
       </div>
     """
@@ -2028,6 +2071,24 @@ async def admin_panel_runtime_prediction_mode(
         return _admin_redirect(message="Failed to update runtime prediction mode", error=True, tab="system")
 
     return _admin_redirect(message=f"Runtime prediction mode set to {prediction_mode}", tab="system")
+
+
+@router.post(f"{config.admin_panel.path}/invitation-codes")
+async def admin_panel_create_invitation_code(
+    request: Request,
+    note: str = Form(""),
+):
+    ensure_admin_user()
+    admin_user = _get_authenticated_admin(request)
+    if not admin_user:
+        return _admin_redirect(message="Please sign in again", error=True, tab="users")
+
+    try:
+        invitation = create_invitation_code(created_by_user_id=admin_user.id, note=note)
+    except Exception:
+        return _admin_redirect(message="Failed to generate invitation code", error=True, tab="users")
+
+    return _admin_redirect(message=f"Invitation code generated: {invitation.code}", tab="users")
 
 
 @router.post(f"{config.admin_panel.path}/terminate-job")

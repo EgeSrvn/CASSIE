@@ -2218,6 +2218,11 @@ export default function CreateJob() {
       return
     }
 
+    if (!executionDataImprovementConsent) {
+      setError('Please accept the job submission terms and execution data use checkbox before submitting.')
+      return
+    }
+
     try {
       setCreating(true)
       setSubmitStatus('Creating job...')
@@ -2287,8 +2292,15 @@ export default function CreateJob() {
 
       jobData.execution_preferences = {
         ...(jobData.execution_preferences || {}),
+        job_submission_legal_acceptance: {
+          accepted: true,
+          captured_at: new Date().toISOString(),
+          source: 'create_job_submit',
+          terms_document: 'agreement.txt',
+          kvkk_document: 'kvkk.txt',
+        },
         product_improvement_execution_data_consent: {
-          granted: executionDataImprovementConsent,
+          granted: true,
           captured_at: new Date().toISOString(),
           source: 'create_job_submit',
           text: 'Use my job execution metadata, tool settings, runtime metrics, logs, and non-identifying outputs to improve CASSIE products.',
@@ -3203,9 +3215,10 @@ export default function CreateJob() {
                     checked={executionDataImprovementConsent}
                     onChange={(event) => setExecutionDataImprovementConsent(event.target.checked)}
                     disabled={creating}
+                    required
                   />
                   <span>
-                    I agree that CASSIE may use this job's execution metadata, tool settings, runtime metrics, logs, and non-identifying outputs to improve its products, as described in the <Link to="/terms">Terms</Link> and <Link to="/kvkk">KVKK notice</Link>.
+                    I accept the <Link to="/terms">Terms</Link> and <Link to="/kvkk">KVKK notice</Link>, and agree that CASSIE may use this job's execution metadata, tool settings, runtime metrics, logs, and non-identifying outputs to improve its products.
                   </span>
                 </label>
               </div>
@@ -3436,7 +3449,7 @@ export default function CreateJob() {
                 key="builder-submit"
                 type="submit"
                 className="btn-primary"
-                disabled={creating}
+                disabled={creating || !executionDataImprovementConsent}
               >
                 {creating ? (submitStatus || 'Submitting job...') : 'Submit Job'}
               </button>

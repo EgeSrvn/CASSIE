@@ -114,6 +114,54 @@ class JobRetryRequest(BaseModel):
     cloud_provider: Optional[str] = None
 
 
+def _job_submission_terms_accepted(execution_preferences: Optional[Dict[str, Any]]) -> bool:
+    if not isinstance(execution_preferences, dict):
+        return False
+
+    legal_acceptance = execution_preferences.get("job_submission_legal_acceptance")
+    product_consent = execution_preferences.get("product_improvement_execution_data_consent")
+
+    return (
+        isinstance(legal_acceptance, dict)
+        and legal_acceptance.get("accepted") is True
+        and isinstance(product_consent, dict)
+        and product_consent.get("granted") is True
+    )
+
+
+def _stamp_job_submission_terms(
+    execution_preferences: Optional[Dict[str, Any]],
+    *,
+    user_id: int,
+) -> Dict[str, Any]:
+    stamped = deepcopy(execution_preferences) if isinstance(execution_preferences, dict) else {}
+    captured_at = datetime.now().isoformat()
+
+    legal_acceptance = dict(stamped.get("job_submission_legal_acceptance") or {})
+    legal_acceptance.update(
+        {
+            "accepted": True,
+            "server_captured_at": captured_at,
+            "accepted_user_id": user_id,
+            "terms_document": legal_acceptance.get("terms_document") or "agreement.txt",
+            "kvkk_document": legal_acceptance.get("kvkk_document") or "kvkk.txt",
+        }
+    )
+
+    product_consent = dict(stamped.get("product_improvement_execution_data_consent") or {})
+    product_consent.update(
+        {
+            "granted": True,
+            "server_captured_at": captured_at,
+            "accepted_user_id": user_id,
+        }
+    )
+
+    stamped["job_submission_legal_acceptance"] = legal_acceptance
+    stamped["product_improvement_execution_data_consent"] = product_consent
+    return stamped
+
+
 def _job_response_for_user(job, username: Optional[str]) -> dict:
     interactive_outputs_enabled, _ = can_user_interact_with_job_outputs(
         user_id=job.user_id,
@@ -626,6 +674,19 @@ async def create_job_endpoint(
     selected_data_file_ids = list(job_data.input_file_ids or [])
     selected_staged_file_ids = list(job_data.staged_input_file_ids or [])
     selected_input_file_ids = selected_data_file_ids + selected_staged_file_ids
+
+    if not _job_submission_terms_accepted(job_data.execution_preferences):
+        error_data = error_response(
+            error_code=ErrorCode.VALIDATION_ERROR,
+            message="You must accept the job submission terms and execution data use consent before creating a job.",
+            status_code=status.HTTP_400_BAD_REQUEST
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+
+    job_data.execution_preferences = _stamp_job_submission_terms(
+        job_data.execution_preferences,
+        user_id=current_user.id,
+    )
     
     # Validate input
     is_valid, error_msg = validate_job_name(job_data.name)

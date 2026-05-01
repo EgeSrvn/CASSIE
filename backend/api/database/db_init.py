@@ -54,6 +54,7 @@ EXPECTED_TABLES = [
     'saved_workflows',
     'votes',
     'execution_datasets',
+    'invitation_codes',
     'vms',  # Emulation-only (temporary)
     'tenants'  # Emulation-only (temporary)
 ]

@@ -14,6 +14,7 @@ export default function Register({ onRegister }: RegisterProps) {
     username: '',
     email: '',
     password: '',
+    invitation_code: '',
   })
   const [error, setError] = useState<string>('')
   const [confirmPassword, setConfirmPassword] = useState('')
@@ -42,6 +43,12 @@ export default function Register({ onRegister }: RegisterProps) {
 
     if (formData.password !== confirmPassword) {
       setError('Passwords do not match.')
+      submitLockedRef.current = false
+      return
+    }
+
+    if (!formData.invitation_code.trim()) {
+      setError('Invitation code is required.')
       submitLockedRef.current = false
       return
     }
@@ -106,6 +113,20 @@ export default function Register({ onRegister }: RegisterProps) {
               required
               disabled={loading}
             />
+          </div>
+
+          <div className="form-group">
+            <label htmlFor="invitation-code">Invitation Code</label>
+            <input
+              type="text"
+              id="invitation-code"
+              value={formData.invitation_code}
+              onChange={(e) => setFormData({ ...formData, invitation_code: e.target.value })}
+              required
+              disabled={loading}
+              autoComplete="off"
+            />
+            <small>Registration is available by one-time invitation only.</small>
           </div>
           
           <div className="form-group">

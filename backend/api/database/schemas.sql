@@ -45,6 +45,20 @@ CREATE TABLE IF NOT EXISTS app_migrations (
     applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS invitation_codes (
+    id SERIAL PRIMARY KEY,
+    code VARCHAR(64) UNIQUE NOT NULL,
+    note VARCHAR(255),
+    created_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    used_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    used_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_invitation_codes_code ON invitation_codes(code);
+CREATE INDEX IF NOT EXISTS idx_invitation_codes_used_at ON invitation_codes(used_at);
+
 DO $$
 BEGIN
     IF NOT EXISTS (

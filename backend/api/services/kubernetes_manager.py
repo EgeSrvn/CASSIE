@@ -3088,7 +3088,11 @@ exit "$CASSIE_STATUS"
 
         if tool_id == "QUAST":
             requested_threads = self._tool_threads(tool_id, self._dynamic_threads(whole_cpus, ratio=0.75) if memory_mib >= 4096 else 1)
-            requested_memory_gb = self._dynamic_memory_gb(tool_memory_budget_mib, ratio=0.6 if memory_mib >= 4096 else 0.5)
+            default_quast_memory_gb = self._dynamic_memory_gb(tool_memory_budget_mib, ratio=0.6 if memory_mib >= 4096 else 0.5)
+            requested_memory_gb = min(
+                self._tool_memory_gb(tool_id, default_quast_memory_gb),
+                max(1, tool_memory_budget_mib // 1024),
+            )
             memory_limit = min(tool_memory_budget_mib, max(1536, requested_memory_gb * 1024))
             return self._resource_plan(
                 tool_id=tool_id,
@@ -3105,7 +3109,11 @@ exit "$CASSIE_STATUS"
 
         if tool_id == "FASTQC":
             requested_threads = self._tool_threads(tool_id, self._dynamic_threads(whole_cpus, ratio=0.75) if memory_mib >= 4096 else 1)
-            requested_memory_gb = self._dynamic_memory_gb(tool_memory_budget_mib, ratio=0.4 if memory_mib >= 4096 else 0.5)
+            default_fastqc_memory_gb = self._dynamic_memory_gb(tool_memory_budget_mib, ratio=0.4 if memory_mib >= 4096 else 0.5)
+            requested_memory_gb = min(
+                self._tool_memory_gb(tool_id, default_fastqc_memory_gb),
+                max(1, tool_memory_budget_mib // 1024),
+            )
             memory_limit = min(tool_memory_budget_mib, max(2048, requested_memory_gb * 1024))
             return self._resource_plan(
                 tool_id=tool_id,

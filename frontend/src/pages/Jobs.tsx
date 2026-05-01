@@ -153,6 +153,12 @@ export default function Jobs() {
                   )}
                 </div>
                 <div className="job-actions">
+                  <button
+                    onClick={() => navigate(`/jobs/${job.id}`)}
+                    className="btn-primary"
+                  >
+                    View Details
+                  </button>
                   {(job.status === 'failed' || job.status === 'cancelled') && (
                     <button
                       onClick={() => handleRetry(job)}
@@ -161,12 +167,6 @@ export default function Jobs() {
                       Retry Job
                     </button>
                   )}
-                  <button
-                    onClick={() => navigate(`/jobs/${job.id}`)}
-                    className="btn-primary"
-                  >
-                    View Details
-                  </button>
                   {(job.status === 'pending' || job.status === 'running') && (
                     <button
                       onClick={() => handleCancel(job)}

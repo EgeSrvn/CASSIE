@@ -49,6 +49,12 @@ from backend.api.services.auth_service import (
 )
 from backend.api.services.billing_service import deposit_user_cash
 from backend.api.services.email_service import send_email
+from backend.api.services.invitation_code_service import (
+    attach_invitation_code_to_user,
+    claim_invitation_code,
+    normalize_invitation_code,
+    release_invitation_code,
+)
 from backend.api.services.user_notification_service import build_login_two_factor_email
 from backend.api.utils.response_builder import (
     success_response,
@@ -77,6 +83,7 @@ class RegisterRequest(BaseModel):
     username: str = Field(..., min_length=3, max_length=50)
     email: Optional[EmailStr] = None
     password: str = Field(..., min_length=8)
+    invitation_code: str = Field(..., min_length=1, max_length=80)
 
 
 class LoginRequest(BaseModel):
@@ -543,12 +550,24 @@ async def register(request: RegisterRequest):
             status_code=status.HTTP_400_BAD_REQUEST
         )
         return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
+
+    normalized_invitation_code = normalize_invitation_code(request.invitation_code)
+    if not normalized_invitation_code:
+        error_data = error_response(
+            error_code=ErrorCode.VALIDATION_ERROR,
+            message="Invitation code is required for registration",
+            status_code=status.HTTP_400_BAD_REQUEST
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_400_BAD_REQUEST)
     
     # Keep a unique per-user storage namespace in the legacy column.
     bucket_name = f"users/{request.username.lower()}"
     
     # Create user
+    claimed_invitation = None
+    user_created = False
     try:
+        claimed_invitation = claim_invitation_code(normalized_invitation_code)
         user_data = UserCreate(
             username=request.username,
             email=request.email,
@@ -556,6 +575,8 @@ async def register(request: RegisterRequest):
             bucket_name=bucket_name
         )
         user = create_user(user_data, email_verified=False)
+        user_created = True
+        attach_invitation_code_to_user(claimed_invitation.id, user.id)
         verification_code, expires_in_minutes = _issue_email_verification(user.id)
         email_sent = False
         if user.email:
@@ -583,13 +604,18 @@ async def register(request: RegisterRequest):
         )
         
     except ValueError as e:
+        if claimed_invitation is not None and not user_created:
+            release_invitation_code(claimed_invitation.id)
+        response_status = status.HTTP_400_BAD_REQUEST if "invitation code" in str(e).lower() else status.HTTP_409_CONFLICT
         error_data = error_response(
-            error_code=ErrorCode.CONFLICT,
+            error_code=ErrorCode.VALIDATION_ERROR if "invitation code" in str(e).lower() else ErrorCode.CONFLICT,
             message=str(e),
-            status_code=status.HTTP_409_CONFLICT
+            status_code=response_status,
         )
-        return JSONResponse(content=error_data, status_code=status.HTTP_409_CONFLICT)
+        return JSONResponse(content=error_data, status_code=response_status)
     except Exception as e:
+        if claimed_invitation is not None and not user_created:
+            release_invitation_code(claimed_invitation.id)
         logger.error(f"Error registering user: {e}", exc_info=True)
         error_data = error_response(
             error_code=ErrorCode.INTERNAL_ERROR,

@@ -18,6 +18,7 @@ RUN npm ci --fetch-retries=5 --fetch-retry-mintimeout=5000 --fetch-retry-maxtime
 
 COPY frontend/ ./
 COPY config/ /config/
+COPY agreement.txt kvkk.txt /
 RUN npm run build
 
 FROM ${NGINX_BASE_IMAGE}
