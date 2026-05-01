@@ -2862,6 +2862,7 @@ exit "$CASSIE_STATUS"
                         f'"{input_dir}/{os.path.basename(assembly["filename"])}" '
                         '"merqury"'
                     ),
+                    f'find "{merqury_out}" -type l -delete',
                 ]
             )
 

@@ -1891,9 +1891,11 @@ async def delete_job_endpoint(
         )
     except Exception as e:
         logger.error(f"Error deleting job: {e}", exc_info=True)
+        detail = str(e).strip()
+        message = f"Failed to delete job: {detail[:240]}" if detail else "Failed to delete job"
         error_data = error_response(
             error_code=ErrorCode.INTERNAL_ERROR,
-            message="Failed to delete job",
+            message=message,
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
         return JSONResponse(content=error_data, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
