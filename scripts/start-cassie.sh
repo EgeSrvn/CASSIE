@@ -95,6 +95,13 @@ ensure_minikube_running() {
   kubectl config use-context minikube
 }
 
+ensure_metrics_server() {
+  echo "Enabling Minikube metrics-server addon for live pod CPU/memory usage ..."
+  retry_command "${CASSIE_DOCKER_RETRY_ATTEMPTS}" "${CASSIE_DOCKER_RETRY_DELAY_SECONDS}" \
+    "enabling metrics-server addon" minikube addons enable metrics-server
+  kubectl wait --for=condition=available deployment/metrics-server -n kube-system --timeout=180s || true
+}
+
 prepare_container_kubeconfig() {
   local runtime_dir="${ROOT_DIR}/.cassie/kube"
   local runtime_config="${runtime_dir}/config"
@@ -217,6 +224,7 @@ export CASSIE_KUBECTL_VERSION="$(get_env_value_or_default "CASSIE_KUBECTL_VERSIO
 
 reset_minikube_cluster
 ensure_minikube_running "${CASSIE_MINIKUBE_CPUS}" "${CASSIE_MINIKUBE_MEMORY}" "${CASSIE_MINIKUBE_DISK_SIZE}"
+ensure_metrics_server
 
 export EXECUTION_BACKEND="${EXECUTION_BACKEND:-kubernetes}"
 export KUBERNETES_JOB_TIMEOUT_SECONDS="$(get_env_value_or_default "KUBERNETES_JOB_TIMEOUT_SECONDS" "0")"

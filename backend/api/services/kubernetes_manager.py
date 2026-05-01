@@ -4689,6 +4689,15 @@ exit "$CASSIE_STATUS"
         )
         if result.returncode != 0:
             message = (result.stderr or result.stdout or "").strip()
+            fallback_usage = self._get_pod_container_cgroup_usage(
+                pod_name,
+                namespace,
+                container_name=container_name,
+            )
+            if fallback_usage:
+                if fallback_usage.get("live_metrics_error") and message:
+                    fallback_usage["live_metrics_error"] = f"{message[:160]}; {fallback_usage['live_metrics_error']}"
+                return fallback_usage
             if message:
                 return {"live_metrics_error": message[:240]}
             return {"live_metrics_error": "Pod metrics are not available."}
@@ -4706,6 +4715,64 @@ exit "$CASSIE_STATUS"
             }
 
         return {"live_metrics_error": f"No live metrics found for container {container_name}."}
+
+    def _get_pod_container_cgroup_usage(
+        self,
+        pod_name: str,
+        namespace: str,
+        *,
+        container_name: str,
+    ) -> Dict[str, Any]:
+        sample_script = r'''
+cpu_usage_usec() {
+  if [ -r /sys/fs/cgroup/cpu.stat ]; then
+    awk '$1 == "usage_usec" { print $2; found=1 } END { if (!found) print 0 }' /sys/fs/cgroup/cpu.stat
+  else
+    echo 0
+  fi
+}
+memory_bytes() {
+  if [ -r /sys/fs/cgroup/memory.current ]; then
+    cat /sys/fs/cgroup/memory.current
+  elif [ -r /sys/fs/cgroup/memory/memory.usage_in_bytes ]; then
+    cat /sys/fs/cgroup/memory/memory.usage_in_bytes
+  else
+    echo 0
+  fi
+}
+CPU_START="$(cpu_usage_usec)"
+sleep 1
+CPU_END="$(cpu_usage_usec)"
+MEMORY_BYTES="$(memory_bytes)"
+printf '%s %s %s\n' "${CPU_START:-0}" "${CPU_END:-0}" "${MEMORY_BYTES:-0}"
+'''
+        started_at = time.monotonic()
+        result = self._run_kubectl(
+            ["exec", pod_name, "-n", namespace, "-c", container_name, "--", "sh", "-lc", sample_script],
+            timeout=10,
+        )
+        elapsed_seconds = max(0.001, time.monotonic() - started_at)
+        if result.returncode != 0:
+            message = (result.stderr or result.stdout or "").strip()
+            return {"live_metrics_error": (message or "Container cgroup metrics are not available.")[:240]}
+
+        parts = result.stdout.strip().split()
+        if len(parts) < 3:
+            return {"live_metrics_error": "Container cgroup metrics returned an unexpected response."}
+
+        try:
+            cpu_start = int(parts[-3])
+            cpu_end = int(parts[-2])
+            memory_bytes = int(parts[-1])
+        except ValueError:
+            return {"live_metrics_error": "Container cgroup metrics returned non-numeric values."}
+
+        cpu_delta_usec = max(0, cpu_end - cpu_start)
+        return {
+            "live_cpu_millis": max(0, round((cpu_delta_usec / 1000.0) / elapsed_seconds)),
+            "live_memory_mib": max(0, round(memory_bytes / (1024 * 1024))),
+            "live_metrics_error": None,
+        }
 
     def _parse_cpu_quantity_millis(self, quantity: str) -> int:
         value = str(quantity or "").strip()
