@@ -11,6 +11,7 @@ This module provides:
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks, Request
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 from typing import Optional, List, Dict, Any
 from copy import deepcopy
 from datetime import datetime
@@ -1072,7 +1073,8 @@ async def preview_pipeline_plan(
 ):
     """Return a backend-generated pipeline visualization without creating or executing a job."""
     try:
-        payload = get_kubernetes_pipeline_runner().build_pipeline_plan_preview(
+        payload = await run_in_threadpool(
+            get_kubernetes_pipeline_runner().build_pipeline_plan_preview,
             user_id=current_user.id,
             tool_indices=request.tool_indices,
             pipeline_id=request.pipeline_id,

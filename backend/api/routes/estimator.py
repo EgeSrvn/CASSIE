@@ -4,6 +4,7 @@ Runtime and cost estimation routes for CASSIE backend.
 
 from fastapi import APIRouter, Depends, status
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 
@@ -160,14 +161,20 @@ async def estimate_runtime(
                 )
                 return JSONResponse(content=error_data, status_code=status.HTTP_404_NOT_FOUND)
 
-            estimate = estimate_runtime_for_pipeline_graph(
+            estimate = await run_in_threadpool(
+                estimate_runtime_for_pipeline_graph,
                 list(pipeline.nodes or []),
                 list(pipeline.edges or []),
                 request.vm_name,
                 input_assignments,
             )
         elif request.tool_indices:
-            estimate = estimate_runtime_for_tool_indices(request.tool_indices, request.vm_name, input_assignments)
+            estimate = await run_in_threadpool(
+                estimate_runtime_for_tool_indices,
+                request.tool_indices,
+                request.vm_name,
+                input_assignments,
+            )
         else:
             error_data = error_response(
                 error_code=ErrorCode.VALIDATION_ERROR,

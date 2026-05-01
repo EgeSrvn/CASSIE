@@ -537,10 +537,13 @@ export default function CreateJob() {
       }
     }
 
-    void runEstimate()
+    const timeoutId = window.setTimeout(() => {
+      void runEstimate()
+    }, 350)
 
     return () => {
       cancelled = true
+      window.clearTimeout(timeoutId)
     }
   }, [
     dataFileTree,
@@ -2001,10 +2004,13 @@ export default function CreateJob() {
       }
     }
 
-    void loadPipelinePlanPreview()
+    const timeoutId = window.setTimeout(() => {
+      void loadPipelinePlanPreview()
+    }, 350)
 
     return () => {
       cancelled = true
+      window.clearTimeout(timeoutId)
     }
   }, [reviewPipelinePlanRequest, reviewPipelinePlanSignature])
 
