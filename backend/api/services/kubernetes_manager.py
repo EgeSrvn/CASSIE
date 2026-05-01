@@ -1141,6 +1141,19 @@ class KubernetesPipelineRunner:
         if targeted_matches:
             return targeted_matches
 
+        has_explicit_binding_metadata = any(
+            str(artifact.get("binding_id") or "").strip()
+            or str(artifact.get("tool_id") or "").strip()
+            or str(artifact.get("requirement_type") or "").strip()
+            for artifact in initial_inputs
+        )
+
+        if (
+            has_explicit_binding_metadata
+            and (normalized_binding_ids or (normalized_tool_id and normalized_requirement_type))
+        ):
+            return []
+
         if requirement is None:
             return list(initial_inputs)
 
@@ -1833,6 +1846,26 @@ class KubernetesPipelineRunner:
             return True
         return bool(self._infer_artifact_formats(artifact).intersection(accepted_formats))
 
+    def _get_upstream_requirement_inputs(
+        self,
+        current_inputs: List[Dict[str, Any]],
+        requirement_type: str,
+    ) -> List[Dict[str, Any]]:
+        normalized_requirement_type = str(requirement_type or "").strip().lower()
+        if not normalized_requirement_type:
+            return []
+
+        matches: List[Dict[str, Any]] = []
+        for artifact in current_inputs:
+            producer_tool_id = str(artifact.get("producer_tool_id") or "").strip().upper()
+            if not producer_tool_id:
+                continue
+            produced_tool = get_tool_by_id(producer_tool_id)
+            if produced_tool and self._tool_produces_requirement(produced_tool, normalized_requirement_type):
+                matches.append(artifact)
+
+        return sorted(matches, key=lambda item: str(item.get("filename") or "").lower())
+
     def _output_matches_stage(
         self,
         file_record: Any,
@@ -2347,17 +2380,18 @@ exit "$CASSIE_STATUS"
             input_mode = str(tool_config.get("input_mode") or "paired_end").strip().lower()
             long_read_support = str(tool_config.get("long_read_support") or "none").strip().lower()
             command_input_flags: List[str] = []
+            has_explicit_bindings = self._has_explicit_binding_metadata(current_inputs)
 
             if input_mode == "interlaced":
                 interlaced_reads = self._get_bound_requirement_inputs(current_inputs, tool["id"], "interlaced_reads")
-                if not interlaced_reads:
+                if not interlaced_reads and not has_explicit_bindings:
                     interlaced_reads = classified["fastq"]
                 if not interlaced_reads:
                     raise ValueError("SPAdes interlaced mode requires at least one FASTQ file")
                 command_input_flags.append(f"--12 {self._comma_joined_input_paths(input_dir, interlaced_reads)}")
             elif input_mode == "single_end":
                 single_reads = self._get_bound_requirement_inputs(current_inputs, tool["id"], "single_reads")
-                if not single_reads:
+                if not single_reads and not has_explicit_bindings:
                     single_reads = classified["fastq"]
                 if not single_reads:
                     raise ValueError("SPAdes single-end mode requires at least one FASTQ file")
@@ -2372,6 +2406,8 @@ exit "$CASSIE_STATUS"
                     command_input_flags.append(f"-1 {self._comma_joined_input_paths(input_dir, forward_reads)}")
                     command_input_flags.append(f"-2 {self._comma_joined_input_paths(input_dir, reverse_reads)}")
                 else:
+                    if has_explicit_bindings:
+                        raise ValueError("SPAdes paired-end mode requires explicitly bound R1 and R2 FASTQ reads")
                     fastq_reads = self._select_fastq_inputs(classified["fastq"], required=2)
                     if len(fastq_reads) < 2:
                         raise ValueError("SPAdes paired-end mode requires R1 and R2 FASTQ reads")
@@ -2428,9 +2464,10 @@ exit "$CASSIE_STATUS"
             short_read_mode = str(tool_config.get("short_read_mode") or "paired_end").strip().lower()
             long_read_support = str(tool_config.get("long_read_support") or "none").strip().lower()
             command_input_flags: List[str] = []
+            has_explicit_bindings = self._has_explicit_binding_metadata(current_inputs)
             if short_read_mode == "interlaced":
                 interlaced_reads = self._get_bound_requirement_inputs(current_inputs, tool["id"], "interlaced_reads")
-                if not interlaced_reads:
+                if not interlaced_reads and not has_explicit_bindings:
                     interlaced_reads = classified["fastq"]
                 if not interlaced_reads:
                     raise ValueError("metaSPAdes interlaced mode requires at least one FASTQ file")
@@ -2442,6 +2479,8 @@ exit "$CASSIE_STATUS"
                     command_input_flags.append(f"-1 {self._comma_joined_input_paths(input_dir, forward_reads)}")
                     command_input_flags.append(f"-2 {self._comma_joined_input_paths(input_dir, reverse_reads)}")
                 else:
+                    if has_explicit_bindings:
+                        raise ValueError("metaSPAdes paired-end mode requires explicitly bound R1 and R2 FASTQ reads")
                     fastq_reads = self._select_fastq_inputs(classified["fastq"], required=2)
                     if len(fastq_reads) < 2:
                         raise ValueError("metaSPAdes paired-end mode requires R1 and R2 FASTQ reads")
@@ -2482,7 +2521,17 @@ exit "$CASSIE_STATUS"
             )
 
         if tool["id"] == "QUAST":
-            assembly, reference = self._resolve_quast_inputs(classified["fasta"])
+            assembly_inputs = self._get_bound_requirement_inputs(current_inputs, tool["id"], "assembly")
+            if not assembly_inputs:
+                assembly_inputs = self._get_upstream_requirement_inputs(current_inputs, "assembly")
+            reference_inputs = self._get_bound_requirement_inputs(current_inputs, tool["id"], "reference")
+            if assembly_inputs and reference_inputs:
+                assembly = self._resolve_single_artifact(assembly_inputs, "QUAST requires an assembly FASTA input")
+                reference = self._resolve_single_artifact(reference_inputs, "QUAST requires a reference FASTA input")
+            elif self._has_explicit_binding_metadata(current_inputs):
+                raise ValueError("QUAST requires explicitly bound assembly and reference FASTA inputs")
+            else:
+                assembly, reference = self._resolve_quast_inputs(classified["fasta"])
             threads = tool_plan["threads"]
             quast_flags: List[str] = []
             min_contig = int(tool_config.get("min_contig") or 0)
@@ -2590,12 +2639,16 @@ exit "$CASSIE_STATUS"
         if tool["id"] == "HIFIASM":
             mode = str(tool_config.get("mode") or "hifi").strip().lower()
             if mode == "ont":
-                primary_reads = self._get_bound_requirement_inputs(current_inputs, tool["id"], "ont_reads") or classified["reads_like"]
+                primary_reads = self._prefer_primary_long_read_inputs(
+                    self._get_bound_requirement_inputs(current_inputs, tool["id"], "ont_reads")
+                ) or self._prefer_primary_long_read_inputs(classified["reads_like"])
                 if not primary_reads:
                     raise ValueError("Hifiasm ONT mode requires ONT reads in FASTQ or FASTA format")
                 hifiasm_inputs = self._quoted_input_paths(input_dir, primary_reads)
             else:
-                primary_reads = self._get_bound_requirement_inputs(current_inputs, tool["id"], "hifi_reads") or classified["reads_like"]
+                primary_reads = self._prefer_primary_long_read_inputs(
+                    self._get_bound_requirement_inputs(current_inputs, tool["id"], "hifi_reads")
+                ) or self._prefer_primary_long_read_inputs(classified["reads_like"])
                 if not primary_reads:
                     raise ValueError("Hifiasm requires HiFi reads in FASTQ or FASTA format")
                 hifiasm_inputs = self._quoted_input_paths(input_dir, primary_reads)
@@ -2613,7 +2666,9 @@ exit "$CASSIE_STATUS"
                 hifiasm_flags.append(f'--h1 {self._quoted_input_paths(input_dir, hic_r1)}')
                 hifiasm_flags.append(f'--h2 {self._quoted_input_paths(input_dir, hic_r2)}')
             if mode == "hifi_ul":
-                ul_reads = self._get_bound_requirement_inputs(current_inputs, tool["id"], "ul_reads")
+                ul_reads = self._prefer_primary_long_read_inputs(
+                    self._get_bound_requirement_inputs(current_inputs, tool["id"], "ul_reads")
+                )
                 if not ul_reads:
                     raise ValueError("Hifiasm HiFi + ultra-long mode requires ultra-long ONT reads")
                 hifiasm_flags.append(f'--ul {self._quoted_input_paths(input_dir, ul_reads)}')
@@ -2657,10 +2712,16 @@ exit "$CASSIE_STATUS"
             )
 
         if tool["id"] == "VERKKO":
-            hifi_reads = self._get_bound_requirement_inputs(current_inputs, tool["id"], "hifi_reads")
-            nano_reads = self._get_bound_requirement_inputs(current_inputs, tool["id"], "nanopore_reads")
+            hifi_reads = self._prefer_primary_long_read_inputs(
+                self._get_bound_requirement_inputs(current_inputs, tool["id"], "hifi_reads")
+            )
+            nano_reads = self._prefer_primary_long_read_inputs(
+                self._get_bound_requirement_inputs(current_inputs, tool["id"], "nanopore_reads")
+            )
             if not hifi_reads:
-                hifi_reads, inferred_nano_reads = self._split_verkko_reads(classified["reads_like"])
+                hifi_reads, inferred_nano_reads = self._split_verkko_reads(
+                    self._prefer_primary_long_read_inputs(classified["reads_like"])
+                )
                 if not nano_reads:
                     nano_reads = inferred_nano_reads
             if not hifi_reads:
@@ -2719,8 +2780,18 @@ exit "$CASSIE_STATUS"
             )
 
         if tool["id"] == "LIFTOFF":
-            target, reference = self._resolve_target_reference_genomes(classified["fasta"])
-            annotation = self._resolve_annotation_input(classified["annotation"])
+            target_inputs = self._get_bound_requirement_inputs(current_inputs, tool["id"], "target_genome")
+            reference_inputs = self._get_bound_requirement_inputs(current_inputs, tool["id"], "reference_genome")
+            annotation_inputs = self._get_bound_requirement_inputs(current_inputs, tool["id"], "annotation")
+            if target_inputs and reference_inputs and annotation_inputs:
+                target = self._resolve_single_artifact(target_inputs, "Liftoff requires a target genome FASTA input")
+                reference = self._resolve_single_artifact(reference_inputs, "Liftoff requires a reference genome FASTA input")
+                annotation = self._resolve_annotation_input(annotation_inputs)
+            elif self._has_explicit_binding_metadata(current_inputs):
+                raise ValueError("Liftoff requires explicitly bound target genome, reference genome, and annotation inputs")
+            else:
+                target, reference = self._resolve_target_reference_genomes(classified["fasta"])
+                annotation = self._resolve_annotation_input(classified["annotation"])
             liftoff_out = f"{output_dir}/liftoff_out"
             liftoff_flags: List[str] = []
             liftoff_flags.append(f'-a {tool_config.get("coverage_threshold")}')
@@ -2790,7 +2861,15 @@ exit "$CASSIE_STATUS"
             )
 
         if tool["id"] == "BUSCO":
-            assembly = self._resolve_busco_input(classified["fasta"])
+            assembly_inputs = self._get_bound_requirement_inputs(current_inputs, tool["id"], "assembly")
+            if not assembly_inputs:
+                assembly_inputs = self._get_upstream_requirement_inputs(current_inputs, "assembly")
+            if assembly_inputs:
+                assembly = self._resolve_single_artifact(assembly_inputs, "BUSCO requires an assembly FASTA input")
+            elif self._has_explicit_binding_metadata(current_inputs):
+                raise ValueError("BUSCO requires an explicitly bound assembly FASTA input")
+            else:
+                assembly = self._resolve_busco_input(classified["fasta"])
             busco_out = f"{output_dir}/busco_out"
             configured_lineage = str(tool_config.get("lineage_dataset") or "").strip()
             default_lineage = configured_lineage or self._config.tools.busco_default_lineage
@@ -2834,11 +2913,26 @@ exit "$CASSIE_STATUS"
             )
 
         if tool["id"] == "MERQURY":
-            assembly = self._resolve_busco_input(classified["fasta"])
-            meryl_input = self._resolve_single_artifact(
-                classified["meryl"],
-                "Merqury requires a .meryl.tar.gz or .meryl.tgz database archive",
-            )
+            assembly_inputs = self._get_bound_requirement_inputs(current_inputs, tool["id"], "assembly")
+            if not assembly_inputs:
+                assembly_inputs = self._get_upstream_requirement_inputs(current_inputs, "assembly")
+            meryl_inputs = self._get_bound_requirement_inputs(current_inputs, tool["id"], "read_kmer_db")
+            if not meryl_inputs:
+                meryl_inputs = self._get_upstream_requirement_inputs(current_inputs, "read_kmer_db")
+            if assembly_inputs and meryl_inputs:
+                assembly = self._resolve_single_artifact(assembly_inputs, "Merqury requires an assembly FASTA input")
+                meryl_input = self._resolve_single_artifact(
+                    meryl_inputs,
+                    "Merqury requires a .meryl.tar.gz or .meryl.tgz database archive",
+                )
+            elif self._has_explicit_binding_metadata(current_inputs):
+                raise ValueError("Merqury requires explicitly bound assembly and read k-mer DB inputs")
+            else:
+                assembly = self._resolve_busco_input(classified["fasta"])
+                meryl_input = self._resolve_single_artifact(
+                    classified["meryl"],
+                    "Merqury requires a .meryl.tar.gz or .meryl.tgz database archive",
+                )
             merqury_out = f"{output_dir}/merqury_out"
             meryl_name = os.path.basename(meryl_input["filename"])
             meryl_source = f"{input_dir}/{meryl_name}"
@@ -2937,6 +3031,40 @@ exit "$CASSIE_STATUS"
             hifi_reads = list(read_files)
             nano_reads = []
         return hifi_reads, nano_reads
+
+    def _prefer_primary_long_read_inputs(self, artifacts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        if not artifacts:
+            return []
+
+        eligible: List[Dict[str, Any]] = []
+        fastq_preferred: List[Dict[str, Any]] = []
+        fasta_fallback: List[Dict[str, Any]] = []
+
+        for artifact in artifacts:
+            formats = self._artifact_formats(artifact)
+            if "fastq" not in formats and "fasta" not in formats:
+                continue
+            if self._is_assembly_artifact(artifact):
+                continue
+            eligible.append(artifact)
+            if "fastq" in formats:
+                fastq_preferred.append(artifact)
+            elif "fasta" in formats:
+                fasta_fallback.append(artifact)
+
+        if fastq_preferred:
+            return sorted(fastq_preferred, key=lambda item: str(item.get("filename") or "").lower())
+        if fasta_fallback:
+            return sorted(fasta_fallback, key=lambda item: str(item.get("filename") or "").lower())
+        return sorted(eligible, key=lambda item: str(item.get("filename") or "").lower())
+
+    def _has_explicit_binding_metadata(self, artifacts: List[Dict[str, Any]]) -> bool:
+        return any(
+            str(artifact.get("binding_id") or "").strip()
+            or str(artifact.get("tool_id") or "").strip()
+            or str(artifact.get("requirement_type") or "").strip()
+            for artifact in artifacts
+        )
 
     def _tool_threads(self, tool_id: str, default: int) -> int:
         if not self._resource_env_overrides_enabled():
