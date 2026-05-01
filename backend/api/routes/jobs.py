@@ -334,7 +334,7 @@ def _preserve_deleted_job_input_files(
                         (source_key, int(file_id)),
                     )
                     if cur.fetchone():
-                        cur.execute("DELETE FROM files WHERE id = %s AND user_id = %s", (int(file_id), user_id))
+                        cur.execute("DELETE FROM files WHERE id = %s", (int(file_id),))
                         preserved_count += cur.rowcount
                         continue
 
@@ -344,9 +344,8 @@ def _preserve_deleted_job_input_files(
                     SET job_id = NULL,
                         file_type = 'input'
                     WHERE id = %s
-                      AND user_id = %s
                     """,
-                    (int(file_id), user_id),
+                    (int(file_id),),
                 )
                 preserved_count += cur.rowcount
 
@@ -379,10 +378,9 @@ def _delete_job_output_file_records(
             cur.execute(
                 f"""
                 DELETE FROM files
-                WHERE user_id = %s
-                  AND id IN ({placeholders})
+                WHERE id IN ({placeholders})
                 """,
-                [user_id, *file_ids],
+                file_ids,
             )
             deleted_count = cur.rowcount
             conn.commit()
