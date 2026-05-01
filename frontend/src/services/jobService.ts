@@ -56,6 +56,9 @@ export interface JobExecutionStage {
   cpu_limit_millis?: number
   memory_limit_mib?: number
   storage_limit_mib?: number
+  live_cpu_millis?: number | null
+  live_memory_mib?: number | null
+  live_metrics_error?: string | null
   live_tool_logs?: string | null
   live_init_logs?: string | null
   pod_phase?: string | null

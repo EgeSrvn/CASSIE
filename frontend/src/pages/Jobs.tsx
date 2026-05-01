@@ -161,21 +161,21 @@ export default function Jobs() {
                       Retry Job
                     </button>
                   )}
-                  {(job.status === 'pending' || job.status === 'running') && (
-                    <button
-                      onClick={() => handleCancel(job)}
-                      className="btn-secondary"
-                      disabled={actioningJobId === job.id}
-                    >
-                      {actioningJobId === job.id ? 'Cancelling...' : 'Cancel Job'}
-                    </button>
-                  )}
                   <button
                     onClick={() => navigate(`/jobs/${job.id}`)}
                     className="btn-primary"
                   >
                     View Details
                   </button>
+                  {(job.status === 'pending' || job.status === 'running') && (
+                    <button
+                      onClick={() => handleCancel(job)}
+                      className="btn-soft-cancel"
+                      disabled={actioningJobId === job.id}
+                    >
+                      {actioningJobId === job.id ? 'Cancelling...' : 'Cancel Job'}
+                    </button>
+                  )}
                   <button
                     onClick={() => handleDelete(job.id)}
                     className="icon-button icon-button-danger"

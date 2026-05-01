@@ -2553,13 +2553,15 @@ exit "$CASSIE_STATUS"
                 raise ValueError("Meryl requires FASTQ reads")
             threads = tool_plan["threads"]
             kmer_size = int(tool_config.get("kmer_size") or 21)
+            meryl_work = "/workspace/meryl_work"
             meryl_out = f"{output_dir}/meryl_out"
             input_names = [os.path.basename(item["filename"]) for item in fastq_reads]
             prep_commands: List[str] = [
                 profile_note,
                 "export TMPDIR=/workspace/tmp",
                 "mkdir -p /workspace/tmp",
-                f"mkdir -p {meryl_out} /workspace/meryl_inputs",
+                f"rm -rf {meryl_work}",
+                f"mkdir -p {meryl_work} {meryl_out} /workspace/meryl_inputs",
             ]
             input_args: List[str] = []
             for input_name in input_names:
@@ -2577,9 +2579,9 @@ exit "$CASSIE_STATUS"
                 [
                     (
                         f'meryl count k={kmer_size} threads={threads} '
-                        f'output "{meryl_out}/reads.meryl" {" ".join(input_args)}'
+                        f'output "{meryl_work}/reads.meryl" {" ".join(input_args)}'
                     ),
-                    f'tar -czf "{meryl_out}/reads.meryl.tar.gz" -C "{meryl_out}" "reads.meryl"',
+                    f'tar -czf "{meryl_out}/reads.meryl.tar.gz" -C "{meryl_work}" "reads.meryl"',
                 ]
             )
             return self._wrap_tool_script(prep_commands)
@@ -2856,9 +2858,9 @@ exit "$CASSIE_STATUS"
                     'fi',
                     'if [ ! -d "${MERQURY_DB}" ]; then echo "Could not locate a .meryl database directory for Merqury" >&2; exit 1; fi',
                     (
-                        f'merqury.sh "${{MERQURY_DB}}" '
+                        f'cd "{merqury_out}" && merqury.sh "${{MERQURY_DB}}" '
                         f'"{input_dir}/{os.path.basename(assembly["filename"])}" '
-                        f'"{merqury_out}"'
+                        '"merqury"'
                     ),
                 ]
             )
@@ -4582,6 +4584,9 @@ exit "$CASSIE_STATUS"
                     "pod_name": pod_name or None,
                     "job_status": None,
                     "pod_phase": None,
+                    "live_cpu_millis": None,
+                    "live_memory_mib": None,
+                    "live_metrics_error": None,
                     "live_init_logs": None,
                     "live_tool_logs": None,
                     "raw_job_status": None,
@@ -4637,6 +4642,11 @@ exit "$CASSIE_STATUS"
                         if stderr and "NotFound" not in stderr:
                             errors.append(f"{pod_name}: {stderr}")
 
+                    if str(stage.get("status") or "").strip().lower() == "running":
+                        usage = self._get_pod_container_usage(pod_name, namespace, container_name="tool")
+                        if usage:
+                            snapshot.update(usage)
+
                     init_logs = self._run_kubectl(
                         ["logs", pod_name, "-n", namespace, "-c", "fetch-inputs", "--tail=120"],
                         timeout=60,
@@ -4665,6 +4675,52 @@ exit "$CASSIE_STATUS"
             "stages": stages,
             "errors": errors,
         }
+
+    def _get_pod_container_usage(
+        self,
+        pod_name: str,
+        namespace: str,
+        *,
+        container_name: str,
+    ) -> Dict[str, Any]:
+        result = self._run_kubectl(
+            ["top", "pod", pod_name, "-n", namespace, "--containers", "--no-headers"],
+            timeout=20,
+        )
+        if result.returncode != 0:
+            message = (result.stderr or result.stdout or "").strip()
+            if message:
+                return {"live_metrics_error": message[:240]}
+            return {"live_metrics_error": "Pod metrics are not available."}
+
+        for raw_line in result.stdout.splitlines():
+            parts = raw_line.split()
+            if len(parts) < 4:
+                continue
+            if parts[1] != container_name:
+                continue
+            return {
+                "live_cpu_millis": self._parse_cpu_quantity_millis(parts[2]),
+                "live_memory_mib": self._parse_memory_quantity_mib(parts[3]),
+                "live_metrics_error": None,
+            }
+
+        return {"live_metrics_error": f"No live metrics found for container {container_name}."}
+
+    def _parse_cpu_quantity_millis(self, quantity: str) -> int:
+        value = str(quantity or "").strip()
+        if not value:
+            return 0
+        try:
+            if value.endswith("n"):
+                return max(0, round(float(value[:-1]) / 1_000_000))
+            if value.endswith("u"):
+                return max(0, round(float(value[:-1]) / 1_000))
+            if value.endswith("m"):
+                return max(0, round(float(value[:-1])))
+            return max(0, round(float(value) * 1000))
+        except ValueError:
+            return 0
 
     def recover_orphaned_executions(self) -> Dict[str, Any]:
         """

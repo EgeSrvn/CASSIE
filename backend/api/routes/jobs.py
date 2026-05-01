@@ -1312,6 +1312,9 @@ async def list_job_executions(
                         merged_stage["live_tool_logs"] = runtime_stage.get("live_tool_logs")
                         merged_stage["live_init_logs"] = runtime_stage.get("live_init_logs")
                         merged_stage["pod_phase"] = runtime_stage.get("pod_phase")
+                        merged_stage["live_cpu_millis"] = runtime_stage.get("live_cpu_millis")
+                        merged_stage["live_memory_mib"] = runtime_stage.get("live_memory_mib")
+                        merged_stage["live_metrics_error"] = runtime_stage.get("live_metrics_error")
                         merged_stages.append(merged_stage)
                     parameters_used["stages"] = merged_stages
 

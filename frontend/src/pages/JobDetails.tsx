@@ -42,6 +42,12 @@ const formatVmCpu = (cpuMillis: number): string => `${(cpuMillis / 1000).toFixed
 const formatVmMemory = (memoryMib: number): string => `${(memoryMib / 1024).toFixed(2)} GiB`
 const formatVmStorage = (storageMib: number): string => storageMib > 0 ? `${(storageMib / 1024).toFixed(2)} GiB` : 'Auto'
 const formatVmSlots = (vm: VM): string => `${vm.available_job_slots}/${vm.max_jobs} jobs available`
+const formatOptionalVmCpu = (cpuMillis?: number | null): string => (
+  typeof cpuMillis === 'number' ? formatVmCpu(cpuMillis) : 'Unavailable'
+)
+const formatOptionalVmMemory = (memoryMib?: number | null): string => (
+  typeof memoryMib === 'number' ? formatVmMemory(memoryMib) : 'Unavailable'
+)
 
 type JobDetailTab = 'information' | 'pipeline' | 'tracking' | 'resources' | 'inputs' | 'outputs'
 
@@ -277,6 +283,11 @@ export default function JobDetails() {
   }, 0)
   const activeMemoryMib = activeStages.reduce((sum, stage) => sum + (stage.memory_limit_mib || 0), 0)
   const activeStorageMib = activeStages.reduce((sum, stage) => sum + (stage.storage_limit_mib || 0), 0)
+  const liveCpuMillis = activeStages.reduce((sum, stage) => sum + (stage.live_cpu_millis || 0), 0)
+  const liveMemoryMib = activeStages.reduce((sum, stage) => sum + (stage.live_memory_mib || 0), 0)
+  const hasLivePodMetrics = activeStages.some(stage => (
+    typeof stage.live_cpu_millis === 'number' || typeof stage.live_memory_mib === 'number'
+  ))
   const resourceLimits = {
     cpuMillis: selectedVMDetails?.available_cpu_millis || Math.max(activeCpuMillis, 0),
     memoryMib: selectedVMDetails?.available_memory_mib || Math.max(activeMemoryMib, 0),
@@ -345,6 +356,8 @@ export default function JobDetails() {
         family = 'CAT'
       } else if (filename.includes('busco')) {
         family = 'BUSCO'
+      } else if (file.file_format === 'meryl' || filename.includes('.meryl')) {
+        family = 'Meryl'
       } else if (filename.includes('merqury') || filename.includes('.qv')) {
         family = 'Merqury'
       }
@@ -1128,8 +1141,9 @@ export default function JobDetails() {
             <h2>Active Resource Usage</h2>
             <div className="builder-section-card" style={{ marginBottom: '1rem' }}>
               <p style={{ margin: '0 0 1rem', color: '#64748b' }}>
-                This shows the resources currently allocated by running tool stages in this job, compared with this job's selected VM limit.
+                Partition allocation shows reserved resources for running stages. Pod usage shows live Kubernetes metrics for the running tool containers when metrics are available.
               </p>
+              <h3 style={{ margin: '0 0 0.75rem', fontSize: '1rem', color: '#183B4E' }}>Partition Allocation</h3>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1rem' }}>
                 {[
                   {
@@ -1166,6 +1180,40 @@ export default function JobDetails() {
                   )
                 })}
               </div>
+
+              <h3 style={{ margin: '1.25rem 0 0.75rem', fontSize: '1rem', color: '#183B4E' }}>Live Pod Usage</h3>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1rem' }}>
+                {[
+                  {
+                    label: 'CPU',
+                    used: liveCpuMillis,
+                    limit: activeCpuMillis,
+                    display: hasLivePodMetrics ? `${formatVmCpu(liveCpuMillis)} / ${formatVmCpu(activeCpuMillis)}` : 'Unavailable',
+                  },
+                  {
+                    label: 'Memory',
+                    used: liveMemoryMib,
+                    limit: activeMemoryMib,
+                    display: hasLivePodMetrics ? `${formatVmMemory(liveMemoryMib)} / ${formatVmMemory(activeMemoryMib)}` : 'Unavailable',
+                  },
+                ].map(resource => {
+                  const percent = hasLivePodMetrics ? resourcePercent(resource.used, resource.limit) : 0
+                  return (
+                    <div key={`pod-${resource.label}`} style={{ padding: '1rem', borderRadius: '10px', border: '1px solid #d3dce7', background: '#f8fafc' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem', marginBottom: '0.6rem' }}>
+                        <strong>{resource.label}</strong>
+                        <span>{resource.display}</span>
+                      </div>
+                      <div style={{ height: '10px', borderRadius: '999px', backgroundColor: '#dbe5f0', overflow: 'hidden' }}>
+                        <div style={{ width: `${percent}%`, height: '100%', backgroundColor: percent > 85 ? '#b6786d' : '#2f7d6d' }} />
+                      </div>
+                      <div style={{ marginTop: '0.4rem', color: '#64748b', fontSize: '0.875rem' }}>
+                        {hasLivePodMetrics ? `${percent}% of active allocation in use` : 'Requires Kubernetes pod metrics'}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
             </div>
 
             {activeStages.length === 0 ? (
@@ -1178,12 +1226,22 @@ export default function JobDetails() {
                   <div key={`${stage.stage_id || stage.stage_number}-${stage.tool_id}`} style={{ padding: '0.875rem 1rem', borderRadius: '8px', border: '1px solid #e2e8f0', backgroundColor: '#f8fafc' }}>
                     <strong>{stage.tool_name || stage.tool_id}</strong>
                     <div style={{ marginTop: '0.35rem', color: '#475569' }}>
-                      CPU: {formatVmCpu(stage.cpu_limit_millis || (stage.threads || 0) * 1000)}
+                      Allocated CPU: {formatVmCpu(stage.cpu_limit_millis || (stage.threads || 0) * 1000)}
                       {' | '}
-                      Memory: {formatVmMemory(stage.memory_limit_mib || 0)}
+                      Allocated memory: {formatVmMemory(stage.memory_limit_mib || 0)}
                       {' | '}
                       Storage: {formatVmStorage(stage.storage_limit_mib || 0)}
                     </div>
+                    <div style={{ marginTop: '0.35rem', color: '#475569' }}>
+                      Pod CPU: {formatOptionalVmCpu(stage.live_cpu_millis)}
+                      {' | '}
+                      Pod memory: {formatOptionalVmMemory(stage.live_memory_mib)}
+                    </div>
+                    {stage.live_metrics_error && (
+                      <div style={{ marginTop: '0.35rem', color: '#786f63', fontSize: '0.875rem' }}>
+                        Metrics unavailable: {stage.live_metrics_error}
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
