@@ -1014,7 +1014,19 @@ class KubernetesPipelineRunner:
         initial_inputs: List[Dict[str, Any]],
         outputs_by_stage: Dict[str, List[Dict[str, Any]]],
     ) -> List[Dict[str, Any]]:
-        artifacts: List[Dict[str, Any]] = [dict(item) for item in initial_inputs]
+        stage_tool = spec.get("tool") or {}
+        stage_tool_id = str(stage_tool.get("id") or "").strip().upper()
+        initial_has_explicit_bindings = self._has_explicit_binding_metadata(initial_inputs)
+
+        if stage_tool_id and initial_has_explicit_bindings:
+            artifacts = [
+                dict(item)
+                for item in initial_inputs
+                if str(item.get("tool_id") or "").strip().upper() == stage_tool_id
+            ]
+        else:
+            artifacts = [dict(item) for item in initial_inputs]
+
         seen_keys = {
             (str(item.get("s3_key") or ""), str(item.get("filename") or ""))
             for item in artifacts
