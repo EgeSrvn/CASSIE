@@ -4624,28 +4624,81 @@ exit "$CASSIE_STATUS"
                     pod_name = self._get_job_pod_name(stage_job_name)
                     snapshot["pod_name"] = pod_name or None
 
-                if pod_name:
-                    pod_result = self._run_kubectl(
-                        ["get", "pod", pod_name, "-n", namespace, "-o", "json"],
-                        timeout=60,
+                pod_names = self._stage_pod_names(
+                    job_id=job_id,
+                    execution_id=getattr(execution, "id", None),
+                    stage_number=stage.get("stage_number"),
+                    namespace=namespace,
+                    fallback_pod_name=pod_name,
+                    stage_job_name=stage_job_name,
+                )
+                live_pods: List[Dict[str, Any]] = []
+                for current_pod_name in pod_names:
+                    pod_snapshot = self._get_pod_runtime_snapshot(
+                        current_pod_name,
+                        namespace,
+                        collect_usage=str(stage.get("status") or "").strip().lower() == "running",
                     )
-                    if pod_result.returncode == 0:
-                        try:
-                            pod_payload = json.loads(pod_result.stdout)
-                            status_payload = pod_payload.get("status", {}) or {}
-                            snapshot["raw_pod_status"] = status_payload
-                            snapshot["pod_phase"] = status_payload.get("phase")
-                        except json.JSONDecodeError as exc:
-                            errors.append(f"{pod_name}: could not parse Kubernetes pod payload ({exc})")
-                    else:
-                        stderr = (pod_result.stderr or pod_result.stdout or "").strip()
-                        if stderr and "NotFound" not in stderr:
-                            errors.append(f"{pod_name}: {stderr}")
+                    if pod_snapshot:
+                        live_pods.append(pod_snapshot)
 
-                    if str(stage.get("status") or "").strip().lower() == "running":
-                        usage = self._get_pod_container_usage(pod_name, namespace, container_name="tool")
-                        if usage:
-                            snapshot.update(usage)
+                if live_pods:
+                    snapshot["live_pods"] = live_pods
+                    snapshot["pod_name"] = live_pods[0].get("pod_name") or snapshot.get("pod_name")
+                    snapshot["pod_phase"] = live_pods[0].get("pod_phase") or snapshot.get("pod_phase")
+                    snapshot["raw_pod_status"] = live_pods[0].get("raw_pod_status")
+                    live_cpu_millis = sum(
+                        int(container.get("live_cpu_millis") or 0)
+                        for pod in live_pods
+                        for container in (pod.get("containers") or [])
+                    )
+                    live_memory_mib = sum(
+                        int(container.get("live_memory_mib") or 0)
+                        for pod in live_pods
+                        for container in (pod.get("containers") or [])
+                    )
+                    has_cpu_metric = any(
+                        isinstance(container.get("live_cpu_millis"), (int, float))
+                        for pod in live_pods
+                        for container in (pod.get("containers") or [])
+                    )
+                    has_memory_metric = any(
+                        isinstance(container.get("live_memory_mib"), (int, float))
+                        for pod in live_pods
+                        for container in (pod.get("containers") or [])
+                    )
+                    if has_cpu_metric:
+                        snapshot["live_cpu_millis"] = live_cpu_millis
+                    if has_memory_metric:
+                        snapshot["live_memory_mib"] = live_memory_mib
+                    metrics_errors = [
+                        str(container.get("live_metrics_error") or "").strip()
+                        for pod in live_pods
+                        for container in (pod.get("containers") or [])
+                        if str(container.get("live_metrics_error") or "").strip()
+                    ]
+                    if metrics_errors:
+                        snapshot["live_metrics_error"] = metrics_errors[0]
+
+                if snapshot.get("pod_name"):
+                    pod_name = str(snapshot.get("pod_name") or "")
+                    if snapshot.get("raw_pod_status") is None:
+                        pod_result = self._run_kubectl(
+                            ["get", "pod", pod_name, "-n", namespace, "-o", "json"],
+                            timeout=60,
+                        )
+                        if pod_result.returncode == 0:
+                            try:
+                                pod_payload = json.loads(pod_result.stdout)
+                                status_payload = pod_payload.get("status", {}) or {}
+                                snapshot["raw_pod_status"] = status_payload
+                                snapshot["pod_phase"] = status_payload.get("phase")
+                            except json.JSONDecodeError as exc:
+                                errors.append(f"{pod_name}: could not parse Kubernetes pod payload ({exc})")
+                        else:
+                            stderr = (pod_result.stderr or pod_result.stdout or "").strip()
+                            if stderr and "NotFound" not in stderr:
+                                errors.append(f"{pod_name}: {stderr}")
 
                     init_logs = self._run_kubectl(
                         ["logs", pod_name, "-n", namespace, "-c", "fetch-inputs", "--tail=120"],
@@ -4676,6 +4729,107 @@ exit "$CASSIE_STATUS"
             "errors": errors,
         }
 
+    def _stage_pod_names(
+        self,
+        *,
+        job_id: int,
+        execution_id: Any,
+        stage_number: Any,
+        namespace: str,
+        fallback_pod_name: str,
+        stage_job_name: str,
+    ) -> List[str]:
+        pod_names: List[str] = []
+        seen: set[str] = set()
+
+        def add_name(name: str) -> None:
+            cleaned = str(name or "").strip()
+            if cleaned and cleaned not in seen:
+                pod_names.append(cleaned)
+                seen.add(cleaned)
+
+        add_name(fallback_pod_name)
+        if stage_job_name:
+            add_name(self._get_job_pod_name(stage_job_name))
+
+        selector_parts = [f"cassie/job-id={job_id}"]
+        if execution_id is not None:
+            selector_parts.append(f"cassie/execution-id={execution_id}")
+        if stage_number is not None:
+            selector_parts.append(f"cassie/stage={stage_number}")
+
+        result = self._run_kubectl(
+            ["get", "pods", "-n", namespace, "-l", ",".join(selector_parts), "-o", "json"],
+            timeout=30,
+        )
+        if result.returncode != 0:
+            return pod_names
+
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return pod_names
+
+        for item in payload.get("items", []) or []:
+            metadata = item.get("metadata", {}) or {}
+            add_name(str(metadata.get("name") or ""))
+
+        return pod_names
+
+    def _get_pod_runtime_snapshot(
+        self,
+        pod_name: str,
+        namespace: str,
+        *,
+        collect_usage: bool,
+    ) -> Optional[Dict[str, Any]]:
+        pod_result = self._run_kubectl(
+            ["get", "pod", pod_name, "-n", namespace, "-o", "json"],
+            timeout=30,
+        )
+        if pod_result.returncode != 0:
+            return None
+
+        try:
+            pod_payload = json.loads(pod_result.stdout)
+        except json.JSONDecodeError:
+            return None
+
+        status_payload = pod_payload.get("status", {}) or {}
+        containers: List[Dict[str, Any]] = []
+        for status_entry in (
+            list(status_payload.get("initContainerStatuses", []) or [])
+            + list(status_payload.get("containerStatuses", []) or [])
+        ):
+            if not isinstance(status_entry, dict):
+                continue
+            container_name = str(status_entry.get("name") or "").strip()
+            if not container_name:
+                continue
+            state_payload = status_entry.get("state") if isinstance(status_entry.get("state"), dict) else {}
+            state = next((name for name in ("running", "waiting", "terminated") if state_payload.get(name)), "unknown")
+            container_snapshot: Dict[str, Any] = {
+                "name": container_name,
+                "state": state,
+                "ready": bool(status_entry.get("ready")),
+                "restart_count": int(status_entry.get("restartCount") or 0),
+                "live_cpu_millis": None,
+                "live_memory_mib": None,
+                "live_metrics_error": None,
+            }
+            if collect_usage and state == "running":
+                usage = self._get_pod_container_usage(pod_name, namespace, container_name=container_name)
+                if usage:
+                    container_snapshot.update(usage)
+            containers.append(container_snapshot)
+
+        return {
+            "pod_name": pod_name,
+            "pod_phase": status_payload.get("phase"),
+            "raw_pod_status": status_payload,
+            "containers": containers,
+        }
+
     def _get_pod_container_usage(
         self,
         pod_name: str,
@@ -4689,6 +4843,8 @@ exit "$CASSIE_STATUS"
         )
         if result.returncode != 0:
             message = (result.stderr or result.stdout or "").strip()
+            if self._is_transient_pod_metrics_error(message):
+                return {"live_metrics_error": None}
             fallback_usage = self._get_pod_container_cgroup_usage(
                 pod_name,
                 namespace,
@@ -4715,6 +4871,22 @@ exit "$CASSIE_STATUS"
             }
 
         return {"live_metrics_error": f"No live metrics found for container {container_name}."}
+
+    def _is_transient_pod_metrics_error(self, message: str) -> bool:
+        normalized = str(message or "").strip().lower()
+        if not normalized:
+            return False
+        return any(
+            marker in normalized
+            for marker in (
+                "notfound",
+                "not found",
+                "container not found",
+                "pod not found",
+                "unable to upgrade connection",
+                "container is not valid for pod",
+            )
+        )
 
     def _get_pod_container_cgroup_usage(
         self,
@@ -4754,6 +4926,8 @@ printf '%s %s %s\n' "${CPU_START:-0}" "${CPU_END:-0}" "${MEMORY_BYTES:-0}"
         elapsed_seconds = max(0.001, time.monotonic() - started_at)
         if result.returncode != 0:
             message = (result.stderr or result.stdout or "").strip()
+            if self._is_transient_pod_metrics_error(message):
+                return {"live_metrics_error": None}
             return {"live_metrics_error": (message or "Container cgroup metrics are not available.")[:240]}
 
         parts = result.stdout.strip().split()

@@ -62,6 +62,19 @@ export interface JobExecutionStage {
   live_tool_logs?: string | null
   live_init_logs?: string | null
   pod_phase?: string | null
+  live_pods?: Array<{
+    pod_name: string
+    pod_phase?: string | null
+    containers?: Array<{
+      name: string
+      state?: string | null
+      ready?: boolean
+      restart_count?: number
+      live_cpu_millis?: number | null
+      live_memory_mib?: number | null
+      live_metrics_error?: string | null
+    }>
+  }> | null
 }
 
 export interface JobExecution {

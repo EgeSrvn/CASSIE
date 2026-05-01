@@ -283,10 +283,38 @@ export default function JobDetails() {
   }, 0)
   const activeMemoryMib = activeStages.reduce((sum, stage) => sum + (stage.memory_limit_mib || 0), 0)
   const activeStorageMib = activeStages.reduce((sum, stage) => sum + (stage.storage_limit_mib || 0), 0)
-  const liveCpuMillis = activeStages.reduce((sum, stage) => sum + (stage.live_cpu_millis || 0), 0)
-  const liveMemoryMib = activeStages.reduce((sum, stage) => sum + (stage.live_memory_mib || 0), 0)
-  const hasLivePodMetrics = activeStages.some(stage => (
-    typeof stage.live_cpu_millis === 'number' || typeof stage.live_memory_mib === 'number'
+  const activePodContainers = activeStages.flatMap(stage => {
+    const livePods = stage.live_pods || []
+    if (livePods.length === 0) {
+      return [{
+        stageId: stage.stage_id || String(stage.stage_number),
+        stageName: stage.tool_name || stage.tool_id,
+        podName: stage.pod_name || 'stage pod',
+        podPhase: stage.pod_phase || null,
+        containerName: 'tool',
+        state: stage.status,
+        liveCpuMillis: stage.live_cpu_millis,
+        liveMemoryMib: stage.live_memory_mib,
+        liveMetricsError: stage.live_metrics_error,
+      }]
+    }
+
+    return livePods.flatMap(pod => (pod.containers || []).map(container => ({
+      stageId: stage.stage_id || String(stage.stage_number),
+      stageName: stage.tool_name || stage.tool_id,
+      podName: pod.pod_name,
+      podPhase: pod.pod_phase || null,
+      containerName: container.name,
+      state: container.state || null,
+      liveCpuMillis: container.live_cpu_millis,
+      liveMemoryMib: container.live_memory_mib,
+      liveMetricsError: container.live_metrics_error,
+    })))
+  })
+  const liveCpuMillis = activePodContainers.reduce((sum, container) => sum + (container.liveCpuMillis || 0), 0)
+  const liveMemoryMib = activePodContainers.reduce((sum, container) => sum + (container.liveMemoryMib || 0), 0)
+  const hasLivePodMetrics = activePodContainers.some(container => (
+    typeof container.liveCpuMillis === 'number' || typeof container.liveMemoryMib === 'number'
   ))
   const resourceLimits = {
     cpuMillis: selectedVMDetails?.available_cpu_millis || Math.max(activeCpuMillis, 0),
@@ -1237,6 +1265,26 @@ export default function JobDetails() {
                       {' | '}
                       Pod memory: {formatOptionalVmMemory(stage.live_memory_mib)}
                     </div>
+                    {(stage.live_pods || []).length > 0 && (
+                      <div style={{ marginTop: '0.75rem', display: 'grid', gap: '0.5rem' }}>
+                        {(stage.live_pods || []).map(pod => (
+                          <div key={pod.pod_name} style={{ padding: '0.65rem 0.75rem', borderRadius: '8px', border: '1px solid #dbe5f0', backgroundColor: '#ffffff' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem', flexWrap: 'wrap', color: '#334155' }}>
+                              <strong>{pod.pod_name}</strong>
+                              <span>{pod.pod_phase || 'Unknown'}</span>
+                            </div>
+                            {(pod.containers || []).map(container => (
+                              <div key={`${pod.pod_name}-${container.name}`} style={{ marginTop: '0.35rem', color: '#475569', fontSize: '0.9rem' }}>
+                                {container.name} ({container.state || 'unknown'}): CPU {formatOptionalVmCpu(container.live_cpu_millis)}
+                                {' | '}
+                                Memory {formatOptionalVmMemory(container.live_memory_mib)}
+                                {container.live_metrics_error ? ` | ${container.live_metrics_error}` : ''}
+                              </div>
+                            ))}
+                          </div>
+                        ))}
+                      </div>
+                    )}
                     {stage.live_metrics_error && (
                       <div style={{ marginTop: '0.35rem', color: '#786f63', fontSize: '0.875rem' }}>
                         Metrics unavailable: {stage.live_metrics_error}

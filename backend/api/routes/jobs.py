@@ -18,7 +18,7 @@ from datetime import datetime
 from pydantic import BaseModel, Field
 import asyncio
 import json
-import os
+import threading
 import time
 # Use real JWT auth (Task 5.4 - now fixed)
 from backend.api.routes.auth import get_current_user, get_auth_context, AuthContext
@@ -274,6 +274,21 @@ def _cleanup_cancelled_job_resources(
     )
 
 
+def _start_cleanup_thread(label: str, target, **kwargs) -> None:
+    def _run() -> None:
+        try:
+            target(**kwargs)
+        except Exception as cleanup_error:
+            logger.warning(
+                "Asynchronous cleanup task %s failed: %s",
+                label,
+                cleanup_error,
+                exc_info=True,
+            )
+
+    threading.Thread(target=_run, name=f"cassie-cleanup-{label}", daemon=True).start()
+
+
 def _schedule_queued_jobs_safely(vm_name: Optional[str]) -> None:
     try:
         asyncio.run(schedule_queued_jobs(vm_name))
@@ -293,72 +308,32 @@ def _preserve_deleted_job_input_files(
     username: str,
     input_files: List[Any],
 ) -> int:
-    """Detach job input records and copy their objects to the user's staging area."""
+    """Detach job input records so their underlying objects stay in user storage."""
     if not input_files:
         return 0
 
-    from backend.api.services.minio_client import get_minio_client
+    file_ids = [
+        int(getattr(file_record, "id"))
+        for file_record in input_files
+        if getattr(file_record, "id", None) is not None
+    ]
+    if not file_ids:
+        return 0
 
-    minio_client = get_minio_client()
-    preserved_count = 0
     with get_db_connection() as conn:
         cur = conn.cursor()
         try:
-            for file_record in input_files:
-                source_key = str(getattr(file_record, "s3_key", "") or "").strip()
-                filename = os.path.basename(str(getattr(file_record, "filename", "") or "input"))
-                file_id = int(getattr(file_record, "id"))
-                if not source_key:
-                    continue
-
-                destination_key = f"staging/{user_id}/preserved_job_{job_id}_{file_id}_{filename}"
-                if source_key != destination_key:
-                    try:
-                        minio_client.copy_file(
-                            user_id=user_id,
-                            source_s3_key=source_key,
-                            destination_s3_key=destination_key,
-                            username=username,
-                        )
-                    except Exception as copy_error:
-                        logger.warning(
-                            "Could not copy input file %s for deleted job %s into staging. "
-                            "Detaching the database record without blocking job deletion: %s",
-                            file_id,
-                            job_id,
-                            copy_error,
-                            exc_info=True,
-                        )
-                        destination_key = source_key
-
-                cur.execute(
-                    """
-                    SELECT id
-                    FROM files
-                    WHERE job_id IS NULL
-                      AND s3_key = %s
-                      AND id <> %s
-                    LIMIT 1
-                    """,
-                    (destination_key, file_id),
-                )
-                if cur.fetchone():
-                    cur.execute("DELETE FROM files WHERE id = %s", (file_id,))
-                    preserved_count += cur.rowcount
-                    continue
-
-                cur.execute(
-                    """
-                    UPDATE files
-                    SET job_id = NULL,
-                        s3_key = %s,
-                        file_type = 'input'
-                    WHERE id = %s
-                    """,
-                    (destination_key, file_id),
-                )
-                preserved_count += cur.rowcount
-
+            cur.execute(
+                """
+                UPDATE files
+                SET job_id = NULL,
+                    file_type = 'input'
+                WHERE user_id = %s
+                  AND id = ANY(%s)
+                """,
+                (user_id, file_ids),
+            )
+            preserved_count = cur.rowcount
             conn.commit()
             return preserved_count
         except Exception:
@@ -1315,6 +1290,7 @@ async def list_job_executions(
                         merged_stage["live_cpu_millis"] = runtime_stage.get("live_cpu_millis")
                         merged_stage["live_memory_mib"] = runtime_stage.get("live_memory_mib")
                         merged_stage["live_metrics_error"] = runtime_stage.get("live_metrics_error")
+                        merged_stage["live_pods"] = runtime_stage.get("live_pods")
                         merged_stages.append(merged_stage)
                     parameters_used["stages"] = merged_stages
 
@@ -1386,12 +1362,17 @@ async def cancel_job_endpoint(
         except Exception as billing_error:
             logger.warning("Failed to settle billing after cancelling job %s: %s", job_id, billing_error, exc_info=True)
 
-        background_tasks.add_task(
+        _start_cleanup_thread(
+            f"cancel-{job_id}",
             _cleanup_cancelled_job_resources,
             job_id=job_id,
             executions=executions,
         )
-        background_tasks.add_task(_schedule_queued_jobs_safely, job.vm_name)
+        _start_cleanup_thread(
+            f"schedule-after-cancel-{job_id}",
+            _schedule_queued_jobs_safely,
+            vm_name=job.vm_name,
+        )
 
         message = "Job cancelled. Kubernetes cleanup and queued job scheduling are continuing in the background."
 
@@ -1834,7 +1815,8 @@ async def delete_job_endpoint(
             error_data = not_found_response("Job", job_id)
             return JSONResponse(content=error_data, status_code=status.HTTP_404_NOT_FOUND)
 
-        background_tasks.add_task(
+        _start_cleanup_thread(
+            f"delete-{job_id}",
             _cleanup_deleted_job_resources,
             job_id=job_id,
             user_id=current_user.id,
