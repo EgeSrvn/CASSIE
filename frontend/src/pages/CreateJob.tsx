@@ -95,10 +95,10 @@ const getManualInputBlockDefaultName = (block: ManualToolInputBlock): string => 
 }
 
 const PIPELINE_STAGE_NODE_TYPES = new Set(['tool', 'checkpoint'])
-const CREATE_JOB_DRAFT_STORAGE_KEY = 'cassie:create-job-draft:v4'
+const CREATE_JOB_DRAFT_STORAGE_KEY = 'cassie:create-job-draft:v6'
 
 interface CreateJobDraft {
-  version: 4
+  version: 6
   jobName: string
   selectionMode: 'tools' | 'pipeline'
   selectedTools: number[]
@@ -115,7 +115,6 @@ interface CreateJobDraft {
   inputBlockNames: Record<string, string>
   manualToolFlagValues: Record<string, Record<string, FlagValue>>
   selectedVM: string
-  reviewPipelinePreview: JobPipelineVisualization | null
   executionDataImprovementConsent?: boolean
 }
 
@@ -145,7 +144,7 @@ const readCreateJobDraft = (): CreateJobDraft | null => {
     }
 
     const parsed = JSON.parse(rawDraft)
-    if (!parsed || parsed.version !== 4) {
+    if (!parsed || parsed.version !== 6) {
       return null
     }
 
@@ -279,7 +278,6 @@ export default function CreateJob() {
   const [currentLevel, setCurrentLevel] = useState<BuilderLevel>(() => storedDraftRef.current?.currentLevel || 1)
   const [slideDirection, setSlideDirection] = useState<SlideDirection>('forward')
   const [inputBlockNames, setInputBlockNames] = useState<Record<string, string>>(() => storedDraftRef.current?.inputBlockNames || {})
-  const [persistedReviewPipelinePreview, setPersistedReviewPipelinePreview] = useState<JobPipelineVisualization | null>(() => storedDraftRef.current?.reviewPipelinePreview || null)
   const [backendReviewPipelinePreview, setBackendReviewPipelinePreview] = useState<JobPipelineVisualization | null>(null)
   const [loadingReviewPipelinePreview, setLoadingReviewPipelinePreview] = useState(false)
   const [reviewPipelinePreviewError, setReviewPipelinePreviewError] = useState('')
@@ -1886,13 +1884,6 @@ export default function CreateJob() {
   )
 
   const effectiveReviewPipelinePreview = backendReviewPipelinePreview
-    || persistedReviewPipelinePreview
-
-  useEffect(() => {
-    if (effectiveReviewPipelinePreview) {
-      setPersistedReviewPipelinePreview(effectiveReviewPipelinePreview)
-    }
-  }, [effectiveReviewPipelinePreview])
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -1903,7 +1894,7 @@ export default function CreateJob() {
     }
 
     const draft: CreateJobDraft = {
-      version: 4,
+      version: 6,
       jobName,
       selectionMode,
       selectedTools,
@@ -1920,7 +1911,6 @@ export default function CreateJob() {
       inputBlockNames,
       manualToolFlagValues,
       selectedVM,
-      reviewPipelinePreview: effectiveReviewPipelinePreview || persistedReviewPipelinePreview,
       executionDataImprovementConsent,
     }
 
@@ -1933,7 +1923,6 @@ export default function CreateJob() {
     jobName,
     manualToolFlagValues,
     openPriorityGroups,
-    persistedReviewPipelinePreview,
     pipelineInputMappings,
     pipelineRequirements,
     priorityGroups,
@@ -2352,7 +2341,6 @@ export default function CreateJob() {
                   setSelectedPipelineDetails(null)
                   setPipelineRequirements(null)
                   setPipelineInputMappings({})
-                  setPersistedReviewPipelinePreview(null)
                 }}
                 className={selectionMode === 'tools' ? 'btn-primary' : 'btn-secondary'}
                 style={{ padding: '0.5rem 1rem' }}
@@ -2395,7 +2383,6 @@ export default function CreateJob() {
                             setPipelineInputMappings({})
                             setInputBlockNames({})
                             setPipelineRequirements(null)
-                            setPersistedReviewPipelinePreview(null)
                           }
                           setSelectedPipelineDetails(pipeline)
                           setSelectedPipelineId(pipeline.id)
