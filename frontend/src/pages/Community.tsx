@@ -9,7 +9,7 @@ import {
   reportPipeline,
   votePipeline,
 } from '../services/pipelineService'
-import { getToken } from '../services/authService'
+import { getToken, isDemoToken } from '../services/authService'
 import { getAvailableTools } from '../services/toolService'
 import Navigation from '../components/Navigation'
 import ReportDialog from '../components/ReportDialog'
@@ -36,6 +36,7 @@ const formatToolTypeLabel = (toolType: string): string => {
 export default function Community() {
   const ITEMS_PER_PAGE = 10
   const navigate = useNavigate()
+  const isDemo = isDemoToken()
   const [allPipelines, setAllPipelines] = useState<Pipeline[]>([])
   const [loading, setLoading] = useState(true)
   const [sortBy, setSortBy] = useState<'recent' | 'popular'>('recent')
@@ -223,6 +224,10 @@ export default function Community() {
       navigate('/login')
       return
     }
+    if (isDemo) {
+      alert('Saving community pipelines is disabled in demo mode.')
+      return
+    }
 
     try {
       setSavingPipelineId(pipelineId)
@@ -255,6 +260,10 @@ export default function Community() {
       navigate('/login')
       return
     }
+    if (isDemo) {
+      alert('Voting is disabled in demo mode.')
+      return
+    }
 
     try {
       const summary = await votePipeline(pipelineId, voteType)
@@ -268,6 +277,10 @@ export default function Community() {
     e.stopPropagation()
     if (!isAuthenticated) {
       navigate('/login')
+      return
+    }
+    if (isDemo) {
+      alert('Reporting is disabled in demo mode.')
       return
     }
     setReportingPipeline(pipeline)

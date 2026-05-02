@@ -5,7 +5,7 @@ import Navigation from '../components/Navigation'
 import ReportDialog from '../components/ReportDialog'
 import SortDropdown from '../components/SortDropdown'
 import TrashIcon from '../components/TrashIcon'
-import { getCurrentUser, getToken } from '../services/authService'
+import { getCurrentUser, getToken, isDemoToken } from '../services/authService'
 import { extractApiErrorMessage } from '../services/apiClient'
 import {
   ForumComment,
@@ -82,6 +82,7 @@ export default function ForumThread() {
   const { threadId } = useParams()
   const numericThreadId = Number(threadId)
   const isAuthenticated = !!getToken()
+  const isDemo = isDemoToken()
   const [thread, setThread] = useState<ForumThreadDetail | null>(null)
   const [currentUserId, setCurrentUserId] = useState<number | null>(null)
   const [loading, setLoading] = useState(true)
@@ -199,6 +200,10 @@ export default function ForumThread() {
       navigate('/login')
       return
     }
+    if (isDemo) {
+      setError('Commenting is disabled in demo mode.')
+      return
+    }
 
     setReplyTarget(target)
     setReplyBody('')
@@ -294,6 +299,10 @@ export default function ForumThread() {
       navigate('/login')
       return
     }
+    if (isDemo) {
+      setError('Commenting is disabled in demo mode.')
+      return
+    }
 
     try {
       setSubmittingComment(true)
@@ -329,6 +338,10 @@ export default function ForumThread() {
     }
     if (!isAuthenticated) {
       navigate('/login')
+      return
+    }
+    if (isDemo) {
+      setError('Commenting is disabled in demo mode.')
       return
     }
 
@@ -417,6 +430,10 @@ export default function ForumThread() {
       navigate('/login')
       return
     }
+    if (isDemo) {
+      setError('Voting is disabled in demo mode.')
+      return
+    }
     if (!thread) {
       return
     }
@@ -431,6 +448,10 @@ export default function ForumThread() {
   const handleVoteComment = async (commentId: number, voteType: 'upvote' | 'downvote') => {
     if (!isAuthenticated) {
       navigate('/login')
+      return
+    }
+    if (isDemo) {
+      setError('Voting is disabled in demo mode.')
       return
     }
     try {
@@ -456,6 +477,10 @@ export default function ForumThread() {
       navigate('/login')
       return
     }
+    if (isDemo) {
+      setError('Reporting is disabled in demo mode.')
+      return
+    }
     if (!thread) {
       return
     }
@@ -465,6 +490,10 @@ export default function ForumThread() {
   const openReportComment = (commentId: number) => {
     if (!isAuthenticated) {
       navigate('/login')
+      return
+    }
+    if (isDemo) {
+      setError('Reporting is disabled in demo mode.')
       return
     }
     setReportTarget({ type: 'comment', id: commentId })

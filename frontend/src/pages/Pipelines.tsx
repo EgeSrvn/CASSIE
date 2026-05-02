@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { getPipelines, deletePipeline, sharePipeline, unsharePipeline, Pipeline } from '../services/pipelineService'
-import { getToken } from '../services/authService'
+import { getToken, isDemoToken } from '../services/authService'
 import Navigation from '../components/Navigation'
 import TrashIcon from '../components/TrashIcon'
 import '../styles/globals.css'
@@ -14,9 +14,14 @@ export default function Pipelines() {
   const [error, setError] = useState('')
   const [authRequired, setAuthRequired] = useState(false)
   const isAuthenticated = !!getToken()
+  const isDemo = isDemoToken()
 
   const handleCreatePipeline = () => {
     if (isAuthenticated) {
+      if (isDemo) {
+        alert('Saving pipelines is disabled in demo mode.')
+        return
+      }
       navigate('/pipelines/builder')
     } else {
       navigate('/login')
@@ -39,6 +44,9 @@ export default function Pipelines() {
       if (err.response?.status === 401) {
         setAuthRequired(true)
         setPipelines([])
+        if (isDemo) {
+          setError('Demo mode can browse public examples, but private pipeline storage is disabled.')
+        }
       } else {
         setError(err.response?.data?.message || err.message || 'Failed to load pipelines')
       }
@@ -109,7 +117,9 @@ export default function Pipelines() {
           {pipelines.length === 0 ? (
             <div className="empty-state">
               <p>
-                {authRequired || !isAuthenticated
+                {isDemo
+                  ? 'Demo mode can browse templates and public examples, but private pipeline storage is disabled.'
+                  : authRequired || !isAuthenticated
                   ? 'Login to view and save your own pipelines.'
                   : 'No pipelines yet. Create your first pipeline or start from a starter template.'}
               </p>

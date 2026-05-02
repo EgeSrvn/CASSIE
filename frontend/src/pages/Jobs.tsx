@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { getJobs, Job, deleteJob, cancelJob } from '../services/jobService'
-import { getToken } from '../services/authService'
+import { getToken, isDemoToken } from '../services/authService'
 import { clearPendingJobUploads } from '../services/pendingJobUploadService'
 import { formatLocalDateTime } from '../utils/dateTime'
 import Navigation from '../components/Navigation'
@@ -17,6 +17,7 @@ export default function Jobs() {
   const [actioningJobId, setActioningJobId] = useState<number | null>(null)
   const navigate = useNavigate()
   const isAuthenticated = !!getToken()
+  const isDemo = isDemoToken()
 
   const handleCreateJob = () => {
     if (isAuthenticated) {
@@ -34,7 +35,7 @@ export default function Jobs() {
       setError('')
     } catch (err: any) {
       if (err.response?.status === 401) {
-        setError('Please login to view your jobs')
+        setError(isDemo ? 'Demo mode does not include a private jobs history.' : 'Please login to view your jobs')
         setJobs([])
       } else {
         setError('Failed to load jobs')

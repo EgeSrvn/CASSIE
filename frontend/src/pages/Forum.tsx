@@ -10,13 +10,14 @@ import {
   reportForumThread,
   voteForumThread,
 } from '../services/forumService'
-import { getToken } from '../services/authService'
+import { getToken, isDemoToken } from '../services/authService'
 import { extractApiErrorMessage } from '../services/apiClient'
 import '../styles/globals.css'
 
 export default function Forum() {
   const navigate = useNavigate()
   const isAuthenticated = !!getToken()
+  const isDemo = isDemoToken()
   const [threads, setThreads] = useState<ForumThreadSummary[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -77,6 +78,10 @@ export default function Forum() {
       navigate('/login')
       return
     }
+    if (isDemo) {
+      setError('Voting is disabled in demo mode.')
+      return
+    }
     try {
       const summary = await voteForumThread(threadId, voteType)
       applyThreadEngagement(threadId, summary)
@@ -89,6 +94,10 @@ export default function Forum() {
     event.stopPropagation()
     if (!isAuthenticated) {
       navigate('/login')
+      return
+    }
+    if (isDemo) {
+      setError('Reporting is disabled in demo mode.')
       return
     }
     setReportingThread(thread)

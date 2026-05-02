@@ -17,7 +17,7 @@ import ReactFlow, {
 } from 'reactflow'
 import 'reactflow/dist/style.css'
 import { createPipeline, updatePipeline, getPipeline, Pipeline } from '../services/pipelineService'
-import { getToken, isTokenExpired, logout } from '../services/authService'
+import { getToken, isDemoToken, isTokenExpired, logout } from '../services/authService'
 import { StarterPipelineTemplate } from '../services/starterPipelines'
 import { EditableFlagDefinition, getAvailableTools, Tool } from '../services/toolService'
 import { configCatPipelineBuilder } from '../../cats/config_cat_pipeline_builder'
@@ -1054,10 +1054,16 @@ export default function PipelineBuilder() {
 
   const handleSave = async () => {
     const currentToken = getToken()
+    const isDemo = isDemoToken(currentToken)
 
     if (!currentToken) {
       alert('Please log in to save this pipeline.')
       navigate('/login')
+      return
+    }
+
+    if (isDemo) {
+      alert('Saving pipelines is disabled in demo mode.')
       return
     }
 
@@ -1122,6 +1128,10 @@ export default function PipelineBuilder() {
     } catch (err: any) {
       console.error('Failed to save pipeline:', err)
       if (err.response?.status === 401) {
+        if (isDemoToken()) {
+          alert('Saving pipelines is disabled in demo mode.')
+          return
+        }
         alert('Your session is no longer valid. Please log in again to save this pipeline.')
         navigate('/login')
         return
@@ -1333,8 +1343,12 @@ export default function PipelineBuilder() {
                   ) : (
                     <button
                       onClick={() => {
-                        alert('Please log in to save this pipeline.')
-                        navigate('/login')
+                        if (isDemoToken()) {
+                          alert('Saving pipelines is disabled in demo mode.')
+                        } else {
+                          alert('Please log in to save this pipeline.')
+                          navigate('/login')
+                        }
                       }}
                       className="btn-primary"
                     >

@@ -2,6 +2,7 @@ import apiClient, { extractApiErrorMessage } from './apiClient'
 
 const TOKEN_KEY = 'cassie_token'
 const USER_KEY = 'cassie_user'
+const DEMO_SESSION_KEY = 'cassie_demo_session'
 const AUTH_CHANGE_EVENT = 'auth-change'
 
 export interface LoginRequest {
@@ -345,6 +346,7 @@ export const isTokenExpired = (token: string | null = getToken()): boolean => {
 export const clearToken = (): void => {
   localStorage.removeItem(TOKEN_KEY)
   localStorage.removeItem(USER_KEY)
+  localStorage.removeItem(DEMO_SESSION_KEY)
   window.dispatchEvent(new Event(AUTH_CHANGE_EVENT))
 }
 
@@ -364,6 +366,12 @@ export interface DemoAuthResponse {
   access_token: string
   token_type: string
   role: string
+}
+
+export interface DemoSessionRecord {
+  token: string
+  demo_code: string
+  user_type: 'demo'
 }
 
 export const getDemoUser = (): User => ({
@@ -403,6 +411,15 @@ export const isDemoToken = (token: string | null = getToken()): boolean => {
   return payload?.is_demo === true && payload?.token_type === 'demo_session'
 }
 
+const setDemoSession = (token: string, demoCode: string): void => {
+  const record: DemoSessionRecord = {
+    token,
+    demo_code: demoCode.trim().toUpperCase(),
+    user_type: 'demo',
+  }
+  localStorage.setItem(DEMO_SESSION_KEY, JSON.stringify(record))
+}
+
 /**
  * Submit a demo code and store the resulting demo session token.
  * On success the `auth-change` event is dispatched so UI updates.
@@ -415,6 +432,7 @@ export const demoLogin = async (code: string): Promise<DemoAuthResponse> => {
     )
     if (response.data.success && response.data.data.access_token) {
       setStoredUser(null)
+      setDemoSession(response.data.data.access_token, code)
       setToken(response.data.data.access_token)
       return response.data.data
     }

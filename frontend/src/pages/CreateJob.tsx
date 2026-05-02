@@ -32,7 +32,7 @@ import { getPipelines, getPipeline, Pipeline, getPipelineRequirements, PipelineR
 import { getDataFileTree } from '../services/dataFileService'
 import { FolderTreeItem, FileItem } from '../services/folderService'
 
-import { getToken } from '../services/authService'
+import { getToken, isDemoToken } from '../services/authService'
 import { getCreateJobCatConfig } from '../../cats/config_cat_job_builder'
 import CatCornerCard from '../components/CatCornerCard'
 import Navigation from '../components/Navigation'
@@ -2493,6 +2493,11 @@ export default function CreateJob() {
     // Users can configure the job, but need to login to create/start it
     if (!isAuthenticated) {
       navigate('/login')
+      return
+    }
+
+    if (isDemoToken()) {
+      setError('Submitting jobs is disabled in demo mode.')
       return
     }
     
