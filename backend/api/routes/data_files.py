@@ -18,7 +18,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 import requests
 from typing import Optional, List
-from backend.api.routes.auth import get_current_user
+from backend.api.routes.auth import get_current_user, get_current_user_or_demo
 from backend.api.models.user_model import UserResponse
 from backend.api.services.data_file_service import (
     upload_data_file_from_path,
@@ -972,24 +972,26 @@ async def list_data_files(
 
 @router.get("/tree", response_model=dict)
 async def get_data_file_tree(
-    current_user: UserResponse = Depends(get_current_user)
+    current_user: UserResponse = Depends(get_current_user_or_demo)
 ):
     """
     Get folder tree with files.
     
     Args:
-        current_user: Current authenticated user
+        current_user: Current authenticated user (or demo user)
         
     Returns:
         JSONResponse: Folder tree with files
     """
     try:
         from backend.api.services.folder_service import get_folder_tree
-        await run_in_threadpool(
-            prune_missing_data_file_records,
-            current_user.id,
-            current_user.username,
-        )
+        # Skip pruning for demo users (they don't upload files)
+        if current_user.id != 0:
+            await run_in_threadpool(
+                prune_missing_data_file_records,
+                current_user.id,
+                current_user.username,
+            )
         tree = get_folder_tree(current_user.id)
         return success_response(
             data=tree,
