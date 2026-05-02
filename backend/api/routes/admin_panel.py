@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import tempfile
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from html import escape
@@ -1315,20 +1316,19 @@ def _collect_dashboard_data(selected_job_id: int | None = None) -> dict[str, Any
     }
 
     demo_files_rows = []
-    demo_data_root = Path(os.getenv("DEMO_DATA_ROOT", "mock/data"))
-    if demo_data_root.exists() and demo_data_root.is_dir():
-        for f in demo_data_root.iterdir():
-            if f.is_file():
-                try:
-                    stat = f.stat()
-                    demo_files_rows.append({
-                        "filename": f.name,
-                        "size": stat.st_size,
-                        "modified": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
-                    })
-                except Exception:
-                    pass
-    demo_files_rows.sort(key=lambda x: x["filename"])
+    try:
+        from backend.api.services.data_file_service import get_data_files_by_folder
+        files = get_data_files_by_folder(None, 0)
+        for f in files:
+            demo_files_rows.append({
+                "id": f.id,
+                "filename": f.filename,
+                "size": f.size_bytes,
+                "modified": getattr(f, "uploaded_at", None) or getattr(f, "created_at", None),
+            })
+        demo_files_rows.sort(key=lambda x: str(x["filename"] or "").lower())
+    except Exception as e:
+        logger.warning(f"Failed to load user 0 demo files: {e}")
 
     with get_db_connection() as conn:
         cur = conn.cursor()
@@ -1813,12 +1813,12 @@ def _dashboard_page(
 
     demo_files_rendered = [
         {
-            "filename": f'<code>{escape(f["filename"])}</code>',
+            "filename": f'<code>{escape(str(f["filename"] or ""))}</code>',
             "size": escape(_format_bytes(f["size"])),
             "modified": escape(_format_datetime(f["modified"])),
             "ops": (
                 f'<form class="inline-form" method="post" action="{escape(config.admin_panel.path)}/demo-files/delete">'
-                f'<input type="hidden" name="filename" value="{escape(f["filename"])}">'
+                f'<input type="hidden" name="file_id" value="{f["id"]}">'
                 f'<button type="submit" class="danger small-button">Delete</button>'
                 f'</form>'
             ),
@@ -2043,8 +2043,8 @@ def _dashboard_page(
       </div>
 
       <div class="section">
-        <h2>Demo Files (Mock Data)</h2>
-        <p>Upload and list physical demo files stored in the <code>DEMO_DATA_ROOT</code> (default: <code>mock/data/</code>). Upload a new <code>manifest.json</code> to update dataset definitions.</p>
+        <h2>Demo Files (User 0 Data)</h2>
+        <p>Upload and list files in User 0's data library. These are the files visible to Demo users.</p>
         <form method="post" action="{escape(config.admin_panel.path)}/demo-files/upload" enctype="multipart/form-data">
           <label for="demo_file">Select File</label>
           <input id="demo_file" name="file" type="file" required style="margin-bottom:0.5rem">
@@ -2474,21 +2474,30 @@ async def admin_panel_upload_demo_file(
     if not file.filename:
         return _admin_redirect(message="No file selected", error=True, tab="system")
 
-    demo_data_root = Path(os.getenv("DEMO_DATA_ROOT", "mock/data"))
-    try:
-        demo_data_root.mkdir(parents=True, exist_ok=True)
-        filename = Path(file.filename).name
-        if not filename:
-            return _admin_redirect(message="Invalid filename", error=True, tab="system")
-        file_path = demo_data_root / filename
+    filename = Path(file.filename).name
+    if not filename:
+        return _admin_redirect(message="Invalid filename", error=True, tab="system")
         
-        with file_path.open("wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+    temp_path = None
+    try:
+        from fastapi.concurrency import run_in_threadpool
+        
+        def _write_chunk(f, chunk_data):
+            f.write(chunk_data)
             
-        try:
-            # Ensure demo user exists
-            from backend.api.database.db_init import get_db_connection
-            from backend.api.services.user_service import hash_password
+        with tempfile.NamedTemporaryFile(delete=False, suffix=Path(filename).suffix) as temp_file:
+            temp_path = temp_file.name
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                await run_in_threadpool(_write_chunk, temp_file, chunk)
+            
+        # Ensure demo user exists
+        from backend.api.database.db_init import get_db_connection
+        from backend.api.services.user_service import hash_password
+        
+        def _ensure_demo_user():
             with get_db_connection() as conn:
                 cur = conn.cursor()
                 cur.execute("SELECT id FROM users WHERE id = 0")
@@ -2500,26 +2509,34 @@ async def admin_panel_upload_demo_file(
                     ''', (pwd_hash,))
                     conn.commit()
                 cur.close()
-                
-            # Process file directly to User 0's data storage
-            from backend.api.services.data_file_service import upload_data_file_from_path
-            file_format = None
-            if filename.endswith((".fastq", ".fastq.gz", ".fq", ".fq.gz")):
-                file_format = "fastq"
-            elif filename.endswith((".fasta", ".fasta.gz", ".fa", ".fa.gz")):
-                file_format = "fasta"
-                
-            upload_data_file_from_path(
-                user_id=0,
-                local_path=str(file_path),
-                filename=filename,
-                folder_id=None,
-                file_format=file_format
-            )
-        except Exception as sync_exc:
-            logger.error(f"Failed to sync uploaded demo file to user 0 storage: {sync_exc}")
+        
+        await run_in_threadpool(_ensure_demo_user)
+            
+        # Process file directly to User 0's data storage
+        from backend.api.services.data_file_service import upload_data_file_from_path
+        file_format = None
+        if filename.endswith((".fastq", ".fastq.gz", ".fq", ".fq.gz")):
+            file_format = "fastq"
+        elif filename.endswith((".fasta", ".fasta.gz", ".fa", ".fa.gz")):
+            file_format = "fasta"
+            
+        await run_in_threadpool(
+            upload_data_file_from_path,
+            user_id=0,
+            local_path=temp_path,
+            filename=filename,
+            folder_id=None,
+            file_format=file_format
+        )
     except Exception as exc:
+        logger.error(f"Failed to upload demo file: {exc}", exc_info=True)
         return _admin_redirect(message=f"Failed to upload file: {exc}", error=True, tab="system")
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
 
     return _admin_redirect(message=f"Uploaded {filename} to demo data", tab="system")
 
@@ -2527,32 +2544,23 @@ async def admin_panel_upload_demo_file(
 @router.post(f"{config.admin_panel.path}/demo-files/delete")
 async def admin_panel_delete_demo_file(
     request: Request,
-    filename: str = Form(...),
+    file_id: int = Form(...),
 ):
     ensure_admin_user()
     admin_user = _get_authenticated_admin(request)
     if not admin_user:
         return _admin_redirect(message="Please sign in again", error=True, tab="system")
 
-    demo_data_root = Path(os.getenv("DEMO_DATA_ROOT", "mock/data"))
     try:
-        clean_filename = Path(filename).name
-        if not clean_filename:
-            return _admin_redirect(message="Invalid filename", error=True, tab="system")
-        file_path = demo_data_root / clean_filename
-            
-        if file_path.exists() and file_path.is_file():
-            file_path.unlink()
-            
-        try:
-            from backend.api.services.data_file_service import get_data_files_by_folder, delete_data_file
-            files = get_data_files_by_folder(None, 0)
-            for f in files:
-                if f.filename == clean_filename:
-                    delete_data_file(f.id, 0)
-        except Exception as sync_exc:
-            logger.error(f"Failed to delete demo file from user 0 storage: {sync_exc}")
+        from fastapi.concurrency import run_in_threadpool
+        from backend.api.services.data_file_service import delete_data_file
+        
+        def _delete_sync():
+            delete_data_file(file_id, 0)
+                    
+        await run_in_threadpool(_delete_sync)
     except Exception as exc:
         return _admin_redirect(message=f"Failed to delete file: {exc}", error=True, tab="system")
 
-    return _admin_redirect(message=f"Deleted {clean_filename}", tab="system")
+    return _admin_redirect(message="Deleted demo file", tab="system")
+
