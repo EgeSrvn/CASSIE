@@ -1572,25 +1572,29 @@ def _render_demo_codes_section(message: str | None, *, error: bool) -> str:
 
     code_rows = [
         {
-            "masked": f'<code>{escape(c["code_prefix_masked"])}</code>',
+            "masked": f'<code>{escape(str(c.get("masked_code") or c.get("code_prefix_masked") or "-"))}</code>',
             "created": escape(_format_datetime(c.get("created_at"))),
             "expires": escape(_format_datetime(c.get("expires_at"))) if c.get("expires_at") else "Never",
             "status": (
                 f'<span class="{_status_class("completed")}">used</span>'
-                if c.get("used_at")
+                if c.get("used_at") or c.get("status") == "used"
                 else (
                     f'<span class="{_status_class("cancelled")}">deactivated</span>'
-                    if not c.get("is_active")
-                    else f'<span class="{_status_class("pending")}">available</span>'
+                    if c.get("status") == "deactivated" or not c.get("is_active")
+                    else (
+                        f'<span class="{_status_class("failed")}">expired</span>'
+                        if c.get("status") == "expired"
+                        else f'<span class="{_status_class("pending")}">available</span>'
+                    )
                 )
             ),
             "used_at": escape(_format_datetime(c.get("used_at"))) if c.get("used_at") else "-",
             "actions": (
                 f'<form class="inline-form" method="post" action="{escape(config.admin_panel.path)}/demo-codes/deactivate">'
-                f'<input type="hidden" name="code_id" value="{c["id"]}">'
+                f'<input type="hidden" name="code_id" value="{escape(str(c.get("id")))}">'
                 f'<button class="small-button danger" type="submit">Deactivate</button>'
                 f'</form>'
-                if c.get("is_active") and not c.get("used_at")
+                if c.get("id") is not None and c.get("is_active") and not c.get("used_at") and c.get("status") not in {"used", "deactivated", "expired"}
                 else "-"
             ),
         }
