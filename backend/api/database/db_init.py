@@ -514,96 +514,6 @@ def reset_connection_pool():
     print("[+] Connection pool reset. New connections will use updated configuration.")
 
 
-def sync_demo_files():
-    """
-    Sync mock data files to the storage backend (MinIO/S3) for the demo user (id=0)
-    so they automatically appear in the demo environment's data library.
-    """
-    if os.getenv("DEMO_MODE_ENABLED", "false").lower() not in {"1", "true", "yes"}:
-        return
-        
-    demo_data_root = os.getenv("DEMO_DATA_ROOT", "mock/data")
-    if not os.path.exists(demo_data_root):
-        print(f"[*] Demo data root '{demo_data_root}' not found. Skipping demo file sync.")
-        return
-        
-    print("[*] Syncing demo files to storage for demo users...")
-    
-    try:
-        from backend.api.services.minio_client import MinIOClient
-        minio_client = MinIOClient()
-        minio_client.ensure_user_bucket(0, "demo")
-    except Exception as e:
-        print(f"[!] Could not initialize storage client for demo sync: {e}")
-        return
-        
-    import hashlib
-    import os
-    
-    with get_db_connection() as conn:
-        cur = conn.cursor()
-        
-        # Ensure demo user exists
-        cur.execute("SELECT id FROM users WHERE id = 0")
-        if not cur.fetchone():
-            try:
-                from backend.api.services.user_service import hash_password
-                pwd_hash = hash_password("demo")
-            except Exception:
-                pwd_hash = "demo"
-                
-            cur.execute("""
-                INSERT INTO users (id, username, email, password_hash, bucket_name, is_admin, is_active, created_at, updated_at)
-                VALUES (0, 'demo', 'demo@example.com', %s, 'demo', false, true, NOW(), NOW())
-            """, (pwd_hash,))
-            conn.commit()
-            
-        for filename in os.listdir(demo_data_root):
-            if filename == "manifest.json" or filename.startswith("."):
-                continue
-                
-            filepath = os.path.join(demo_data_root, filename)
-            if not os.path.isfile(filepath):
-                continue
-                
-            # Check if file already exists in db for user 0
-            cur.execute("SELECT id FROM files WHERE user_id = 0 AND filename = %s AND file_type = 'input'", (filename,))
-            if cur.fetchone():
-                continue
-                
-            print(f"[*] Uploading demo file: {filename}...")
-            size_bytes = os.path.getsize(filepath)
-            
-            hash_md5 = hashlib.md5()
-            with open(filepath, "rb") as f:
-                for chunk in iter(lambda: f.read(4096), b""):
-                    hash_md5.update(chunk)
-            checksum = hash_md5.hexdigest()
-            
-            s3_key = f"data/0/{filename}"
-            
-            try:
-                minio_client.upload_file(0, filepath, s3_key, "demo")
-                
-                file_format = None
-                if filename.endswith((".fastq", ".fastq.gz", ".fq", ".fq.gz")):
-                    file_format = "fastq"
-                elif filename.endswith((".fasta", ".fasta.gz", ".fa", ".fa.gz")):
-                    file_format = "fasta"
-                    
-                cur.execute("""
-                    INSERT INTO files (user_id, filename, s3_key, file_type, file_format, size_bytes, checksum, uploaded_at, created_at, updated_at)
-                    VALUES (0, %s, %s, 'input', %s, %s, %s, NOW(), NOW(), NOW())
-                """, (filename, s3_key, file_format, size_bytes, checksum))
-                conn.commit()
-                print(f"[+] Successfully synced {filename}")
-            except Exception as e:
-                conn.rollback()
-                print(f"[!] Failed to sync {filename}: {e}")
-                
-        cur.close()
-
-
 def main():
     """
     Main function for running database initialization as a script.
@@ -632,9 +542,6 @@ def main():
         print("=" * 60)
         print("✅ Database initialization completed successfully!")
         print("=" * 60)
-        
-        # Sync demo files if enabled
-        sync_demo_files()
         
         # Run health check
         print()

@@ -2486,10 +2486,38 @@ async def admin_panel_upload_demo_file(
             shutil.copyfileobj(file.file, buffer)
             
         try:
-            from backend.api.database.db_init import sync_demo_files
-            sync_demo_files()
-        except Exception:
-            pass
+            # Ensure demo user exists
+            from backend.api.database.db_init import get_db_connection
+            from backend.api.services.user_service import hash_password
+            with get_db_connection() as conn:
+                cur = conn.cursor()
+                cur.execute("SELECT id FROM users WHERE id = 0")
+                if not cur.fetchone():
+                    pwd_hash = hash_password("demo")
+                    cur.execute('''
+                        INSERT INTO users (id, username, email, password_hash, bucket_name, is_admin, is_active, created_at, updated_at)
+                        VALUES (0, 'demo', 'demo@example.com', %s, 'demo', false, true, NOW(), NOW())
+                    ''', (pwd_hash,))
+                    conn.commit()
+                cur.close()
+                
+            # Process file directly to User 0's data storage
+            from backend.api.services.data_file_service import upload_data_file_from_path
+            file_format = None
+            if filename.endswith((".fastq", ".fastq.gz", ".fq", ".fq.gz")):
+                file_format = "fastq"
+            elif filename.endswith((".fasta", ".fasta.gz", ".fa", ".fa.gz")):
+                file_format = "fasta"
+                
+            upload_data_file_from_path(
+                user_id=0,
+                local_path=str(file_path),
+                filename=filename,
+                folder_id=None,
+                file_format=file_format
+            )
+        except Exception as sync_exc:
+            logger.error(f"Failed to sync uploaded demo file to user 0 storage: {sync_exc}")
     except Exception as exc:
         return _admin_redirect(message=f"Failed to upload file: {exc}", error=True, tab="system")
 
@@ -2515,6 +2543,15 @@ async def admin_panel_delete_demo_file(
             
         if file_path.exists() and file_path.is_file():
             file_path.unlink()
+            
+        try:
+            from backend.api.services.data_file_service import get_data_files_by_folder, delete_data_file
+            files = get_data_files_by_folder(None, 0)
+            for f in files:
+                if f.filename == clean_filename:
+                    delete_data_file(f.id, 0)
+        except Exception as sync_exc:
+            logger.error(f"Failed to delete demo file from user 0 storage: {sync_exc}")
     except Exception as exc:
         return _admin_redirect(message=f"Failed to delete file: {exc}", error=True, tab="system")
 
