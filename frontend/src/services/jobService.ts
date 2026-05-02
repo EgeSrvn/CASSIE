@@ -477,8 +477,8 @@ export interface RuntimeInputAssignment {
   tool_id: string
   requirement_type: string
   total_input_size_mib: number
-  compressed_input_size_mib?: number
-  file_formats?: string[]
+  compressed_input_size_mib: number
+  file_formats: string[]
 }
 
 export const getAvailableVMs = async (): Promise<VM[]> => {

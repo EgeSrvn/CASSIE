@@ -5,7 +5,7 @@ import {
   createJob,
   executeJob,
   getJob,
-  getJobPipelineVisualization,
+
   JobCreate,
   JobPipelineVisualization,
   PipelinePlanPreviewRequest,
@@ -31,7 +31,7 @@ import {
 import { getPipelines, getPipeline, Pipeline, getPipelineRequirements, PipelineRequirement, PipelineRequirements } from '../services/pipelineService'
 import { getDataFileTree } from '../services/dataFileService'
 import { FolderTreeItem, FileItem } from '../services/folderService'
-import { File as StorageFile, getFiles } from '../services/fileService'
+
 import { getToken } from '../services/authService'
 import { getCreateJobCatConfig } from '../../cats/config_cat_job_builder'
 import CatCornerCard from '../components/CatCornerCard'
@@ -472,9 +472,7 @@ export default function CreateJob() {
   const [editingManualToolDraftValues, setEditingManualToolDraftValues] = useState<Record<string, FlagValue>>({})
   const [editingManualToolErrors, setEditingManualToolErrors] = useState<Record<string, string>>({})
   const [retryPrefillApplied, setRetryPrefillApplied] = useState(false)
-  const [retrySourceInputFiles, setRetrySourceInputFiles] = useState<StorageFile[]>([])
-  const [retrySourcePipelineVisualization, setRetrySourcePipelineVisualization] = useState<JobPipelineVisualization | null>(null)
-  const [retrySourceManualInputBindings, setRetrySourceManualInputBindings] = useState<Array<Record<string, unknown>>>([])
+
   const [executionDataImprovementConsent, setExecutionDataImprovementConsent] = useState(
     () => Boolean(storedDraftRef.current?.executionDataImprovementConsent)
   )
@@ -807,14 +805,6 @@ export default function CreateJob() {
         if (cancelled) return
 
         const sourcePreferences = (sourceJob.execution_preferences || {}) as Record<string, any>
-        const sourceManualInputBindings = Array.isArray(sourcePreferences.manual_input_bindings)
-          ? (sourcePreferences.manual_input_bindings as Array<Record<string, unknown>>)
-          : []
-        const [sourceInputFilesResponse, sourcePipelineVisualization] = await Promise.all([
-          getFiles(retryJobId, 'input', 1, 1000),
-          getJobPipelineVisualization(retryJobId).catch(() => null),
-        ])
-        if (cancelled) return
 
         setJobName(sourceJob.name)
         setSelectedVM(sourceJob.vm_name || '')
@@ -823,9 +813,6 @@ export default function CreateJob() {
         setSlideDirection('forward')
         setPipelineInputMappings({})
         setToolFileMappings({})
-        setRetrySourceInputFiles(sourceInputFilesResponse.data || [])
-        setRetrySourcePipelineVisualization(sourcePipelineVisualization)
-        setRetrySourceManualInputBindings(sourceManualInputBindings)
 
         if (sourceJob.pipeline_id) {
           setSelectionMode('pipeline')
@@ -980,6 +967,7 @@ export default function CreateJob() {
     manualToolFlagValues,
     pipelineInputMappings,
     requirementSourceSelections,
+    savedPipelineExecutionPlan,
     selectedPipelineEdges,
     selectedPipelineId,
     selectedPipelineNodes,

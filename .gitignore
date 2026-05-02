@@ -212,6 +212,7 @@ __marimo__/
 *.fastq
 *.fasta
 /dataset/*
+/.claude/*
 emulation/emulation_run/*
 /frontend/node_modules/*
 .cassie/kube/config

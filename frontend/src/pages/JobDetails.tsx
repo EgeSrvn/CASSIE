@@ -71,7 +71,7 @@ export default function JobDetails() {
   const [outputFilesCollapsed, setOutputFilesCollapsed] = useState(false)
   const [executing, setExecuting] = useState(false)
   const [pipelineRequirements, setPipelineRequirements] = useState<PipelineRequirements | null>(null)
-  const [loadingRequirements, setLoadingRequirements] = useState(false)
+
   const [selectedOutputFamily, setSelectedOutputFamily] = useState<string | null>(null)
   const [selectedOutputIndex, setSelectedOutputIndex] = useState<number>(0)
   const [viewingFile, setViewingFile] = useState<File | null>(null)
@@ -111,14 +111,11 @@ export default function JobDetails() {
     if (job.pipeline_id) {
       const loadRequirements = async () => {
         try {
-          setLoadingRequirements(true)
           const requirements = await getPipelineRequirements(job.pipeline_id!)
           setPipelineRequirements(requirements)
         } catch (err) {
           console.error('Failed to load pipeline requirements:', err)
           setPipelineRequirements(null)
-        } finally {
-          setLoadingRequirements(false)
         }
       }
       loadRequirements()
@@ -325,27 +322,6 @@ export default function JobDetails() {
     limit > 0 ? Math.min(100, Math.round((used / limit) * 100)) : 0
   )
 
-  const fileMatchesRequirement = (
-    filename: string,
-    formats: string[],
-    declaredFormat?: string | null
-  ): boolean => {
-    const lowerName = filename.toLowerCase()
-    const normalizedDeclaredFormat = (declaredFormat || '').toLowerCase()
-    return formats.some(format => {
-      const normalizedFormat = format.toLowerCase()
-      const compressedFormat = normalizedFormat.endsWith('.gz') ? normalizedFormat : `${normalizedFormat}.gz`
-      const baseFormat = normalizedFormat.replace(/\.gz$/, '')
-      return (
-        normalizedDeclaredFormat === normalizedFormat ||
-        normalizedDeclaredFormat === compressedFormat ||
-        normalizedDeclaredFormat === baseFormat ||
-        lowerName.endsWith(`.${normalizedFormat}`) ||
-        lowerName.endsWith(`.${compressedFormat}`) ||
-        lowerName.endsWith(`.${baseFormat}`)
-      )
-    })
-  }
 
   // Group output files by tool family
   const groupOutputsByFamily = (files: File[]) => {
@@ -771,25 +747,6 @@ export default function JobDetails() {
     return Math.round((progressUnits / stages.length) * 100)
   }
 
-  const getPipelineRequirementTools = (req: { type: string; used_by?: string[] }): string[] => {
-    if (req.used_by && req.used_by.length > 0) return req.used_by
-    if (req.type === 'forward_reads' || req.type === 'reverse_reads') return ['SPAdes']
-    if (req.type === 'assembly' || req.type === 'reference') return ['QUAST']
-    if (req.type === 'annotation') return ['Liftoff', 'CAT']
-    if (req.type === 'hal_alignment') return ['CAT']
-    if (req.type === 'reference_annotation') return ['CAT']
-    if (req.type === 'reference_genome_name') return ['CAT']
-    if (req.type === 'read_kmer_db') return ['Merqury']
-    if (req.type === 'target_genome' || req.type === 'reference_genome') return ['Liftoff']
-    if (req.type === 'hifi_reads') return ['Hifiasm', 'Verkko']
-    if (req.type === 'reads') {
-      const tools: string[] = []
-      if (pipelineRequirements?.has_fastqc) tools.push('FastQC')
-      if (pipelineRequirements?.has_genomescope2) tools.push('GenomeScope2')
-      return tools.length > 0 ? tools : ['Read-based tools']
-    }
-    return ['Selected pipeline']
-  }
 
   const inputToolConnections = useMemo(() => {
     const normalizeFilename = (value: string): string => value.trim().toLowerCase()
@@ -1392,69 +1349,6 @@ export default function JobDetails() {
           <div className="detail-section">
             <h2>Input Files</h2>
             
-            {/* Show pipeline requirements if job has a pipeline_id */}
-            {job.pipeline_id && (
-              <div className="pipeline-requirements-card">
-                <h3 className="pipeline-requirements-title">
-                  Pipeline Input Requirements
-                </h3>
-                {loadingRequirements ? (
-                  <p className="pipeline-requirements-copy">Loading requirements...</p>
-                ) : pipelineRequirements ? (
-                  pipelineRequirements.input_requirements.length > 0 ? (
-                    <>
-                      <p className="pipeline-requirements-copy">
-                        This pipeline requires the following input files:
-                      </p>
-                      <div className="pipeline-requirements-list">
-                        {pipelineRequirements.input_requirements.map((req) => {
-                          // Check if this requirement is already satisfied by existing files
-                          const isSatisfied = inputFiles.some(f => {
-                            return fileMatchesRequirement(f.filename, req.formats, f.file_format)
-                          })
-                          const isPending = !isSatisfied && pendingQueuedFiles.some(file =>
-                            fileMatchesRequirement(file.filename, req.formats, file.file_format)
-                          )
-
-                          const stateClassName = isSatisfied
-                            ? 'satisfied'
-                            : isPending
-                              ? 'pending'
-                              : 'missing'
-                          return (
-                            <div key={req.type} className={`pipeline-requirement-item ${stateClassName}`}>
-                              <div className="pipeline-requirement-main">
-                                <strong>{req.label}</strong>
-                                <span className="pipeline-requirement-formats">
-                                  ({req.formats.join(', ').toUpperCase()})
-                                </span>
-                                <span className="pipeline-requirement-tools">
-                                  Used by: {getPipelineRequirementTools(req).join(', ')}
-                                </span>
-                                {isSatisfied && (
-                                  <span className="pipeline-requirement-status success">Satisfied</span>
-                                )}
-                                {isPending && (
-                                  <span className="pipeline-requirement-status pending">Uploading</span>
-                                )}
-                              </div>
-                            </div>
-                          )
-                        })}
-                      </div>
-                    </>
-                  ) : (
-                    <p className="pipeline-requirements-copy">
-                      This pipeline does not require any specific input files.
-                    </p>
-                  )
-                ) : (
-                  <p className="pipeline-requirements-copy warning">
-                    Failed to load pipeline requirements. Please refresh the page.
-                  </p>
-                )}
-              </div>
-            )}
 
               {visibleInputCount === 0 ? (
                 <div className="empty-state">
