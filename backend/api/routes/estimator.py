@@ -161,7 +161,6 @@ async def estimate_runtime(
                 )
                 return JSONResponse(content=error_data, status_code=status.HTTP_404_NOT_FOUND)
 
-            logger.info(f"[Estimator] Estimating runtime for pipeline {request.pipeline_id}: {len(pipeline.nodes or [])} nodes, {len(pipeline.edges or [])} edges")
             estimate = await run_in_threadpool(
                 estimate_runtime_for_pipeline_graph,
                 pipeline.nodes or [],
@@ -169,7 +168,6 @@ async def estimate_runtime(
                 request.vm_name,
                 input_assignments,
             )
-            logger.info(f"[Estimator] Estimate result: {estimate.estimated_price_usd} USD, {estimate.estimated_runtime_minutes} min, {len(estimate.tool_breakdown)} tools")
         elif request.tool_indices:
             estimate = await run_in_threadpool(
                 estimate_runtime_for_tool_indices,

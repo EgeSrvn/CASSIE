@@ -904,76 +904,45 @@ export default function CreateJob() {
     let cancelled = false
 
     const runEstimate = async () => {
-      console.log('[RuntimeEstimate] useEffect triggered', {
-        selectedVM,
-        selectionMode,
-        selectedPipelineId,
-        selectedTools: selectedTools.length,
-      })
-
       if (!selectedVM) {
-        console.log('[RuntimeEstimate] No VM selected, skipping estimate')
         setRuntimeEstimate(null)
         setRuntimeEstimateError('')
         return
       }
 
       if (selectionMode === 'tools' && selectedTools.length === 0) {
-        console.log('[RuntimeEstimate] Pipeline mode with no tools, skipping estimate')
         setRuntimeEstimate(null)
         setRuntimeEstimateError('')
         return
       }
 
       if (selectionMode === 'pipeline' && !selectedPipelineId) {
-        console.log('[RuntimeEstimate] Pipeline mode with no pipeline ID, skipping estimate')
         setRuntimeEstimate(null)
         setRuntimeEstimateError('')
         return
       }
 
       try {
-        console.log('[RuntimeEstimate] Starting estimate request...', { selectionMode, selectedPipelineId, selectedTools })
         setLoadingRuntimeEstimate(true)
         setRuntimeEstimateError('')
-        
-        let inputAssignments
-        try {
-          inputAssignments = getRuntimeInputAssignments()
-          console.log('[RuntimeEstimate] Input assignments:', inputAssignments)
-        } catch (assignmentErr) {
-          console.error('[RuntimeEstimate] Error getting input assignments:', assignmentErr)
-          throw new Error(`Failed to prepare input assignments: ${assignmentErr.message}`)
-        }
-
         const estimate = await estimateRuntime(
           selectionMode === 'pipeline'
             ? {
                 pipeline_id: selectedPipelineId || undefined,
                 vm_name: selectedVM,
-                input_assignments: inputAssignments,
+                input_assignments: getRuntimeInputAssignments(),
               }
             : {
                 tool_indices: selectedTools,
                 vm_name: selectedVM,
-                input_assignments: inputAssignments,
+                input_assignments: getRuntimeInputAssignments(),
               }
         )
 
         if (!cancelled) {
-          console.log('[RuntimeEstimate] Estimate received:', estimate)
-          if (!estimate) {
-            console.warn('[RuntimeEstimate] Received null or undefined estimate!')
-            throw new Error('Estimate service returned no data')
-          }
-          if (typeof estimate.estimated_price_usd !== 'number') {
-            console.warn('[RuntimeEstimate] Invalid estimate structure:', estimate)
-            throw new Error('Invalid estimate response structure')
-          }
           setRuntimeEstimate(estimate)
         }
       } catch (err: any) {
-        console.error('[RuntimeEstimate] Estimate error:', err)
         if (!cancelled) {
           setRuntimeEstimate(null)
           setRuntimeEstimateError(err.message || 'Failed to estimate runtime')
@@ -994,7 +963,6 @@ export default function CreateJob() {
       window.clearTimeout(timeoutId)
     }
   }, [
-    currentLevel,
     dataFileTree,
     manualToolFlagValues,
     pipelineInputMappings,
@@ -2408,34 +2376,6 @@ export default function CreateJob() {
     }
   }, [reviewPipelinePlanSignature])
 
-  // Ensure runtime estimate is available on level 4
-  useEffect(() => {
-    if (currentLevel !== 4) {
-      return
-    }
-    
-    console.log('[CreateJob Level4] On review level, checking estimate...', {
-      hasEstimate: !!runtimeEstimate,
-      hasError: !!runtimeEstimateError,
-      isLoading: loadingRuntimeEstimate,
-      selectedVM,
-      selectionMode,
-      selectedPipelineId,
-      selectedTools: selectedTools.length,
-    })
-
-    // If we're on level 4 but don't have an estimate and no error, something might have gone wrong
-    // Log it so the user can see what's happening
-    if (!runtimeEstimate && !runtimeEstimateError && !loadingRuntimeEstimate && selectedVM) {
-      console.warn('[CreateJob Level4] Warning: No estimate found on review page. This might indicate a calculation error.')
-      if (selectionMode === 'pipeline' && selectedPipelineId) {
-        console.log('[CreateJob Level4] Pipeline mode - estimate should have been calculated')
-      } else if (selectionMode === 'tools' && selectedTools.length > 0) {
-        console.log('[CreateJob Level4] Tools mode - estimate should have been calculated')
-      }
-    }
-  }, [currentLevel, runtimeEstimate, runtimeEstimateError, loadingRuntimeEstimate, selectedVM, selectionMode, selectedPipelineId, selectedTools.length])
-
   const livePipelineBox = (
     <div className="builder-live-pipeline-card">
       <div className="builder-live-pipeline-header">
@@ -2530,29 +2470,6 @@ export default function CreateJob() {
     setError('')
 
     if (currentLevel !== 4) {
-      // Before advancing to level 4, verify that we have the necessary data for cost estimation
-      if (!selectedVM) {
-        setError('Please select a VM before proceeding')
-        return
-      }
-
-      if (selectionMode === 'pipeline' && !selectedPipelineId) {
-        setError('Please select a pipeline')
-        return
-      }
-
-      if (selectionMode === 'tools' && selectedTools.length === 0) {
-        setError('Please select at least one tool')
-        return
-      }
-
-      // Check if estimate is still loading
-      if (loadingRuntimeEstimate) {
-        setError('Cost estimate is still calculating. Please wait a moment before proceeding.')
-        return
-      }
-
-      // Advance to review level
       setSlideDirection('forward')
       setCurrentLevel(4)
       return
@@ -2646,21 +2563,7 @@ export default function CreateJob() {
     }
 
     if (!runtimeEstimate) {
-      // If estimate is missing, show detailed error
-      if (runtimeEstimateError) {
-        setError(`Cost Estimation Error: ${runtimeEstimateError}`)
-      } else {
-        // Try to provide helpful debugging information
-        const debugInfo = {
-          hasVM: !!selectedVM,
-          selectionMode,
-          hasPipeline: !!selectedPipelineId,
-          hasTools: selectedTools.length > 0,
-          selectedVM,
-        }
-        console.error('[CreateJob] Missing runtime estimate. Debug info:', debugInfo)
-        setError(`A job cost estimate is required before starting. Please ensure a VM is selected and try refreshing the page if the estimate fails to calculate. (Mode: ${selectionMode})`)
-      }
+      setError(runtimeEstimateError || 'A job cost estimate is required before starting.')
       return
     }
 
