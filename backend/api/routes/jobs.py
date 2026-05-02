@@ -162,13 +162,20 @@ def _stamp_job_submission_terms(
     return stamped
 
 
-def _job_response_for_user(job, username: Optional[str]) -> dict:
-    interactive_outputs_enabled, _ = can_user_interact_with_job_outputs(
-        user_id=job.user_id,
-        username=username,
-        job_id=job.id,
-        job_status=job.status.value if hasattr(job.status, "value") else str(job.status),
-    )
+def _job_response_for_user(
+    job,
+    username: Optional[str],
+    *,
+    include_output_access: bool = True,
+) -> dict:
+    interactive_outputs_enabled = True
+    if include_output_access:
+        interactive_outputs_enabled, _ = can_user_interact_with_job_outputs(
+            user_id=job.user_id,
+            username=username,
+            job_id=job.id,
+            job_status=job.status.value if hasattr(job.status, "value") else str(job.status),
+        )
 
     return JobResponse(
         id=job.id,
@@ -1040,7 +1047,6 @@ async def create_job_endpoint(
 
 @router.get("")
 async def list_jobs(
-    background_tasks: BackgroundTasks,
     status_filter: Optional[JobStatus] = Query(None, alias="status", description="Filter by job status"),
     page: int = Query(1, ge=1, description="Page number"),
     per_page: int = Query(20, ge=1, le=100, description="Items per page"),
@@ -1059,12 +1065,6 @@ async def list_jobs(
         Paginated response with list of jobs
     """
     try:
-        background_tasks.add_task(
-            _purge_expired_outputs_safely,
-            current_user.id,
-            current_user.username,
-        )
-
         offset = (page - 1) * per_page
         jobs = get_jobs_by_user(
             user_id=current_user.id,
@@ -1075,7 +1075,10 @@ async def list_jobs(
         
         total = count_jobs_by_user(current_user.id, status_filter)
         
-        job_responses = [_job_response_for_user(job, current_user.username) for job in jobs]
+        job_responses = [
+            _job_response_for_user(job, current_user.username, include_output_access=False)
+            for job in jobs
+        ]
         
         return paginated_response(
             data=job_responses,
@@ -1973,3 +1976,4 @@ async def delete_job_endpoint(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
         return JSONResponse(content=error_data, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
