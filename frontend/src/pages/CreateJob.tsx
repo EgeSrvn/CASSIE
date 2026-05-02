@@ -37,6 +37,7 @@ import Navigation from '../components/Navigation'
 import PipelineVisualization from '../components/PipelineVisualization'
 import {
   buildManualExecutionPreferences,
+  buildPipelineExecutionPreferences,
   computeManualPriorityGroups,
   computePipelinePriorityGroups,
   PriorityGroup,
@@ -427,6 +428,44 @@ export default function CreateJob() {
     () => selectedPipeline ? normalizePipelineEdgeList(selectedPipeline.edges) : [],
     [selectedPipeline]
   )
+  const savedPipelineToolRequirementCards = useMemo<ToolRequirementInfo[]>(() => {
+    if (selectionMode !== 'pipeline' || !pipelineRequirements) {
+      return []
+    }
+
+    const orderedToolNodes = selectedPipelineNodes.filter((node: any) => resolvePipelineNodeType(node) === 'tool' && node?.id != null)
+    const cards = (pipelineRequirements.tool_requirements || []).map((item) => ({ ...item }))
+    const cardsByToolId = new Map<string, ToolRequirementInfo[]>()
+    cards.forEach((card) => {
+      const key = String(card.tool_id || '').toUpperCase()
+      cardsByToolId.set(key, [...(cardsByToolId.get(key) || []), card])
+    })
+    const consumedByToolId = new Map<string, number>()
+
+    return orderedToolNodes.map((node: any) => {
+      const nodeId = String(node.id)
+      const toolId = resolvePipelineToolId(node)
+      const withNodeId = cards.find((card) => String(card.node_id || '') === nodeId)
+      if (withNodeId) {
+        return withNodeId
+      }
+
+      const sameToolCards = cardsByToolId.get(toolId) || []
+      const occurrence = consumedByToolId.get(toolId) || 0
+      consumedByToolId.set(toolId, occurrence + 1)
+      return sameToolCards[occurrence] || sameToolCards[0] || {
+        node_id: nodeId,
+        tool_index: occurrence,
+        tool_id: toolId,
+        tool_name: resolvePipelineNodeLabel(node, toolId),
+        tool_type: 'tool',
+        requirements: [],
+      }
+    }).map((card, index) => ({
+      ...card,
+      node_id: String(card.node_id || orderedToolNodes[index]?.id || ''),
+    }))
+  }, [pipelineRequirements, selectedPipelineNodes, selectionMode])
   const savedPipelineExecutionPlan = useMemo<SavedPipelineExecutionPlan | null>(() => {
     if (selectionMode !== 'pipeline' || !pipelineRequirements || selectedPipelineNodes.length === 0) {
       return null
@@ -446,7 +485,7 @@ export default function CreateJob() {
         .map((node: any) => [String(node.id), node])
     )
     const toolRequirementsByNodeId = new Map<string, ToolRequirementInfo>(
-      (pipelineRequirements.tool_requirements || [])
+      savedPipelineToolRequirementCards
         .filter((item) => item?.node_id)
         .map((item) => [String(item.node_id), item])
     )
@@ -610,6 +649,7 @@ export default function CreateJob() {
     pipelineInputMappings,
     pipelineRequirements,
     priorityGroups,
+    savedPipelineToolRequirementCards,
     selectedPipelineEdges,
     selectedPipelineNodes,
     selectionMode,
@@ -793,7 +833,7 @@ export default function CreateJob() {
         const estimate = await estimateRuntime(
           selectionMode === 'pipeline'
             ? {
-                tool_indices: savedPipelineExecutionPlan?.toolIndices || undefined,
+                pipeline_id: selectedPipelineId || undefined,
                 vm_name: selectedVM,
                 input_assignments: getRuntimeInputAssignments(),
               }
@@ -832,8 +872,8 @@ export default function CreateJob() {
     manualToolFlagValues,
     pipelineInputMappings,
     requirementSourceSelections,
-    savedPipelineExecutionPlan,
     selectedPipelineEdges,
+    selectedPipelineId,
     selectedPipelineNodes,
     selectedTools,
     selectedVM,
@@ -1106,10 +1146,85 @@ export default function CreateJob() {
       }
     })
   ), [getManualToolDefaultFlagValues, manualToolFlagValues, toolRequirements])
-  const pipelineInputRequirements = useMemo(
-    () => pipelineRequirements?.input_requirements || [],
-    [pipelineRequirements]
-  )
+  const pipelineInputRequirements = useMemo<PipelineRequirement[]>(() => {
+    if (selectionMode !== 'pipeline') {
+      return pipelineRequirements?.input_requirements || []
+    }
+
+    const inputNodes = selectedPipelineNodes.filter((node: any) => PIPELINE_INPUT_NODE_TYPES.has(resolvePipelineNodeType(node)) && node?.id != null)
+    if (inputNodes.length === 0) {
+      return []
+    }
+
+    const toolRequirementByNodeId = new Map<string, ToolRequirementInfo>(
+      savedPipelineToolRequirementCards
+        .filter((card) => card.node_id)
+        .map((card) => [String(card.node_id), card])
+    )
+    const outgoingToolIdsByInput = new Map<string, string[]>()
+    selectedPipelineEdges.forEach((edge: any) => {
+      const sourceId = String(edge?.source || '').trim()
+      const targetId = String(edge?.target || '').trim()
+      if (!sourceId || !targetId) {
+        return
+      }
+      if (!inputNodes.some((node: any) => String(node.id) === sourceId) || !toolRequirementByNodeId.has(targetId)) {
+        return
+      }
+      outgoingToolIdsByInput.set(sourceId, [...(outgoingToolIdsByInput.get(sourceId) || []), targetId])
+    })
+
+    return inputNodes.map((node: any, index: number) => {
+      const nodeId = String(node.id)
+      const inputType = resolvePipelineNodeType(node)
+      const defaultLabel = resolvePipelineNodeLabel(node, `Pipeline Input ${index + 1}`)
+      const downstreamCards = (outgoingToolIdsByInput.get(nodeId) || [])
+        .map((toolNodeId) => toolRequirementByNodeId.get(toolNodeId))
+        .filter((card): card is ToolRequirementInfo => Boolean(card))
+
+      const matchedRequirements = downstreamCards.flatMap((card) => (
+        (card.requirements || []).filter((requirement) => {
+          const formats = new Set((requirement.formats || []).map((format) => String(format).toLowerCase()))
+          if (inputType === 'fastqinput') {
+            return formats.has('fastq')
+          }
+          if (inputType === 'fastainput') {
+            return formats.has('fasta')
+          }
+          return true
+        })
+      ))
+
+      const formatSet = new Set<string>()
+      matchedRequirements.forEach((requirement) => {
+        ;(requirement.formats || []).forEach((format) => formatSet.add(String(format).toLowerCase()))
+      })
+      if (inputType === 'fastqinput') {
+        formatSet.clear()
+        formatSet.add('fastq')
+      }
+      if (inputType === 'fastainput') {
+        formatSet.clear()
+        formatSet.add('fasta')
+      }
+
+      const usedBy = Array.from(new Set(downstreamCards.map((card) => card.tool_name).filter(Boolean)))
+
+      return {
+        id: nodeId,
+        type: inputType || 'input',
+        label: defaultLabel,
+        formats: Array.from(formatSet),
+        used_by: usedBy,
+      }
+    })
+  }, [
+    pipelineRequirements,
+    savedPipelineToolRequirementCards,
+    selectedPipelineEdges,
+    selectedPipelineNodes,
+    selectionMode,
+  ])
   const selectedToolIds = useMemo(
     () => selectedTools
       .map((toolIndex) => availableTools.find((tool) => tool.id === toolIndex)?.tool_id)
@@ -1689,7 +1804,9 @@ export default function CreateJob() {
     requirement: { formats: string[]; filename_pattern?: string }
   ): boolean => {
     const normalizedFormats = new Set(normalizeFileFormats(file))
-    const formatMatches = requirement.formats.some(format => normalizedFormats.has(format.toLowerCase()))
+    const formatMatches = requirement.formats.length === 0
+      ? true
+      : requirement.formats.some(format => normalizedFormats.has(format.toLowerCase()))
     if (!formatMatches) {
       return false
     }
@@ -2070,26 +2187,32 @@ export default function CreateJob() {
     const filesById = new Map(combinedSelectableFiles.map((file) => [file.id, file]))
 
     if (selectionMode === 'pipeline') {
-      if (!savedPipelineExecutionPlan || savedPipelineExecutionPlan.toolIndices.length === 0) {
+      if (!selectedPipelineId) {
         return null
       }
-      const executionPreferences: Record<string, unknown> = {}
-      if (savedPipelineExecutionPlan.manualPriorityGroups.length > 0) {
-        executionPreferences.manual_priority_groups = savedPipelineExecutionPlan.manualPriorityGroups
-      }
-      if (savedPipelineExecutionPlan.inputSourceOverrides.length > 0) {
-        executionPreferences.input_source_overrides = savedPipelineExecutionPlan.inputSourceOverrides
-      }
-      if (savedPipelineExecutionPlan.manualInputBindings.length > 0) {
-        executionPreferences.manual_input_bindings = savedPipelineExecutionPlan.manualInputBindings
-      }
-      if (savedPipelineExecutionPlan.manualToolConfigs.length > 0) {
-        executionPreferences.manual_tool_configs = savedPipelineExecutionPlan.manualToolConfigs
-      }
+      const plannedInputs = pipelineInputRequirements.flatMap((inputReq) => {
+        const inputKey = String(inputReq.id || inputReq.label)
+        const mappedFileIds = pipelineInputMappings[inputKey] || []
+
+        return mappedFileIds
+          .map((fileId) => filesById.get(fileId))
+          .filter((file): file is FileItem & { folderPath?: string } => Boolean(file))
+          .map((file) => ({
+            id: file.id,
+            binding_id: inputKey,
+            label: inputBlockDisplayName(inputKey, inputReq.label),
+            filename: file.filename,
+            file_format: file.file_format || null,
+            size_bytes: file.size_bytes || 0,
+            s3_key: file.s3_key,
+            source: 'library' as const,
+          }))
+      })
+      const executionPreferences = buildPipelineExecutionPreferences(priorityGroups)
 
       return {
-        tool_indices: savedPipelineExecutionPlan.toolIndices,
-        planned_inputs: savedPipelineExecutionPlan.plannedInputs,
+        pipeline_id: selectedPipelineId,
+        planned_inputs: plannedInputs,
         execution_preferences: Object.keys(executionPreferences).length > 0
           ? executionPreferences
           : undefined,
@@ -2171,7 +2294,7 @@ export default function CreateJob() {
     pipelineInputMappings,
     pipelineInputRequirements,
     priorityGroups,
-    savedPipelineExecutionPlan,
+    selectedPipelineId,
     selectedTools,
     selectionMode,
     toolFileMappings,
