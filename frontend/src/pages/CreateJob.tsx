@@ -229,6 +229,14 @@ const resolvePipelineGraphPayload = (value: any): any => {
 const normalizePipelineNodeList = (nodes: any): any[] => {
   const resolvedNodes = resolvePipelineGraphPayload(nodes)
   if (Array.isArray(resolvedNodes)) {
+    if (
+      resolvedNodes.length === 1 &&
+      resolvedNodes[0] &&
+      typeof resolvedNodes[0] === 'object' &&
+      Array.isArray(resolvePipelineGraphPayload(resolvedNodes[0].nodes))
+    ) {
+      return normalizePipelineNodeList(resolvedNodes[0].nodes)
+    }
     return resolvedNodes.filter((item) => item && typeof item === 'object')
   }
   if (resolvedNodes && typeof resolvedNodes === 'object') {
@@ -248,6 +256,14 @@ const normalizePipelineNodeList = (nodes: any): any[] => {
 const normalizePipelineEdgeList = (edges: any): any[] => {
   const resolvedEdges = resolvePipelineGraphPayload(edges)
   if (Array.isArray(resolvedEdges)) {
+    if (
+      resolvedEdges.length === 1 &&
+      resolvedEdges[0] &&
+      typeof resolvedEdges[0] === 'object' &&
+      Array.isArray(resolvePipelineGraphPayload(resolvedEdges[0].edges))
+    ) {
+      return normalizePipelineEdgeList(resolvedEdges[0].edges)
+    }
     return resolvedEdges.filter((item) => item && typeof item === 'object')
   }
   if (resolvedEdges && typeof resolvedEdges === 'object') {
@@ -458,13 +474,25 @@ export default function CreateJob() {
     () => selectedPipeline ? normalizePipelineEdgeList(selectedPipeline.edges) : [],
     [selectedPipeline]
   )
+  const pipelineRequirementTools = useMemo(
+    () => Array.isArray(pipelineRequirements?.tools) ? pipelineRequirements.tools : [],
+    [pipelineRequirements]
+  )
+  const pipelineToolRequirements = useMemo(
+    () => Array.isArray(pipelineRequirements?.tool_requirements) ? pipelineRequirements.tool_requirements : [],
+    [pipelineRequirements]
+  )
+  const rawPipelineInputRequirements = useMemo(
+    () => Array.isArray(pipelineRequirements?.input_requirements) ? pipelineRequirements.input_requirements : [],
+    [pipelineRequirements]
+  )
   const savedPipelineToolRequirementCards = useMemo<ToolRequirementInfo[]>(() => {
     if (selectionMode !== 'pipeline' || !pipelineRequirements) {
       return []
     }
 
     const orderedToolNodes = selectedPipelineNodes.filter((node: any) => resolvePipelineNodeType(node) === 'tool' && node?.id != null)
-    const cards = (pipelineRequirements.tool_requirements || []).map((item) => ({ ...item }))
+    const cards = pipelineToolRequirements.map((item) => ({ ...item }))
     const cardsByToolId = new Map<string, ToolRequirementInfo[]>()
     cards.forEach((card) => {
       const key = String(card.tool_id || '').toUpperCase()
@@ -495,7 +523,7 @@ export default function CreateJob() {
       ...card,
       node_id: String(card.node_id || orderedToolNodes[index]?.id || ''),
     }))
-  }, [pipelineRequirements, selectedPipelineNodes, selectionMode])
+  }, [pipelineRequirements, pipelineToolRequirements, selectedPipelineNodes, selectionMode])
   const savedPipelineExecutionPlan = useMemo<SavedPipelineExecutionPlan | null>(() => {
     if (selectionMode !== 'pipeline' || !pipelineRequirements || selectedPipelineNodes.length === 0) {
       return null
@@ -1178,7 +1206,7 @@ export default function CreateJob() {
   ), [getManualToolDefaultFlagValues, manualToolFlagValues, toolRequirements])
   const pipelineInputRequirements = useMemo<PipelineRequirement[]>(() => {
     if (selectionMode !== 'pipeline') {
-      return pipelineRequirements?.input_requirements || []
+      return rawPipelineInputRequirements
     }
 
     const inputNodes = selectedPipelineNodes.filter((node: any) => PIPELINE_INPUT_NODE_TYPES.has(resolvePipelineNodeType(node)) && node?.id != null)
@@ -1250,6 +1278,7 @@ export default function CreateJob() {
     })
   }, [
     pipelineRequirements,
+    rawPipelineInputRequirements,
     savedPipelineToolRequirementCards,
     selectedPipelineEdges,
     selectedPipelineNodes,
@@ -2092,7 +2121,7 @@ export default function CreateJob() {
 
       const pipelineToolLabels = savedStageLabels.length > 0
         ? savedStageLabels
-        : (pipelineRequirements?.tools.map((toolId) => {
+        : (pipelineRequirementTools.map((toolId) => {
             const matchingTool = availableTools.find((tool) => tool.tool_id === toolId || tool.name.toUpperCase() === toolId)
             return matchingTool?.name || toolId
           }) || [])
@@ -2115,7 +2144,7 @@ export default function CreateJob() {
           fallbackCount: 0,
         }]
       : []
-  }, [availableTools, pipelineRequirements, priorityGroups, selectedPipeline, selectedPipelineNodes, selectedToolDefinitions, selectionMode])
+  }, [availableTools, pipelineRequirementTools, priorityGroups, selectedPipeline, selectedPipelineNodes, selectedToolDefinitions, selectionMode])
 
   const totalMappedInputCount = useMemo(() => {
     if (selectionMode === 'pipeline') {
@@ -2996,7 +3025,7 @@ export default function CreateJob() {
                     </div>
                   )}
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
-                    {pipelineRequirements.tools.length > 0 ? pipelineRequirements.tools.map(toolId => {
+                    {pipelineRequirementTools.length > 0 ? pipelineRequirementTools.map(toolId => {
                       const tool = availableTools.find(item => item.tool_id === toolId || item.name.toUpperCase() === toolId)
                       const label = tool?.name || toolId
                       return (

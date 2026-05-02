@@ -1,5 +1,5 @@
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom'
-import { useState, useEffect } from 'react'
+import { Component, ReactNode, useState, useEffect } from 'react'
 import Login from './pages/Login'
 import Register from './pages/Register'
 import Home from './pages/Home'
@@ -24,6 +24,37 @@ import ForgotPassword from './pages/ForgotPassword'
 import { getToken } from './services/authService'
 import { startPendingJobUploadProcessor } from './services/pendingJobUploadService'
 import { startStorageUploadProcessor } from './services/storageUploadService'
+
+class AppErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
+  state: { error: Error | null } = { error: null }
+
+  static getDerivedStateFromError(error: Error) {
+    return { error }
+  }
+
+  componentDidCatch(error: Error) {
+    console.error('Unhandled app render error:', error)
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="page-container">
+          <div className="page-content">
+            <div className="error-message">
+              Something went wrong while rendering this page. {this.state.error.message}
+            </div>
+            <button type="button" className="btn-primary" onClick={() => window.location.reload()}>
+              Reload Page
+            </button>
+          </div>
+        </div>
+      )
+    }
+
+    return this.props.children
+  }
+}
 
 function App() {
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => !!getToken())
@@ -60,9 +91,10 @@ function App() {
   }, [])
 
   return (
-    <Router>
-      <>
-        <Routes>
+    <AppErrorBoundary>
+      <Router>
+        <>
+          <Routes>
           <Route 
             path="/login" 
             element={!isAuthenticated ? <Login onLogin={() => setIsAuthenticated(true)} /> : <Navigate to="/" />} 
@@ -185,10 +217,11 @@ function App() {
             path="/pipelines/builder/:id" 
             element={<PipelineBuilder />} 
           />
-        </Routes>
-        <SiteCatWidget />
-      </>
-    </Router>
+          </Routes>
+          <SiteCatWidget />
+        </>
+      </Router>
+    </AppErrorBoundary>
   )
 }
 

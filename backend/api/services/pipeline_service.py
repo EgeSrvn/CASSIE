@@ -48,8 +48,12 @@ def _parse_jsonb_field(value: Any) -> List[Dict[str, Any]]:
         return value
     if isinstance(value, str):
         parsed = json.loads(value)
-        return parsed if isinstance(parsed, list) else [parsed] if parsed else []
+        return _parse_jsonb_field(parsed)
     if isinstance(value, dict):
+        for key in ("nodes", "edges", "data"):
+            nested = value.get(key)
+            if isinstance(nested, (list, dict, str)):
+                return _parse_jsonb_field(nested)
         # Legacy format - convert to list
         return [value]
     return []
