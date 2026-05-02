@@ -47,35 +47,28 @@ Navigate to `/login` and use your admin credentials. Normal login works for admi
 
 ### Generate Demo Codes
 
+Go to the admin panel (the secret hidden URL) → **Demo Codes** tab.
+
+- Set how many codes to generate (1–50) and an optional expiry date
+- Click **Generate Demo Codes**
+- Plaintext codes appear on screen **once only** — copy and distribute them immediately
+- The table below shows all codes with masked prefixes, status, and a Deactivate button
+
+The tab is only visible when `DEMO_MODE_ENABLED=true`.
+
+Alternatively, you can use the REST API directly (requires a bearer JWT with `is_admin=true`):
+
 ```http
 POST /api/admin/demo-codes/generate
 Authorization: Bearer <admin-token>
 Content-Type: application/json
 
-{
-  "count": 5,
-  "expires_at": "2026-06-01T00:00:00Z"
-}
+{"count": 5, "expires_at": "2026-06-01T00:00:00Z"}
 ```
-
-Response includes plaintext codes **shown once only** — copy and distribute them:
-
-```json
-{
-  "codes": ["AB3KPQR2STMN", "CD7XYZWVUTRE", "..."]
-}
-```
-
-### List Existing Codes
-
-```http
-GET /api/admin/demo-codes
-Authorization: Bearer <admin-token>
-```
-
-Returns masked metadata (first 4 chars + `****`), creation time, expiry, and usage status. `code_hash` is never returned.
 
 ### Deactivate a Code
+
+Use the **Deactivate** button in the Demo Codes tab, or:
 
 ```http
 POST /api/admin/demo-codes/{code_id}/deactivate

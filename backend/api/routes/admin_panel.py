@@ -40,6 +40,7 @@ from backend.api.services.kubernetes_manager import (
 )
 from backend.api.services.runtime_estimator_service import APP_CONFIG_PATH
 from backend.api.services.user_service import ensure_admin_user, get_user_by_username, update_user_password
+from backend.api.services import demo_service as _demo_svc
 from backend.api.utils.config_loader import get_config
 from backend.api.services.workflow_service import get_workflow_by_id
 from tool_registry import get_tool_registry
@@ -1541,6 +1542,85 @@ def _collect_dashboard_data(selected_job_id: int | None = None) -> dict[str, Any
     }
 
 
+def _render_demo_codes_section(message: str | None, *, error: bool) -> str:
+    generated_codes_html = ""
+    display_message = message
+    if message and message.startswith("DEMO_CODES:"):
+        codes_raw = message[len("DEMO_CODES:"):]
+        codes = [c.strip() for c in codes_raw.split(",") if c.strip()]
+        generated_codes_html = (
+            '<div class="notice">'
+            '<strong>Generated codes — copy now, shown once only:</strong><br><br>'
+            + "".join(f'<code style="display:block;margin-bottom:0.4rem;font-size:1.05rem">{escape(c)}</code>' for c in codes)
+            + "</div>"
+        )
+        display_message = None
+
+    try:
+        codes_list = _demo_svc.get_demo_codes()
+    except Exception:
+        codes_list = []
+
+    code_rows = [
+        {
+            "masked": f'<code>{escape(c["code_prefix_masked"])}</code>',
+            "created": escape(_format_datetime(c.get("created_at"))),
+            "expires": escape(_format_datetime(c.get("expires_at"))) if c.get("expires_at") else "Never",
+            "status": (
+                f'<span class="{_status_class("completed")}">used</span>'
+                if c.get("used_at")
+                else (
+                    f'<span class="{_status_class("cancelled")}">deactivated</span>'
+                    if not c.get("is_active")
+                    else f'<span class="{_status_class("pending")}">available</span>'
+                )
+            ),
+            "used_at": escape(_format_datetime(c.get("used_at"))) if c.get("used_at") else "-",
+            "actions": (
+                f'<form class="inline-form" method="post" action="{escape(config.admin_panel.path)}/demo-codes/deactivate">'
+                f'<input type="hidden" name="code_id" value="{c["id"]}">'
+                f'<button class="small-button danger" type="submit">Deactivate</button>'
+                f'</form>'
+                if c.get("is_active") and not c.get("used_at")
+                else "-"
+            ),
+        }
+        for c in codes_list
+    ]
+
+    return f"""
+      <div class="section">
+        <h2>Generate Demo Codes</h2>
+        <p>Codes are bcrypt-hashed and stored. Plaintext is shown once only after generation.</p>
+        {_notice(display_message, error=error)}
+        {generated_codes_html}
+        <form method="post" action="{escape(config.admin_panel.path)}/demo-codes">
+          <label for="demo_count">Number of codes</label>
+          <input id="demo_count" name="count" type="number" min="1" max="50" value="1" style="max-width:8rem">
+          <label for="demo_expires">Expires at (optional, UTC)</label>
+          <input id="demo_expires" name="expires_at" type="datetime-local">
+          <div class="row">
+            <button type="submit">Generate Demo Codes</button>
+          </div>
+        </form>
+      </div>
+      <div class="section">
+        <h2>Existing Codes</h2>
+        {_html_table(
+          [
+            ("masked", "Code (masked)"),
+            ("created", "Created"),
+            ("expires", "Expires"),
+            ("status", "Status"),
+            ("used_at", "Used At"),
+            ("actions", "Actions"),
+          ],
+          code_rows,
+        )}
+      </div>
+    """
+
+
 def _login_form(message: str | None = None, *, error: bool = False) -> HTMLResponse:
     body = f"""
       <h1>CASSIE Admin Console</h1>
@@ -1565,8 +1645,10 @@ def _dashboard_page(
     active_tab: str = "overview",
 ) -> HTMLResponse:
     data = _collect_dashboard_data(selected_job_id)
-    allowed_tabs = {"overview", "jobs", "users", "moderation", "system"}
+    allowed_tabs = {"overview", "jobs", "users", "moderation", "system", "demo"}
     if active_tab not in allowed_tabs:
+        active_tab = "overview"
+    if active_tab == "demo" and not config.demo.enabled:
         active_tab = "overview"
     db_status = "healthy" if data["db_health"].get("healthy") else "degraded"
     running_rows = []
@@ -1702,6 +1784,8 @@ def _dashboard_page(
         ("moderation", "Moderation"),
         ("system", "System"),
     ]
+    if config.demo.enabled:
+        tabs.append(("demo", "Demo Codes"))
     tab_nav = "".join(
         f'<a class="tab-link{" active" if active_tab == tab_key else ""}" href="{escape(_admin_url(tab=tab_key, job_id=selected_job_id if tab_key == "jobs" else None))}">{escape(tab_label)}</a>'
         for tab_key, tab_label in tabs
@@ -1899,12 +1983,14 @@ def _dashboard_page(
       </div>
     """
 
+    demo_section = _render_demo_codes_section(message if active_tab == "demo" else None, error=error if active_tab == "demo" else False) if config.demo.enabled else ""
     tab_sections = {
         "overview": overview_section,
         "jobs": jobs_section,
         "users": users_section,
         "moderation": moderation_section,
         "system": system_section,
+        "demo": demo_section,
     }
 
     body = f"""
@@ -1920,7 +2006,7 @@ def _dashboard_page(
           <button type="submit" class="secondary">Log Out</button>
         </form>
       </div>
-      {_notice(message, error=error)}
+      {_notice(message if active_tab != "demo" else None, error=error)}
       <div class="meta">
         <div><strong>Admin Username</strong> <code>{escape(config.admin_panel.username)}</code></div>
         <div><strong>Cookie Scope</strong> <code>{escape(config.admin_panel.path)}</code></div>
@@ -2192,6 +2278,66 @@ async def admin_panel_moderation_action(
         return _admin_redirect(message=f"Unknown moderation action: {action}", error=True, tab="moderation")
     except Exception as exc:
         return _admin_redirect(message=str(exc), error=True, tab="moderation")
+
+
+@router.post(f"{config.admin_panel.path}/demo-codes")
+async def admin_panel_generate_demo_codes(
+    request: Request,
+    count: int = Form(1),
+    expires_at: str = Form(""),
+):
+    ensure_admin_user()
+    admin_user = _get_authenticated_admin(request)
+    if not admin_user:
+        return _admin_redirect(message="Please sign in again", error=True, tab="demo")
+
+    if not config.demo.enabled:
+        return _admin_redirect(message="Demo mode is not enabled", error=True, tab="demo")
+
+    count = max(1, min(count, 50))
+    parsed_expires: datetime | None = None
+    if expires_at.strip():
+        try:
+            parsed_expires = datetime.fromisoformat(expires_at.strip()).replace(tzinfo=timezone.utc)
+        except ValueError:
+            return _admin_redirect(message="Invalid expiry date format", error=True, tab="demo")
+
+    try:
+        plaintext_codes = _demo_svc.generate_demo_codes(
+            admin_user_id=admin_user.id,
+            count=count,
+            expires_at=parsed_expires,
+        )
+    except Exception as exc:
+        return _admin_redirect(message=f"Failed to generate codes: {exc}", error=True, tab="demo")
+
+    codes_param = ",".join(plaintext_codes)
+    from urllib.parse import quote
+    return RedirectResponse(
+        url=f"{config.admin_panel.path}?tab=demo&message={quote('DEMO_CODES:' + codes_param)}",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@router.post(f"{config.admin_panel.path}/demo-codes/deactivate")
+async def admin_panel_deactivate_demo_code(
+    request: Request,
+    code_id: int = Form(...),
+):
+    ensure_admin_user()
+    admin_user = _get_authenticated_admin(request)
+    if not admin_user:
+        return _admin_redirect(message="Please sign in again", error=True, tab="demo")
+
+    if not config.demo.enabled:
+        return _admin_redirect(message="Demo mode is not enabled", error=True, tab="demo")
+
+    try:
+        _demo_svc.deactivate_demo_code(code_id)
+    except Exception as exc:
+        return _admin_redirect(message=f"Failed to deactivate code: {exc}", error=True, tab="demo")
+
+    return _admin_redirect(message=f"Demo code {code_id} deactivated", tab="demo")
 
 
 @router.post(f"{config.admin_panel.path}/logout")
