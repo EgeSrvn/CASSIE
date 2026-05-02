@@ -373,8 +373,8 @@ process GENOMESCOPE2 {
         "input_requirements": [
             {
                 "type": "hifi_reads",
-                "label": "HiFi Reads (FASTQ/FASTA)",
-                "formats": ["fastq", "fasta"],
+                "label": "HiFi Reads (FASTQ)",
+                "formats": ["fastq"],
             }
         ],
         "docker": {
@@ -409,8 +409,8 @@ process GENOMESCOPE2 {
         "input_requirements": [
             {
                 "type": "hifi_reads",
-                "label": "HiFi Reads (FASTQ/FASTA)",
-                "formats": ["fastq", "fasta"],
+                "label": "HiFi Reads (FASTQ)",
+                "formats": ["fastq"],
             }
         ],
         "docker": {
@@ -1356,9 +1356,9 @@ def _apply_tool_requirement_rules(
         mode = str(flag_values.get("mode") or "hifi").strip().lower()
         resolved_requirements = []
         if mode == "ont":
-            resolved_requirements.append(_requirement("ont_reads", "ONT Reads", ["fastq", "fasta"]))
+            resolved_requirements.append(_requirement("ont_reads", "ONT Reads", ["fastq"]))
             return resolved_requirements
-        resolved_requirements.append(_requirement("hifi_reads", "HiFi Reads", ["fastq", "fasta"]))
+        resolved_requirements.append(_requirement("hifi_reads", "HiFi Reads", ["fastq"]))
         if mode == "hifi_hic":
             resolved_requirements.extend(
                 [
@@ -1367,13 +1367,13 @@ def _apply_tool_requirement_rules(
                 ]
             )
         elif mode == "hifi_ul":
-            resolved_requirements.append(_requirement("ul_reads", "Ultra-Long ONT Reads", ["fastq", "fasta"]))
+            resolved_requirements.append(_requirement("ul_reads", "Ultra-Long ONT Reads", ["fastq"]))
         return resolved_requirements
 
     if normalized_tool_id == "VERKKO":
-        resolved_requirements = [_requirement("hifi_reads", "HiFi Reads", ["fastq", "fasta"])]
+        resolved_requirements = [_requirement("hifi_reads", "HiFi Reads", ["fastq"])]
         if bool(flag_values.get("include_nano")):
-            resolved_requirements.append(_requirement("nanopore_reads", "Nanopore Reads", ["fastq", "fasta"]))
+            resolved_requirements.append(_requirement("nanopore_reads", "Nanopore Reads", ["fastq"]))
         if bool(flag_values.get("include_hic")):
             resolved_requirements.extend(
                 [

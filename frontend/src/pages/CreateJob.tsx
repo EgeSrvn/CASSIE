@@ -37,7 +37,6 @@ import Navigation from '../components/Navigation'
 import PipelineVisualization from '../components/PipelineVisualization'
 import {
   buildManualExecutionPreferences,
-  buildPipelineExecutionPreferences,
   computeManualPriorityGroups,
   computePipelinePriorityGroups,
   PriorityGroup,
@@ -82,6 +81,53 @@ interface ManualToolInputBlock {
   requirements: ToolRequirement[]
   externalRequirements: ToolRequirement[]
   upstreamRequirements: ToolRequirement[]
+}
+
+interface SavedPipelineToolPlan {
+  nodeId: string
+  toolId: string
+  toolIndex: number
+  toolName: string
+  requirements: ToolRequirement[]
+  toolConfig: Record<string, FlagValue>
+}
+
+interface SavedPipelineExecutionPlan {
+  toolIndices: number[]
+  toolPlans: SavedPipelineToolPlan[]
+  manualInputBindings: Array<{
+    file_id: number
+    binding_id: string
+    tool_id: string
+    requirement_type: string
+    label: string
+  }>
+  inputSourceOverrides: Array<{
+    tool_id: string
+    requirement_type: string
+    source: 'external' | 'upstream'
+  }>
+  manualToolConfigs: Array<{
+    tool_id: string
+    tool_index: number
+    tool_config: Record<string, FlagValue>
+  }>
+  manualPriorityGroups: Array<{
+    priority: number
+    ordered_tool_ids: string[]
+  }>
+  plannedInputs: Array<{
+    id: number
+    binding_id: string
+    tool_id: string
+    requirement_type: string
+    label: string
+    filename: string
+    file_format: string | null
+    size_bytes: number
+    s3_key?: string
+    source: 'library'
+  }>
 }
 
 const getManualInputBlockDefaultName = (block: ManualToolInputBlock): string => {
@@ -229,6 +275,60 @@ const resolvePipelineToolId = (node: any): string => (
   String(node?.data?.toolId ?? node?.data?.tool_id ?? node?.toolId ?? node?.tool_id ?? '').trim().toUpperCase()
 )
 
+const buildOrderedPipelineToolNodeIds = (nodes: any[], edges: any[]): string[] => {
+  const toolNodes = nodes.filter((node) => resolvePipelineNodeType(node) === 'tool' && node?.id != null)
+  const toolNodeIds = new Set(toolNodes.map((node) => String(node.id)))
+  const originalPosition = new Map<string, number>()
+  const inDegree = new Map<string, number>()
+  const dependents = new Map<string, string[]>()
+
+  toolNodes.forEach((node, index) => {
+    const nodeId = String(node.id)
+    originalPosition.set(nodeId, index)
+    inDegree.set(nodeId, 0)
+    dependents.set(nodeId, [])
+  })
+
+  edges.forEach((edge) => {
+    const sourceId = String(edge?.source || '').trim()
+    const targetId = String(edge?.target || '').trim()
+    if (!toolNodeIds.has(sourceId) || !toolNodeIds.has(targetId)) {
+      return
+    }
+    dependents.set(sourceId, [...(dependents.get(sourceId) || []), targetId])
+    inDegree.set(targetId, (inDegree.get(targetId) || 0) + 1)
+  })
+
+  const ready = Array.from(toolNodeIds)
+    .filter((nodeId) => (inDegree.get(nodeId) || 0) === 0)
+    .sort((left, right) => (originalPosition.get(left) || 0) - (originalPosition.get(right) || 0))
+  const ordered: string[] = []
+
+  while (ready.length > 0) {
+    const nodeId = ready.shift() as string
+    ordered.push(nodeId)
+    ;(dependents.get(nodeId) || [])
+      .sort((left, right) => (originalPosition.get(left) || 0) - (originalPosition.get(right) || 0))
+      .forEach((dependentId) => {
+        const nextDegree = (inDegree.get(dependentId) || 0) - 1
+        inDegree.set(dependentId, nextDegree)
+        if (nextDegree === 0) {
+          ready.push(dependentId)
+          ready.sort((left, right) => (originalPosition.get(left) || 0) - (originalPosition.get(right) || 0))
+        }
+      })
+  }
+
+  toolNodes.forEach((node) => {
+    const nodeId = String(node.id)
+    if (!ordered.includes(nodeId)) {
+      ordered.push(nodeId)
+    }
+  })
+
+  return ordered
+}
+
 const renderPageModal = (content: ReactNode) => {
   if (typeof document === 'undefined') {
     return null
@@ -327,6 +427,193 @@ export default function CreateJob() {
     () => selectedPipeline ? normalizePipelineEdgeList(selectedPipeline.edges) : [],
     [selectedPipeline]
   )
+  const savedPipelineExecutionPlan = useMemo<SavedPipelineExecutionPlan | null>(() => {
+    if (selectionMode !== 'pipeline' || !pipelineRequirements || selectedPipelineNodes.length === 0) {
+      return null
+    }
+
+    const filesById = new Map<number, FileItem & { folderPath?: string }>(
+      flattenFiles(dataFileTree).map((file) => [file.id, file])
+    )
+    const nodesById = new Map<string, any>(
+      selectedPipelineNodes
+        .filter((node: any) => node && typeof node === 'object' && node.id != null)
+        .map((node: any) => [String(node.id), node])
+    )
+    const inputNodesById = new Map<string, any>(
+      selectedPipelineNodes
+        .filter((node: any) => PIPELINE_INPUT_NODE_TYPES.has(resolvePipelineNodeType(node)) && node?.id != null)
+        .map((node: any) => [String(node.id), node])
+    )
+    const toolRequirementsByNodeId = new Map<string, ToolRequirementInfo>(
+      (pipelineRequirements.tool_requirements || [])
+        .filter((item) => item?.node_id)
+        .map((item) => [String(item.node_id), item])
+    )
+    const toolIndexByToolId = new Map<string, number>()
+    availableTools.forEach((tool) => {
+      if (tool.tool_id) {
+        toolIndexByToolId.set(tool.tool_id.toUpperCase(), tool.id)
+      }
+    })
+
+    const orderedNodeIds = buildOrderedPipelineToolNodeIds(selectedPipelineNodes, selectedPipelineEdges)
+    const toolPlans: SavedPipelineToolPlan[] = orderedNodeIds
+      .map((nodeId) => {
+        const node = nodesById.get(nodeId)
+        const toolId = resolvePipelineToolId(node)
+        const toolIndex = toolIndexByToolId.get(toolId)
+        if (!toolId || toolIndex === undefined) {
+          return null
+        }
+        const requirementCard = toolRequirementsByNodeId.get(nodeId)
+        const rawToolConfig = requirementCard?.tool_config || node?.data?.flagValues || node?.data?.toolConfig || {}
+        return {
+          nodeId,
+          toolId,
+          toolIndex,
+          toolName: String(requirementCard?.tool_name || resolvePipelineNodeLabel(node, toolId)),
+          requirements: requirementCard?.requirements || [],
+          toolConfig: rawToolConfig as Record<string, FlagValue>,
+        }
+      })
+      .filter((item): item is SavedPipelineToolPlan => Boolean(item))
+
+    if (toolPlans.length === 0) {
+      return null
+    }
+
+    const toolPlanByNodeId = new Map(toolPlans.map((plan) => [plan.nodeId, plan]))
+    const incomingInputNodeIdsByToolNode = new Map<string, string[]>()
+    selectedPipelineEdges.forEach((edge: any) => {
+      const sourceId = String(edge?.source || '').trim()
+      const targetId = String(edge?.target || '').trim()
+      if (!inputNodesById.has(sourceId) || !toolPlanByNodeId.has(targetId)) {
+        return
+      }
+      const current = incomingInputNodeIdsByToolNode.get(targetId) || []
+      if (!current.includes(sourceId)) {
+        incomingInputNodeIdsByToolNode.set(targetId, [...current, sourceId])
+      }
+    })
+
+    const manualInputBindings: SavedPipelineExecutionPlan['manualInputBindings'] = []
+    const inputSourceOverrides: SavedPipelineExecutionPlan['inputSourceOverrides'] = []
+    const manualToolConfigs: SavedPipelineExecutionPlan['manualToolConfigs'] = []
+    const plannedInputs: SavedPipelineExecutionPlan['plannedInputs'] = []
+    const bindingDedup = new Set<string>()
+    const overrideDedup = new Set<string>()
+    const plannedInputDedup = new Set<string>()
+
+    toolPlans.forEach((plan) => {
+      if (Object.keys(plan.toolConfig || {}).length > 0) {
+        manualToolConfigs.push({
+          tool_id: plan.toolId,
+          tool_index: plan.toolIndex,
+          tool_config: plan.toolConfig,
+        })
+      }
+
+      const connectedInputNodeIds = incomingInputNodeIdsByToolNode.get(plan.nodeId) || []
+      plan.requirements.forEach((req, requirementIndex) => {
+        const requirementFormats = new Set((req.formats || []).map((format) => String(format).toLowerCase()))
+        const matchingInputNodeIds = connectedInputNodeIds.filter((inputNodeId) => {
+          const inputNode = inputNodesById.get(inputNodeId)
+          const inputType = resolvePipelineNodeType(inputNode)
+          if (inputType === 'fastqinput') {
+            return requirementFormats.has('fastq')
+          }
+          if (inputType === 'fastainput') {
+            return requirementFormats.has('fasta')
+          }
+          return true
+        })
+
+        const hasExternalBinding = matchingInputNodeIds.some((inputNodeId) => (pipelineInputMappings[inputNodeId] || []).length > 0)
+        const source: 'external' | 'upstream' = hasExternalBinding ? 'external' : (req.default_source === 'upstream' ? 'upstream' : 'external')
+        const overrideKey = `${plan.toolId}:${req.type}:${source}`
+        if (!overrideDedup.has(overrideKey)) {
+          inputSourceOverrides.push({
+            tool_id: plan.toolId,
+            requirement_type: req.type,
+            source,
+          })
+          overrideDedup.add(overrideKey)
+        }
+
+        if (!hasExternalBinding) {
+          return
+        }
+
+        const bindingId = req.requirement_id || `pipeline:${plan.nodeId}:${plan.toolId}:${req.type}:${requirementIndex}`
+        matchingInputNodeIds.forEach((inputNodeId) => {
+          const selectedFileIds = pipelineInputMappings[inputNodeId] || []
+          selectedFileIds.forEach((fileId) => {
+            const file = filesById.get(fileId)
+            if (!file) {
+              return
+            }
+            const bindingKey = `${fileId}:${bindingId}:${plan.toolId}:${req.type}`
+            if (!bindingDedup.has(bindingKey)) {
+              manualInputBindings.push({
+                file_id: fileId,
+                binding_id: bindingId,
+                tool_id: plan.toolId,
+                requirement_type: req.type,
+                label: req.label,
+              })
+              bindingDedup.add(bindingKey)
+            }
+            if (!plannedInputDedup.has(bindingKey)) {
+              plannedInputs.push({
+                id: file.id,
+                binding_id: bindingId,
+                tool_id: plan.toolId,
+                requirement_type: req.type,
+                label: req.label,
+                filename: file.filename,
+                file_format: file.file_format || null,
+                size_bytes: file.size_bytes || 0,
+                s3_key: file.s3_key,
+                source: 'library',
+              })
+              plannedInputDedup.add(bindingKey)
+            }
+          })
+        })
+      })
+    })
+
+    const toolIdByNodeId = new Map(toolPlans.map((plan) => [plan.nodeId, plan.toolId]))
+    const manualPriorityGroups = priorityGroups
+      .map((group) => ({
+        priority: group.priority,
+        ordered_tool_ids: group.items
+          .filter((item) => item.selected)
+          .map((item) => toolIdByNodeId.get(String(item.nodeId || item.id)) || '')
+          .filter(Boolean),
+      }))
+      .filter((group) => group.ordered_tool_ids.length > 0)
+
+    return {
+      toolIndices: toolPlans.map((plan) => plan.toolIndex),
+      toolPlans,
+      manualInputBindings,
+      inputSourceOverrides,
+      manualToolConfigs,
+      manualPriorityGroups,
+      plannedInputs,
+    }
+  }, [
+    availableTools,
+    dataFileTree,
+    pipelineInputMappings,
+    pipelineRequirements,
+    priorityGroups,
+    selectedPipelineEdges,
+    selectedPipelineNodes,
+    selectionMode,
+  ])
   const getManualToolDefaultFlagValues = useCallback((toolReq: ToolRequirementInfo): Record<string, FlagValue> => {
     if (toolReq.default_flag_values) {
       return { ...toolReq.default_flag_values }
@@ -494,7 +781,7 @@ export default function CreateJob() {
         return
       }
 
-      if (selectionMode === 'pipeline' && !selectedPipelineId) {
+      if (selectionMode === 'pipeline' && (!savedPipelineExecutionPlan || savedPipelineExecutionPlan.toolIndices.length === 0)) {
         setRuntimeEstimate(null)
         setRuntimeEstimateError('')
         return
@@ -506,7 +793,7 @@ export default function CreateJob() {
         const estimate = await estimateRuntime(
           selectionMode === 'pipeline'
             ? {
-                pipeline_id: selectedPipelineId || undefined,
+                tool_indices: savedPipelineExecutionPlan?.toolIndices || undefined,
                 vm_name: selectedVM,
                 input_assignments: getRuntimeInputAssignments(),
               }
@@ -545,8 +832,8 @@ export default function CreateJob() {
     manualToolFlagValues,
     pipelineInputMappings,
     requirementSourceSelections,
+    savedPipelineExecutionPlan,
     selectedPipelineEdges,
-    selectedPipelineId,
     selectedPipelineNodes,
     selectedTools,
     selectedVM,
@@ -1734,18 +2021,6 @@ export default function CreateJob() {
     inputBlockNames[inputId]?.trim() || fallbackLabel
   ), [inputBlockNames])
 
-  const getPipelineInputBindings = useCallback(() => (
-    pipelineInputRequirements.flatMap((inputReq) => {
-      const bindingId = String(inputReq.id || inputReq.label)
-      const mappedFileIds = pipelineInputMappings[bindingId] || []
-      return mappedFileIds.map((fileId) => ({
-        file_id: fileId,
-        binding_id: bindingId,
-        label: inputBlockDisplayName(bindingId, inputReq.label),
-      }))
-    })
-  ), [inputBlockDisplayName, pipelineInputMappings, pipelineInputRequirements])
-
   const handleInputBlockNameChange = (inputId: string, value: string) => {
     setInputBlockNames((prev) => ({ ...prev, [inputId]: value }))
   }
@@ -1795,34 +2070,26 @@ export default function CreateJob() {
     const filesById = new Map(combinedSelectableFiles.map((file) => [file.id, file]))
 
     if (selectionMode === 'pipeline') {
-      if (!selectedPipelineId) {
+      if (!savedPipelineExecutionPlan || savedPipelineExecutionPlan.toolIndices.length === 0) {
         return null
       }
-
-      const plannedInputs = pipelineInputRequirements.flatMap((inputReq) => {
-        const inputKey = String(inputReq.id || inputReq.label)
-        const mappedFileIds = pipelineInputMappings[inputKey] || []
-
-        return mappedFileIds
-          .map((fileId) => filesById.get(fileId))
-          .filter((file): file is FileItem & { folderPath?: string } => Boolean(file))
-          .map((file) => ({
-            id: file.id,
-            binding_id: inputKey,
-            label: inputBlockDisplayName(inputKey, inputReq.label),
-            filename: file.filename,
-            file_format: file.file_format || null,
-            size_bytes: file.size_bytes || 0,
-            s3_key: file.s3_key,
-            source: 'library',
-          }))
-      })
-
-      const executionPreferences = buildPipelineExecutionPreferences(priorityGroups)
+      const executionPreferences: Record<string, unknown> = {}
+      if (savedPipelineExecutionPlan.manualPriorityGroups.length > 0) {
+        executionPreferences.manual_priority_groups = savedPipelineExecutionPlan.manualPriorityGroups
+      }
+      if (savedPipelineExecutionPlan.inputSourceOverrides.length > 0) {
+        executionPreferences.input_source_overrides = savedPipelineExecutionPlan.inputSourceOverrides
+      }
+      if (savedPipelineExecutionPlan.manualInputBindings.length > 0) {
+        executionPreferences.manual_input_bindings = savedPipelineExecutionPlan.manualInputBindings
+      }
+      if (savedPipelineExecutionPlan.manualToolConfigs.length > 0) {
+        executionPreferences.manual_tool_configs = savedPipelineExecutionPlan.manualToolConfigs
+      }
 
       return {
-        pipeline_id: selectedPipelineId,
-        planned_inputs: plannedInputs,
+        tool_indices: savedPipelineExecutionPlan.toolIndices,
+        planned_inputs: savedPipelineExecutionPlan.plannedInputs,
         execution_preferences: Object.keys(executionPreferences).length > 0
           ? executionPreferences
           : undefined,
@@ -1904,7 +2171,7 @@ export default function CreateJob() {
     pipelineInputMappings,
     pipelineInputRequirements,
     priorityGroups,
-    selectedPipelineId,
+    savedPipelineExecutionPlan,
     selectedTools,
     selectionMode,
     toolFileMappings,
@@ -2176,21 +2443,30 @@ export default function CreateJob() {
         : []
 
       if (selectionMode === 'pipeline') {
-        if (!selectedPipelineId) {
-          setError('Please select a pipeline')
+        if (!savedPipelineExecutionPlan || savedPipelineExecutionPlan.toolIndices.length === 0) {
+          setError('The selected pipeline could not be converted into a runnable job')
           setCreating(false)
           return
         }
-        jobData.pipeline_id = selectedPipelineId
-        if (priorityGroups.length > 0) {
-          jobData.execution_preferences = buildPipelineExecutionPreferences(priorityGroups)
+        jobData.tool_indices = savedPipelineExecutionPlan.toolIndices
+        const manualExecutionPreferences: Record<string, unknown> = {}
+        if (savedPipelineExecutionPlan.manualPriorityGroups.length > 0) {
+          manualExecutionPreferences.manual_priority_groups = savedPipelineExecutionPlan.manualPriorityGroups
         }
-        const pipelineInputBindings = getPipelineInputBindings()
-        if (pipelineInputBindings.length > 0) {
-          jobData.execution_preferences = {
-            ...(jobData.execution_preferences || {}),
-            pipeline_input_bindings: pipelineInputBindings,
-          }
+        if (savedPipelineExecutionPlan.manualToolConfigs.length > 0) {
+          manualExecutionPreferences.manual_tool_configs = savedPipelineExecutionPlan.manualToolConfigs
+        }
+        if (savedPipelineExecutionPlan.manualInputBindings.length > 0) {
+          manualExecutionPreferences.manual_input_bindings = savedPipelineExecutionPlan.manualInputBindings
+        }
+        if (savedPipelineExecutionPlan.inputSourceOverrides.length > 0) {
+          manualExecutionPreferences.input_source_overrides = savedPipelineExecutionPlan.inputSourceOverrides
+        }
+        if (selectedPipelineId) {
+          manualExecutionPreferences.source_pipeline_id = selectedPipelineId
+        }
+        if (Object.keys(manualExecutionPreferences).length > 0) {
+          jobData.execution_preferences = manualExecutionPreferences
         }
       } else {
         if (selectedTools.length === 0) {

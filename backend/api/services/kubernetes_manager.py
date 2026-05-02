@@ -2759,7 +2759,7 @@ exit "$CASSIE_STATUS"
                 if not primary_reads and not has_explicit_bindings:
                     primary_reads = self._prefer_primary_long_read_inputs(classified["reads_like"])
                 if not primary_reads:
-                    raise ValueError("Hifiasm ONT mode requires ONT reads in FASTQ or FASTA format")
+                    raise ValueError("Hifiasm ONT mode requires ONT reads in FASTQ format")
                 hifiasm_inputs = self._quoted_input_paths(input_dir, primary_reads)
             else:
                 primary_reads = self._prefer_primary_long_read_inputs(
@@ -2768,7 +2768,7 @@ exit "$CASSIE_STATUS"
                 if not primary_reads and not has_explicit_bindings:
                     primary_reads = self._prefer_primary_long_read_inputs(classified["reads_like"])
                 if not primary_reads:
-                    raise ValueError("Hifiasm requires HiFi reads in FASTQ or FASTA format")
+                    raise ValueError("Hifiasm requires HiFi reads in FASTQ format")
                 hifiasm_inputs = self._quoted_input_paths(input_dir, primary_reads)
             hifiasm_out = f"{output_dir}/hifiasm_out"
             prefix = f"{hifiasm_out}/assembly"
@@ -2844,7 +2844,7 @@ exit "$CASSIE_STATUS"
                 if not nano_reads:
                     nano_reads = inferred_nano_reads
             if not hifi_reads:
-                raise ValueError("Verkko requires at least one HiFi long-read FASTQ/FASTA input")
+                raise ValueError("Verkko requires at least one HiFi long-read FASTQ input")
             verkko_out = f"{output_dir}/verkko_out"
             hifi_args = self._quoted_input_paths(input_dir, hifi_reads)
             nano_flag = ""

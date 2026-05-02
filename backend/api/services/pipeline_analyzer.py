@@ -225,6 +225,7 @@ def analyze_pipeline_requirements(pipeline: PipelineInDB) -> Dict[str, Any]:
 
                 node_data = node.get("data") if isinstance(node.get("data"), dict) else {}
                 tool_requirement_entries.append({
+                    "node_id": node_id,
                     "tool_index": len(tool_requirement_entries),
                     "tool_id": tool_id,
                     "tool_name": node_label or tool_id,

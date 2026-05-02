@@ -168,6 +168,7 @@ export interface ToolRequirement {
 }
 
 export interface ToolRequirementInfo {
+  node_id?: string
   tool_index: number
   tool_id: string
   tool_name: string
