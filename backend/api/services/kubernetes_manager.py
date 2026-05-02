@@ -1542,7 +1542,11 @@ class KubernetesPipelineRunner:
                     }
                 )
         elif input_file_ids:
-            normalized_inputs = self._build_initial_inputs(user_id, input_file_ids)
+            normalized_inputs = self._build_initial_inputs(
+                user_id,
+                input_file_ids,
+                execution_preferences=execution_preferences,
+            )
 
         if pipeline_id:
             stage_specs = self._build_stage_specs_from_pipeline(
@@ -1639,11 +1643,16 @@ class KubernetesPipelineRunner:
 
         input_files = get_files_by_user(user_id, job_id=job_id, file_type=FileType.INPUT, limit=1000, offset=0)
         output_files = get_files_by_user(user_id, job_id=job_id, file_type=FileType.OUTPUT, limit=1000, offset=0)
-        initial_inputs = self._build_initial_inputs(user_id, [file_record.id for file_record in input_files]) if input_files else []
+        execution_preferences = getattr(job, "execution_preferences", None)
+        initial_inputs = self._build_initial_inputs(
+            user_id,
+            [file_record.id for file_record in input_files],
+            execution_preferences=execution_preferences,
+        ) if input_files else []
 
         snapshot_stages = None
-        if isinstance(getattr(job, "execution_preferences", None), dict):
-            snapshot = job.execution_preferences.get("visualization_snapshot") or {}
+        if isinstance(execution_preferences, dict):
+            snapshot = execution_preferences.get("visualization_snapshot") or {}
             if isinstance(snapshot, dict) and isinstance(snapshot.get("stages"), list):
                 snapshot_stages = snapshot.get("stages")
 

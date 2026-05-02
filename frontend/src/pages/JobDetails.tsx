@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import {
   getJob,
@@ -791,6 +791,97 @@ export default function JobDetails() {
     return ['Selected pipeline']
   }
 
+  const inputToolConnections = useMemo(() => {
+    const normalizeFilename = (value: string): string => value.trim().toLowerCase()
+    const connectionMap = new Map<string, Array<{ toolLabel: string; requirementLabel?: string }>>()
+
+    const registerConnection = (filename: string, toolLabel: string, requirementLabel?: string | null) => {
+      const normalizedFilename = normalizeFilename(filename)
+      const normalizedTool = String(toolLabel || '').trim()
+      const normalizedRequirement = String(requirementLabel || '').trim()
+      if (!normalizedFilename || !normalizedTool) {
+        return
+      }
+
+      const existing = connectionMap.get(normalizedFilename) || []
+      const alreadyPresent = existing.some((item) => (
+        item.toolLabel === normalizedTool &&
+        (item.requirementLabel || '') === normalizedRequirement
+      ))
+      if (alreadyPresent) {
+        return
+      }
+
+      existing.push({
+        toolLabel: normalizedTool,
+        requirementLabel: normalizedRequirement || undefined,
+      })
+      existing.sort((left, right) => {
+        if (left.toolLabel !== right.toolLabel) {
+          return left.toolLabel.localeCompare(right.toolLabel)
+        }
+        return (left.requirementLabel || '').localeCompare(right.requirementLabel || '')
+      })
+      connectionMap.set(normalizedFilename, existing)
+    }
+
+    const stageLabelByBlockId = new Map<string, string>()
+    ;(jobPipeline?.blocks || []).forEach((block) => {
+      if (block.column === 'stage') {
+        stageLabelByBlockId.set(block.id, block.label)
+      }
+    })
+
+    ;(jobPipeline?.blocks || [])
+      .filter((block) => block.kind === 'input')
+      .forEach((inputBlock) => {
+        const filenames = (inputBlock.filenames || []).filter(Boolean)
+        if (filenames.length === 0) {
+          return
+        }
+
+        const downstreamConnections = (jobPipeline?.connections || []).filter((connection) => (
+          connection.source === inputBlock.id &&
+          typeof connection.target === 'string' &&
+          connection.target.startsWith('stage:')
+        ))
+
+        filenames.forEach((filename) => {
+          downstreamConnections.forEach((connection) => {
+            const toolLabel = stageLabelByBlockId.get(connection.target) || connection.target.replace(/^stage:/, '')
+            const requirementLabel = connection.label || inputBlock.label || undefined
+            registerConnection(filename, toolLabel, requirementLabel)
+          })
+        })
+      })
+
+    const manualInputBindings = Array.isArray((job?.execution_preferences as any)?.manual_input_bindings)
+      ? ((job?.execution_preferences as any)?.manual_input_bindings as Array<Record<string, unknown>>)
+      : []
+    const inputFileById = new Map<number, File>(inputFiles.map((file) => [file.id, file]))
+
+    manualInputBindings.forEach((binding) => {
+      const fileId = Number(binding?.file_id)
+      const file = inputFileById.get(fileId)
+      if (!file) {
+        return
+      }
+
+      const toolId = String(binding?.tool_id || '').trim().toUpperCase()
+      const requirementLabel = String(binding?.label || binding?.requirement_type || '').trim()
+      const matchingStageLabel = Array.from(stageLabelByBlockId.entries()).find(([blockId]) => (
+        blockId.toUpperCase().includes(toolId)
+      ))?.[1]
+      registerConnection(
+        file.filename,
+        matchingStageLabel || toolId || 'Selected tool',
+        requirementLabel || undefined,
+      )
+    })
+
+    return connectionMap
+  }, [inputFiles, job, jobPipeline])
+
   if (loading) {
     return (
       <div className="page-container">
@@ -1381,6 +1472,21 @@ export default function JobDetails() {
                       <div className="file-info">
                         <strong>{file.filename}</strong>
                         <span>{(file.size_bytes / 1024 / 1024).toFixed(2)} MB</span>
+                        {(() => {
+                          const connectedTools = inputToolConnections.get(file.filename.trim().toLowerCase()) || []
+                          if (connectedTools.length === 0) {
+                            return null
+                          }
+                          return (
+                            <div style={{ marginTop: '0.4rem', color: '#5f6b76', fontSize: '0.85rem', lineHeight: 1.5 }}>
+                              <strong>Connected to:</strong>{' '}
+                              {connectedTools.map((item) => item.requirementLabel
+                                ? `${item.toolLabel} (${item.requirementLabel})`
+                                : item.toolLabel
+                              ).join(', ')}
+                            </div>
+                          )
+                        })()}
                       </div>
                       <span
                         style={{
@@ -1403,6 +1509,25 @@ export default function JobDetails() {
                       <div className="file-info">
                         <strong>{file.filename}</strong>
                         <span>{(file.size_bytes / 1024 / 1024).toFixed(2)} MB</span>
+                        {(() => {
+                          const connectedTools = inputToolConnections.get(file.filename.trim().toLowerCase()) || []
+                          if (connectedTools.length === 0) {
+                            return (
+                              <div style={{ marginTop: '0.4rem', color: '#8b6f47', fontSize: '0.85rem', lineHeight: 1.5 }}>
+                                No tool connections recorded for this file yet.
+                              </div>
+                            )
+                          }
+                          return (
+                            <div style={{ marginTop: '0.4rem', color: '#5f6b76', fontSize: '0.85rem', lineHeight: 1.5 }}>
+                              <strong>Connected to:</strong>{' '}
+                              {connectedTools.map((item) => item.requirementLabel
+                                ? `${item.toolLabel} (${item.requirementLabel})`
+                                : item.toolLabel
+                              ).join(', ')}
+                            </div>
+                          )
+                        })()}
                       </div>
                     </div>
                   ))}
