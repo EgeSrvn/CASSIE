@@ -180,6 +180,29 @@ def create_job_upload_token(data: Dict[str, Any], expires_delta: Optional[timede
     return encoded_jwt
 
 
+def create_demo_token(session_id: str, demo_code_id: int) -> str:
+    """
+    Create a JWT demo session token for a public demo user.
+
+    Demo tokens are stateless — no real user account is associated.
+    They carry role="demo" and is_demo=True so backend dependencies
+    can distinguish them from normal access tokens without a DB lookup.
+    """
+    from backend.api.utils.config_loader import get_config
+    config = get_config()
+    data = {
+        "session_id": session_id,
+        "role": "demo",
+        "is_demo": True,
+        "demo_code_id": demo_code_id,
+        "token_type": "demo_session",
+    }
+    return create_access_token(
+        data=data,
+        expires_delta=timedelta(minutes=config.demo.session_ttl_minutes),
+    )
+
+
 def create_scoped_token(
     data: Dict[str, Any],
     *,

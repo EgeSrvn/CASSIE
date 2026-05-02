@@ -351,6 +351,62 @@ export const notifyAuthChange = (): void => {
   window.dispatchEvent(new Event(AUTH_CHANGE_EVENT))
 }
 
+// ============================================================================
+// Demo session helpers
+// ============================================================================
+
+export interface DemoAuthResponse {
+  access_token: string
+  token_type: string
+  role: string
+}
+
+/**
+ * Parse the JWT payload without verifying the signature.
+ * Used only for reading non-sensitive claims (role, is_demo, exp).
+ */
+const _parseJwtPayload = (token: string): Record<string, unknown> | null => {
+  try {
+    const part = token.split('.')[1]
+    if (!part) return null
+    const normalized = part.replace(/-/g, '+').replace(/_/g, '/')
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=')
+    return JSON.parse(atob(padded)) as Record<string, unknown>
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Returns true if the stored (or provided) token is a demo session token.
+ * Backend is the authoritative source — this is for UI gating only.
+ */
+export const isDemoToken = (token: string | null = getToken()): boolean => {
+  if (!token) return false
+  const payload = _parseJwtPayload(token)
+  return payload?.is_demo === true && payload?.token_type === 'demo_session'
+}
+
+/**
+ * Submit a demo code and store the resulting demo session token.
+ * On success the `auth-change` event is dispatched so UI updates.
+ */
+export const demoLogin = async (code: string): Promise<DemoAuthResponse> => {
+  try {
+    const response = await apiClient.post<{ success: boolean; data: DemoAuthResponse; message?: string }>(
+      '/api/demo/validate-code',
+      { code }
+    )
+    if (response.data.success && response.data.data.access_token) {
+      setToken(response.data.data.access_token)
+      return response.data.data
+    }
+    throw new Error(response.data.message || 'Invalid or expired demo code.')
+  } catch (error: any) {
+    throw new Error(extractApiErrorMessage(error, 'Invalid or expired demo code.'))
+  }
+}
+
 export const requestEmailVerification = async (email: string): Promise<VerificationChallenge> => {
   const response = await apiClient.post<{ success: boolean; data: VerificationChallenge; message?: string }>('/api/auth/verify-email/request', { email })
   if (response.data.success) {

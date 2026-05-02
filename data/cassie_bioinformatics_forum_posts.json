@@ -1,0 +1,328 @@
+[
+  {
+    "id": 1,
+    "title": "FastQC warnings after mixing NovaSeq lanes in one CASSIE job",
+    "body": "I merged reads from two NovaSeq lanes before uploading to Storage, then ran FastQC in CASSIE. The per-tile quality warning appears in only one lane, but the combined report makes it look sample-wide. Would you split lanes into separate tool blocks or keep one FastQC job for the sample?",
+    "tags": ["fastqc", "quality-control", "illumina", "cassie-jobs"],
+    "author": "Aylin",
+    "comments": [
+      {
+        "author": "Mert",
+        "body": "@Aylin I would run FastQC per lane first, then create a second job on the merged reads only after checking whether the warning is localized."
+      },
+      {
+        "author": "Priya",
+        "body": "If the same sample has consistent adapter and GC profiles, the merge is fine for downstream assembly. The lane-level FastQC job is mostly for diagnosing the instrument artifact."
+      },
+      {
+        "author": "Jon",
+        "body": "@Mert agreed. In CASSIE, I name the lane jobs with lane IDs so the Jobs page stays searchable later."
+      },
+      {
+        "author": "Deniz",
+        "body": "Choose the VM based on how many FastQC files you are batching. You cannot set memory manually per job, so a larger VM profile is the knob if the batch is heavy."
+      }
+    ]
+  },
+  {
+    "id": 2,
+    "title": "SPAdes pipeline input mapping for paired-end reads",
+    "body": "I built a saved pipeline with FastQC followed by SPAdes. In Create Job, CASSIE exposes the FASTQ input block and lets me map multiple files. For paired-end bacterial reads, should I map both R1 and R2 files into the same block or create separate inputs in the pipeline builder?",
+    "tags": ["spades", "paired-end", "pipeline-builder", "input-mapping"],
+    "author": "Burak",
+    "comments": [
+      {
+        "author": "Elif",
+        "body": "@Burak Map both R1 and R2 to the same FASTQ input block if the requirement accepts multiple FASTQ files. Keep filenames clear so SPAdes pairing can be inferred."
+      },
+      {
+        "author": "Hannah",
+        "body": "I usually upload `sample_R1.fastq.gz` and `sample_R2.fastq.gz` together in Storage, then select both in the same pipeline input step."
+      },
+      {
+        "author": "Ozan",
+        "body": "@Elif If you have multiple samples, create separate jobs rather than putting all samples into one SPAdes run."
+      }
+    ]
+  },
+  {
+    "id": 3,
+    "title": "QUAST comparison for assemblies created from manual tools vs saved pipeline",
+    "body": "I ran SPAdes and QUAST manually, then repeated the same tools from a saved CASSIE pipeline. QUAST metrics matched, but the job history is easier to read from the saved pipeline. Is there any reason to prefer one route for reproducibility?",
+    "tags": ["quast", "reproducibility", "saved-pipelines", "assembly"],
+    "author": "Nora",
+    "comments": [
+      {
+        "author": "Lara",
+        "body": "Saved pipelines are better for team reuse because the graph records the intended order. Manual tool selection is fine for quick experiments."
+      },
+      {
+        "author": "Kerem",
+        "body": "@Nora I would use saved pipelines for anything you expect to rerun. The input mapping and VM choice are easier to audit."
+      },
+      {
+        "author": "Sam",
+        "body": "For exact reproducibility, also keep the same uploaded input files and the same VM profile. CASSIE users choose VM profiles, not custom RAM values."
+      },
+      {
+        "author": "Nina",
+        "body": "@Sam Good point. I include the VM name in my lab notes with the QUAST report."
+      }
+    ]
+  },
+  {
+    "id": 4,
+    "title": "BUSCO lineage choice for fungal assemblies",
+    "body": "I have a draft fungal assembly from long reads and want to run BUSCO in CASSIE. The species is poorly annotated, so I am unsure whether to use a broad fungi lineage or a narrower lineage from a related clade. What do people do first?",
+    "tags": ["busco", "fungi", "assembly-assessment", "lineage"],
+    "author": "Cem",
+    "comments": [
+      {
+        "author": "Irem",
+        "body": "@Cem Start broad if taxonomy is uncertain, then rerun with the narrower lineage once you confirm the placement."
+      },
+      {
+        "author": "Marco",
+        "body": "A narrower lineage can inflate missing BUSCOs if the organism is outside the expected clade. I compare both and report the lineage name explicitly."
+      },
+      {
+        "author": "Selin",
+        "body": "Use a larger VM profile if the assembly is big or if the lineage data is heavy. There is no per-job memory slider in CASSIE."
+      }
+    ]
+  },
+  {
+    "id": 5,
+    "title": "GenomeScope2 estimate looks off for heterozygous plant data",
+    "body": "GenomeScope2 in my CASSIE workflow predicts a genome size about 20 percent lower than our flow cytometry estimate. The k-mer histogram has a wide heterozygous peak and a long tail. Could read contamination be driving this?",
+    "tags": ["genomescope2", "kmer", "plant-genomics", "heterozygosity"],
+    "author": "Leyla",
+    "comments": [
+      {
+        "author": "Arda",
+        "body": "@Leyla Contamination can do that, but high heterozygosity and repeats can also distort the model. I would run a k-mer spectrum after trimming and filtering."
+      },
+      {
+        "author": "Mina",
+        "body": "Check whether organelle reads are overrepresented. They can add a strange tail and make interpretation harder."
+      },
+      {
+        "author": "Emre",
+        "body": "I like to pair GenomeScope2 with Merqury later, especially if you have a draft assembly to compare against the read set."
+      },
+      {
+        "author": "Aylin",
+        "body": "@Emre Same. The CASSIE job notes make it easy to keep those estimates beside the assembly evaluation jobs."
+      }
+    ]
+  },
+  {
+    "id": 6,
+    "title": "Choosing VM profiles for hifiasm jobs in CASSIE",
+    "body": "We are assembling a 900 Mb genome with PacBio HiFi reads using hifiasm. Since CASSIE only lets us choose a VM profile and not manually allocate memory, what signals should we use to pick the VM before submitting?",
+    "tags": ["hifiasm", "vm-selection", "long-reads", "resource-planning"],
+    "author": "Deniz",
+    "comments": [
+      {
+        "author": "Nina",
+        "body": "@Deniz Look at genome size, read coverage, and whether the sample is highly heterozygous. For hifiasm, I would avoid the smallest VM profile for 900 Mb."
+      },
+      {
+        "author": "Kerem",
+        "body": "The runtime prediction is useful for cost planning, but for failed-memory risk I still choose the larger VM profile when coverage is high."
+      },
+      {
+        "author": "Priya",
+        "body": "Exactly. In CASSIE the VM profile controls the available resource slice; users do not enter custom memory or CPU limits."
+      },
+      {
+        "author": "Jon",
+        "body": "@Priya This is also easier for shared clusters because everyone uses the same configured profiles."
+      }
+    ]
+  },
+  {
+    "id": 7,
+    "title": "Verkko pipeline with HiFi plus ONT reads",
+    "body": "I am setting up a saved CASSIE pipeline for Verkko using HiFi reads and ONT reads. Should I keep separate FASTQ input blocks for the two read technologies, or upload all reads into one block and document the distinction in filenames?",
+    "tags": ["verkko", "hifi", "ont", "pipeline-inputs"],
+    "author": "Sam",
+    "comments": [
+      {
+        "author": "Lara",
+        "body": "@Sam Separate input blocks are cleaner because the technologies have different roles in Verkko."
+      },
+      {
+        "author": "Burak",
+        "body": "I name the blocks `HiFi reads` and `ONT reads` in the Create Job input step. It prevents mistakes when another lab member reruns the pipeline."
+      },
+      {
+        "author": "Mert",
+        "body": "If the saved pipeline already has clear blocks, the final review page is much easier to inspect before submission."
+      }
+    ]
+  },
+  {
+    "id": 8,
+    "title": "Merqury k-mer completeness after polishing",
+    "body": "After polishing a long-read assembly, Merqury reports improved QV but slightly lower k-mer completeness. The input reads are the same. Has anyone seen this after removing duplicate haplotigs?",
+    "tags": ["merqury", "polishing", "kmer-completeness", "haplotigs"],
+    "author": "Zeynep",
+    "comments": [
+      {
+        "author": "Marco",
+        "body": "@Zeynep Yes, purging duplicated haplotigs can reduce apparent completeness if true heterozygous sequence was removed."
+      },
+      {
+        "author": "Irem",
+        "body": "Compare spectra-cn plots before and after purging. The QV alone will not tell the whole story."
+      },
+      {
+        "author": "Elif",
+        "body": "In CASSIE, I keep separate Merqury jobs for pre-polish, post-polish, and post-purge assemblies so the results are not mixed."
+      },
+      {
+        "author": "Ozan",
+        "body": "@Elif Same pattern here. The job names matter a lot when several assemblies are moving through the same project."
+      }
+    ]
+  },
+  {
+    "id": 9,
+    "title": "Liftoff transfer from reference annotation to alternate assembly",
+    "body": "I am using Liftoff in CASSIE to transfer annotations from a close reference to a newly assembled cultivar. Several disease-resistance gene clusters are fragmented. Should I rerun with relaxed identity settings or inspect the assembly first?",
+    "tags": ["liftoff", "annotation-transfer", "plant-genomics", "gene-clusters"],
+    "author": "Mina",
+    "comments": [
+      {
+        "author": "Cem",
+        "body": "@Mina Inspect the assembly around those clusters first. Resistance loci can be copy-rich and structurally variable."
+      },
+      {
+        "author": "Hannah",
+        "body": "Relaxing identity helps sometimes, but it can also create questionable mappings. I would check QUAST and BUSCO around the same assembly version."
+      },
+      {
+        "author": "Arda",
+        "body": "If you rerun, keep the same VM profile and change only the Liftoff flags. That makes the result comparison easier."
+      }
+    ]
+  },
+  {
+    "id": 10,
+    "title": "Metagenome assembly: metaSPAdes then QUAST or bin first?",
+    "body": "For a complex wastewater metagenome, I ran metaSPAdes in CASSIE and got a fragmented assembly. Is it more useful to run QUAST on the whole assembly first, or should I bin contigs and evaluate bins separately?",
+    "tags": ["metaspades", "metagenomics", "quast", "binning"],
+    "author": "Ozan",
+    "comments": [
+      {
+        "author": "Nora",
+        "body": "@Ozan I run QUAST on the whole assembly first for a quick sanity check, then evaluate bins separately if binning is part of the analysis."
+      },
+      {
+        "author": "Jon",
+        "body": "For wastewater, fragmentation is expected. Total assembled bases, contig length distribution, and mapping rate may be more informative than N50 alone."
+      },
+      {
+        "author": "Priya",
+        "body": "Choose a VM profile with enough room for metaSPAdes upfront. CASSIE does not expose manual memory allocation during submission."
+      },
+      {
+        "author": "Lara",
+        "body": "@Priya Also watch temporary storage. Large metagenomes can be more storage-bound than people expect."
+      }
+    ]
+  },
+  {
+    "id": 11,
+    "title": "Using CASSIE runtime predictions for grant budgeting",
+    "body": "Our group wants to estimate compute cost for a batch of genome assemblies. The runtime prediction in Create Job gives price and balance hold for one job. How are people using this for planning a batch of 40 samples?",
+    "tags": ["runtime-prediction", "cost-estimation", "batch-planning", "cassie"],
+    "author": "Levent",
+    "comments": [
+      {
+        "author": "Selin",
+        "body": "@Levent I estimate one representative sample per read-depth group, then multiply by the number of samples in that group."
+      },
+      {
+        "author": "Deniz",
+        "body": "Do not mix tiny bacterial samples and large eukaryotic samples in one average. The tool breakdown in the prediction makes the difference obvious."
+      },
+      {
+        "author": "Mert",
+        "body": "For CASSIE, budget by VM profile too. A larger VM can finish sooner but may have a different per-minute price."
+      },
+      {
+        "author": "Aylin",
+        "body": "@Mert And remember the hold is not necessarily the final charge. The final charge tracks actual runtime within the configured cap."
+      }
+    ]
+  },
+  {
+    "id": 12,
+    "title": "Pipeline priority sets for independent QC tools",
+    "body": "I have a saved CASSIE pipeline where FastQC and GenomeScope2 can both run before assembly. The priority sets page lets me choose order within the same level. Is there any downside to leaving both in default scheduler order?",
+    "tags": ["priority-sets", "pipeline-scheduling", "fastqc", "genomescope2"],
+    "author": "Emre",
+    "comments": [
+      {
+        "author": "Kerem",
+        "body": "@Emre Default scheduler order is fine unless you need one result first for a review checkpoint."
+      },
+      {
+        "author": "Nina",
+        "body": "I prioritize FastQC when I want a quick fail-fast signal before spending time on heavier downstream jobs."
+      },
+      {
+        "author": "Burak",
+        "body": "The priority sets do not change memory allocation. They only influence order for runnable same-level tools."
+      }
+    ]
+  },
+  {
+    "id": 13,
+    "title": "Storage file naming conventions for reusable pipelines",
+    "body": "We share saved CASSIE pipelines across three projects. The biggest source of mistakes is choosing the wrong FASTQ or FASTA file in the input mapping step. What naming convention has worked best for you?",
+    "tags": ["storage", "file-naming", "saved-pipelines", "collaboration"],
+    "author": "Hannah",
+    "comments": [
+      {
+        "author": "Elif",
+        "body": "@Hannah We use `project_sample_platform_readtype_date` and keep R1/R2 at the end, like `oak_A12_illumina_R1_2026.fastq.gz`."
+      },
+      {
+        "author": "Marco",
+        "body": "For assemblies, include version tags: `sample_hifiasm_v1.fa`, `sample_hifiasm_purged_v2.fa`, and so on."
+      },
+      {
+        "author": "Irem",
+        "body": "I also rename input blocks in Create Job to match the expected role, such as `HiFi reads`, `ONT reads`, or `reference annotation`."
+      },
+      {
+        "author": "Sam",
+        "body": "@Irem That saves a lot of confusion during final review, especially when a saved pipeline has several explicit inputs."
+      }
+    ]
+  },
+  {
+    "id": 14,
+    "title": "CAT annotation workflow after Liftoff",
+    "body": "I am comparing CAT and Liftoff annotations for a mammalian assembly. Liftoff is fast and reference-guided, while CAT is heavier but gives a richer annotation workflow. Has anyone chained these in CASSIE for comparison?",
+    "tags": ["cat", "liftoff", "annotation", "comparative-genomics"],
+    "author": "Jon",
+    "comments": [
+      {
+        "author": "Zeynep",
+        "body": "@Jon I run them as separate branches from the same assembly input, then compare gene counts and missing orthologs afterward."
+      },
+      {
+        "author": "Lara",
+        "body": "CAT can be more demanding, so select a VM profile that matches the size of the annotation job. You still do not set memory manually in CASSIE."
+      },
+      {
+        "author": "Cem",
+        "body": "For publication, I would keep both outputs and document the evidence sources. They answer slightly different annotation questions."
+      }
+    ]
+  }
+]

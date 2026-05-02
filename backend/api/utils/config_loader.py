@@ -250,21 +250,35 @@ class UserLimitsConfig:
         }
 
 
+class DemoModeConfig:
+    """Demo mode configuration for KVKK/privacy risk reduction."""
+
+    def __init__(self):
+        self.enabled = os.getenv("DEMO_MODE_ENABLED", "false").lower() in ("true", "1", "yes")
+        self.code_length = int(os.getenv("DEMO_CODE_LENGTH", "12"))
+        self.session_ttl_minutes = int(os.getenv("DEMO_SESSION_TTL_MINUTES", "120"))
+        self.output_ttl_minutes = int(os.getenv("DEMO_OUTPUT_TTL_MINUTES", "120"))
+        self.data_root = os.getenv("DEMO_DATA_ROOT", "mock/data")
+        self.output_root = os.getenv("DEMO_OUTPUT_ROOT", "tmp/demo_sessions")
+        self.admin_bootstrap_email = os.getenv("ADMIN_BOOTSTRAP_EMAIL", "")
+        self.admin_bootstrap_password = os.getenv("ADMIN_BOOTSTRAP_PASSWORD", "")
+
+
 class Config:
     """
     Main configuration class for CASSIE backend.
-    
+
     This class aggregates all configuration sections and provides
     a single point of access for all application settings.
     """
-    
+
     def __init__(self):
         """Initialize configuration from environment variables and .env file."""
         # Load .env file if it exists (in project root or current directory)
         self._load_env_file()
         project_root = Path(__file__).parent.parent.parent.parent
         self.environment = os.getenv("CASSIE_ENV", os.getenv("ENVIRONMENT", "development")).lower()
-        
+
         # Initialize configuration sections
         self.database = DatabaseConfig()
         self.minio = MinIOConfig()
@@ -277,6 +291,7 @@ class Config:
         self.kubernetes = KubernetesConfig()
         self.tools = ToolsConfig()
         self.user_limits = UserLimitsConfig(project_root)
+        self.demo = DemoModeConfig()
     
     def _load_env_file(self):
         """

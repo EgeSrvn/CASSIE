@@ -1178,3 +1178,55 @@ BEGIN
         CREATE INDEX idx_pipelines_is_shared ON pipelines(is_shared);
     END IF;
 END $$;
+
+-- ============================================================================
+-- Demo Mode: Add is_admin and is_active columns to users table
+-- ============================================================================
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'users' AND column_name = 'is_admin'
+    ) THEN
+        ALTER TABLE users ADD COLUMN is_admin BOOLEAN NOT NULL DEFAULT FALSE;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'users' AND column_name = 'is_active'
+    ) THEN
+        ALTER TABLE users ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT TRUE;
+    END IF;
+END $$;
+
+CREATE INDEX IF NOT EXISTS idx_users_is_admin ON users(is_admin);
+
+-- ============================================================================
+-- Demo Mode: demo_codes table
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS demo_codes (
+    id SERIAL PRIMARY KEY,
+    code_hash VARCHAR(255) NOT NULL,
+    code_prefix_masked VARCHAR(8) NOT NULL,
+    created_by_admin_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    expires_at TIMESTAMP,
+    used_at TIMESTAMP,
+    used_by_session_id VARCHAR(36),
+    deactivated_at TIMESTAMP,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE
+);
+
+CREATE INDEX IF NOT EXISTS idx_demo_codes_code_hash ON demo_codes(code_hash);
+CREATE INDEX IF NOT EXISTS idx_demo_codes_is_active ON demo_codes(is_active);
+
+-- ============================================================================
+-- Demo Mode: demo_sessions table
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS demo_sessions (
+    id VARCHAR(36) PRIMARY KEY,
+    demo_code_id INTEGER REFERENCES demo_codes(id) ON DELETE SET NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    expires_at TIMESTAMP NOT NULL,
+    ended_at TIMESTAMP,
+    cleanup_completed_at TIMESTAMP
+);

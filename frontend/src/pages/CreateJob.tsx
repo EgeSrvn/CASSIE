@@ -901,83 +901,6 @@ export default function CreateJob() {
   }, [isAuthenticated])
 
   useEffect(() => {
-    let cancelled = false
-
-    const runEstimate = async () => {
-      if (!selectedVM) {
-        setRuntimeEstimate(null)
-        setRuntimeEstimateError('')
-        return
-      }
-
-      if (selectionMode === 'tools' && selectedTools.length === 0) {
-        setRuntimeEstimate(null)
-        setRuntimeEstimateError('')
-        return
-      }
-
-      if (selectionMode === 'pipeline' && !selectedPipelineId) {
-        setRuntimeEstimate(null)
-        setRuntimeEstimateError('')
-        return
-      }
-
-      try {
-        setLoadingRuntimeEstimate(true)
-        setRuntimeEstimateError('')
-        const estimate = await estimateRuntime(
-          selectionMode === 'pipeline'
-            ? {
-                pipeline_id: selectedPipelineId || undefined,
-                vm_name: selectedVM,
-                input_assignments: getRuntimeInputAssignments(),
-              }
-            : {
-                tool_indices: selectedTools,
-                vm_name: selectedVM,
-                input_assignments: getRuntimeInputAssignments(),
-              }
-        )
-
-        if (!cancelled) {
-          setRuntimeEstimate(estimate)
-        }
-      } catch (err: any) {
-        if (!cancelled) {
-          setRuntimeEstimate(null)
-          setRuntimeEstimateError(err.message || 'Failed to estimate runtime')
-        }
-      } finally {
-        if (!cancelled) {
-          setLoadingRuntimeEstimate(false)
-        }
-      }
-    }
-
-    const timeoutId = window.setTimeout(() => {
-      void runEstimate()
-    }, 350)
-
-    return () => {
-      cancelled = true
-      window.clearTimeout(timeoutId)
-    }
-  }, [
-    dataFileTree,
-    manualToolFlagValues,
-    pipelineInputMappings,
-    requirementSourceSelections,
-    savedPipelineExecutionPlan,
-    selectedPipelineEdges,
-    selectedPipelineId,
-    selectedPipelineNodes,
-    selectedTools,
-    selectedVM,
-    selectionMode,
-    toolFileMappings,
-  ])
-
-  useEffect(() => {
     const fetchIntents = async () => {
       const intents = await getRecommendationIntents()
       setRecommendationIntents(intents)
@@ -1998,6 +1921,86 @@ export default function CreateJob() {
 
     return assignments
   }
+
+  const runtimeEstimateRequest = useMemo(() => {
+    if (!selectedVM) {
+      return null
+    }
+
+    if (selectionMode === 'pipeline') {
+      if (!savedPipelineExecutionPlan || savedPipelineExecutionPlan.toolIndices.length === 0) {
+        return null
+      }
+      return {
+        tool_indices: savedPipelineExecutionPlan.toolIndices,
+        vm_name: selectedVM,
+        input_assignments: getRuntimeInputAssignments(),
+      }
+    }
+
+    if (selectedTools.length === 0) {
+      return null
+    }
+
+    return {
+      tool_indices: selectedTools,
+      vm_name: selectedVM,
+      input_assignments: getRuntimeInputAssignments(),
+    }
+  }, [
+    activeToolRequirementCards,
+    dataFileTree,
+    pipelineInputMappings,
+    requirementSourceSelections,
+    savedPipelineExecutionPlan,
+    selectedTools,
+    selectedVM,
+    selectionMode,
+    toolFileMappings,
+  ])
+
+  const runtimeEstimateRequestSignature = useMemo(
+    () => runtimeEstimateRequest ? JSON.stringify(runtimeEstimateRequest) : '',
+    [runtimeEstimateRequest]
+  )
+
+  useEffect(() => {
+    if (!runtimeEstimateRequest) {
+      setRuntimeEstimate(null)
+      setRuntimeEstimateError('')
+      setLoadingRuntimeEstimate(false)
+      return
+    }
+
+    let cancelled = false
+
+    const runEstimate = async () => {
+      try {
+        setLoadingRuntimeEstimate(true)
+        setRuntimeEstimateError('')
+        const estimate = await estimateRuntime(runtimeEstimateRequest)
+
+        if (!cancelled) {
+          setRuntimeEstimate(estimate)
+        }
+      } catch (err: any) {
+        if (!cancelled) {
+          setRuntimeEstimate(null)
+          setRuntimeEstimateError(err.message || 'Failed to estimate runtime')
+        }
+      } finally {
+        if (!cancelled) {
+          setLoadingRuntimeEstimate(false)
+        }
+      }
+    }
+
+    void runEstimate()
+
+    return () => {
+      cancelled = true
+    }
+  }, [runtimeEstimateRequestSignature])
 
   const renderSelectableFileChip = (file: FileItem & { folderPath?: string }, keyPrefix: string, selected = false) => {
     const title = file.folderPath ? `${file.folderPath}/${file.filename}` : file.filename

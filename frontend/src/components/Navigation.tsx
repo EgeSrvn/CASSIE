@@ -1,6 +1,7 @@
 import { useNavigate, useLocation } from 'react-router-dom'
 import { useState, useEffect, useRef } from 'react'
-import { logout, getToken, getCurrentUser, getStoredUser, User } from '../services/authService'
+import { logout, getToken, getCurrentUser, getStoredUser, isDemoToken, User } from '../services/authService'
+import { useAppConfig } from '../contexts/AppConfigContext'
 import '../styles/Navigation.css'
 
 interface NavigationProps {
@@ -10,6 +11,8 @@ interface NavigationProps {
 export default function Navigation({ onLogout }: NavigationProps) {
   const navigate = useNavigate()
   const location = useLocation()
+  const { demo_mode_enabled } = useAppConfig()
+  const isDemo = isDemoToken()
   const [isAuthenticated, setIsAuthenticated] = useState(!!getToken())
   const [user, setUser] = useState<User | null>(() => getStoredUser())
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false)
@@ -166,9 +169,15 @@ export default function Navigation({ onLogout }: NavigationProps) {
 
     return (
       <div className="nav-user-menu" role="menu">
-        <button type="button" className="nav-user-menu-item" onClick={() => navigateAndClose('/register')}>
-          Register
-        </button>
+        {demo_mode_enabled ? (
+          <button type="button" className="nav-user-menu-item" onClick={() => navigateAndClose('/demo-login')}>
+            Use Demo Code
+          </button>
+        ) : (
+          <button type="button" className="nav-user-menu-item" onClick={() => navigateAndClose('/register')}>
+            Register
+          </button>
+        )}
         <button type="button" className="nav-user-menu-item" onClick={() => navigateAndClose('/login')}>
           Login
         </button>
@@ -254,7 +263,7 @@ export default function Navigation({ onLogout }: NavigationProps) {
           >
             Pipelines
           </button>
-          {isAuthenticated && (
+          {isAuthenticated && !isDemo && (
             <button
               type="button"
               className={`nav-link ${isActive('/storage') ? 'active' : ''}`}
@@ -282,7 +291,7 @@ export default function Navigation({ onLogout }: NavigationProps) {
         <div className={`nav-actions ${!isAuthenticated ? 'nav-actions-account-only' : ''}`}>
           {isAuthenticated ? (
             <>
-            {user && (
+            {user && !isDemo && (
               <button
                 type="button"
                 className={`nav-balance-chip ${isActive('/balance') ? 'active' : ''}`}

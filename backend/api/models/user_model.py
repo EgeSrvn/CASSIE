@@ -28,6 +28,8 @@ class UserBase(BaseModel):
     email_verified: bool = Field(False, description="Whether the email address has been verified")
     login_two_factor_enabled: bool = Field(False, description="Whether email-based login 2FA is enabled")
     job_notifications_enabled: bool = Field(False, description="Whether email job notifications are enabled")
+    is_admin: bool = Field(False, description="Whether user has admin privileges")
+    is_active: bool = Field(True, description="Whether user account is active")
 
 
 class UserCreate(UserBase):

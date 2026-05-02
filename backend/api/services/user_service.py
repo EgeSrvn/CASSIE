@@ -23,7 +23,8 @@ USER_SELECT_COLUMNS = """
     password_reset_code, password_reset_expires_at,
     login_two_factor_code, login_two_factor_expires_at,
     suspended_until, suspension_reason,
-    created_at, updated_at
+    created_at, updated_at,
+    is_admin, is_active
 """
 
 
@@ -82,7 +83,9 @@ def _row_to_user(row) -> UserInDB:
         suspended_until=row[23],
         suspension_reason=row[24],
         created_at=row[25],
-        updated_at=row[26]
+        updated_at=row[26],
+        is_admin=bool(row[27]) if len(row) > 27 else False,
+        is_active=bool(row[28]) if len(row) > 28 else True,
     )
 
 
@@ -643,6 +646,108 @@ def clear_password_reset_code(user_id: int) -> Optional[UserInDB]:
         except Exception as e:
             conn.rollback()
             logger.error(f"Error clearing password reset code: {e}", exc_info=True)
+            raise
+        finally:
+            cur.close()
+
+
+def bootstrap_admin_user(email: str, password: str) -> Optional[UserInDB]:
+    """
+    Create the first admin user from environment variables if no admin exists.
+
+    Idempotent — does nothing if any user with is_admin=TRUE already exists.
+    Never logs the password.
+    """
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT id FROM users WHERE is_admin = TRUE LIMIT 1")
+            if cur.fetchone():
+                return None
+
+            username = email.split("@")[0].lower().replace(".", "_")[:50]
+            # Avoid username collision by appending _admin if necessary
+            cur.execute("SELECT id FROM users WHERE username = %s", (username,))
+            if cur.fetchone():
+                username = username[:46] + "_adm"
+
+            password_hash = hash_password(password)
+            bucket_name = f"users/{username}"
+            cur.execute(
+                f"""
+                INSERT INTO users
+                    (username, email, password_hash, bucket_name, email_verified, is_admin, is_active)
+                VALUES (%s, %s, %s, %s, TRUE, TRUE, TRUE)
+                RETURNING {USER_SELECT_COLUMNS}
+                """,
+                (username, email, password_hash, bucket_name),
+            )
+            row = cur.fetchone()
+            conn.commit()
+            logger.info("Bootstrap admin user created", extra={"username": username})
+            return _row_to_user(row)
+        except Exception as e:
+            conn.rollback()
+            logger.error("Error bootstrapping admin user: %s", e, exc_info=True)
+            raise
+        finally:
+            cur.close()
+
+
+def get_all_users() -> list[UserInDB]:
+    """Return all user accounts. Used by admin endpoints."""
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        try:
+            cur.execute(f"SELECT {USER_SELECT_COLUMNS} FROM users ORDER BY created_at DESC")
+            return [_row_to_user(row) for row in cur.fetchall()]
+        finally:
+            cur.close()
+
+
+def set_user_admin(user_id: int, is_admin: bool) -> Optional[UserInDB]:
+    """Grant or revoke admin status for a user."""
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                f"""
+                UPDATE users SET is_admin = %s, updated_at = NOW()
+                WHERE id = %s
+                RETURNING {USER_SELECT_COLUMNS}
+                """,
+                (is_admin, user_id),
+            )
+            row = cur.fetchone()
+            conn.commit()
+            return _row_to_user(row) if row else None
+        except Exception as e:
+            conn.rollback()
+            logger.error("Error updating admin status: %s", e, exc_info=True)
+            raise
+        finally:
+            cur.close()
+
+
+def set_user_active(user_id: int, is_active: bool) -> Optional[UserInDB]:
+    """Enable or disable a user account."""
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                f"""
+                UPDATE users SET is_active = %s, updated_at = NOW()
+                WHERE id = %s
+                RETURNING {USER_SELECT_COLUMNS}
+                """,
+                (is_active, user_id),
+            )
+            row = cur.fetchone()
+            conn.commit()
+            return _row_to_user(row) if row else None
+        except Exception as e:
+            conn.rollback()
+            logger.error("Error updating user active status: %s", e, exc_info=True)
             raise
         finally:
             cur.close()

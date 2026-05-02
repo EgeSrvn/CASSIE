@@ -56,7 +56,9 @@ EXPECTED_TABLES = [
     'execution_datasets',
     'invitation_codes',
     'vms',  # Emulation-only (temporary)
-    'tenants'  # Emulation-only (temporary)
+    'tenants',  # Emulation-only (temporary)
+    'demo_codes',
+    'demo_sessions',
 ]
 
 

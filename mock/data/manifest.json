@@ -1,0 +1,25 @@
+{
+  "version": "1.0",
+  "datasets": [
+    {
+      "dataset_id": "demo_ecoli_small",
+      "display_name": "Mock E. coli Small Dataset",
+      "description": "Synthetic Illumina paired-end reads for a model E. coli K-12 genome. Non-human, non-patient data for pipeline testing only.",
+      "organism": "Escherichia coli K-12 (synthetic)",
+      "type": "paired-end-illumina",
+      "size_mb": 48,
+      "files": ["ecoli_R1.fastq.gz", "ecoli_R2.fastq.gz"],
+      "allowed_pipeline_types": ["assembly", "quality_control"]
+    },
+    {
+      "dataset_id": "demo_hifi_small",
+      "display_name": "Mock PacBio HiFi Assembly Dataset",
+      "description": "Synthetic PacBio CCS reads for a small eukaryotic test genome. Non-human, non-patient data for pipeline testing only.",
+      "organism": "Synthetic test genome (non-human)",
+      "type": "pacbio-hifi",
+      "size_mb": 120,
+      "files": ["hifi_reads.fastq.gz"],
+      "allowed_pipeline_types": ["assembly"]
+    }
+  ]
+}

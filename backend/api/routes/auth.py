@@ -224,6 +224,8 @@ def _user_response_from_model(user) -> UserResponse:
         email_verified=getattr(user, "email_verified", False),
         login_two_factor_enabled=getattr(user, "login_two_factor_enabled", False),
         job_notifications_enabled=getattr(user, "job_notifications_enabled", False),
+        is_admin=getattr(user, "is_admin", False),
+        is_active=getattr(user, "is_active", True),
         created_at=user.created_at,
         updated_at=user.updated_at
     )
@@ -399,7 +401,13 @@ async def get_auth_context(
 ) -> AuthContext:
     """
     Resolve the bearer token to a user plus any scoped upload-session claims.
+
+    Handles three token types:
+    - "access": normal authenticated user session
+    - "demo_session": temporary demo user (no real DB account)
+    - "job_upload_session": scoped upload token
     """
+    from datetime import timezone as _tz
     token = credentials.credentials
     payload = decode_access_token(token)
 
@@ -410,9 +418,32 @@ async def get_auth_context(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    token_type = str(payload.get("token_type") or "access")
+
+    # --- Demo session: stateless, no DB lookup ---
+    if token_type == "demo_session":
+        if not payload.get("is_demo"):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid demo token",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        now_utc = datetime.now(_tz.utc)
+        synthetic_demo_user = UserResponse(
+            id=0,
+            username="demo",
+            email=None,
+            bucket_name="demo",
+            is_admin=False,
+            is_active=True,
+            created_at=now_utc,
+            updated_at=now_utc,
+        )
+        return AuthContext(user=synthetic_demo_user, token_type="demo_session")
+
+    # --- Normal and upload-session tokens: DB lookup required ---
     user_id: int = payload.get("user_id")
     username: str = payload.get("username")
-    token_type = str(payload.get("token_type") or "access")
 
     if user_id is None or username is None:
         raise HTTPException(
@@ -484,16 +515,16 @@ async def get_current_user_optional(
 ) -> Optional[UserResponse]:
     """
     Optional dependency to get current user if token is provided.
-    
+
     Args:
         credentials: Optional HTTP Bearer token credentials
-        
+
     Returns:
         UserResponse: Current user if authenticated, None otherwise
     """
     if credentials is None:
         return None
-    
+
     try:
         auth_context = await get_auth_context(credentials)
         if auth_context.token_type != "access":
@@ -503,17 +534,71 @@ async def get_current_user_optional(
         return None
 
 
+async def get_current_admin(
+    auth_context: AuthContext = Depends(get_auth_context),
+) -> UserResponse:
+    """
+    Dependency that requires a valid admin bearer token (role=admin, is_admin=True).
+
+    Demo users and non-admin users are rejected with 403.
+    Backend enforces this server-side — do not trust frontend role flags.
+    """
+    if auth_context.token_type == "demo_session":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required",
+        )
+    if auth_context.token_type != "access":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token type for admin access",
+        )
+    if not getattr(auth_context.user, "is_admin", False):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required",
+        )
+    return auth_context.user
+
+
+async def get_current_user_or_demo(
+    auth_context: AuthContext = Depends(get_auth_context),
+) -> UserResponse:
+    """
+    Dependency for endpoints accessible to both real users and demo users.
+
+    Accepts token_type "access" or "demo_session".
+    Rejects upload-session tokens and unauthenticated requests.
+    """
+    if auth_context.token_type not in ("access", "demo_session"):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="This token is not valid for this endpoint",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return auth_context.user
+
+
 @router.post("/register", status_code=status.HTTP_201_CREATED)
 async def register(request: RegisterRequest):
     """
     Register a new user.
-    
+
     Args:
         request: Registration request with username, email, and password
-        
+
     Returns:
         Success response with user data
     """
+    from backend.api.utils.config_loader import get_config as _get_config
+    if _get_config().demo.enabled:
+        error_data = error_response(
+            error_code=ErrorCode.FORBIDDEN,
+            message="Registration is disabled in demo mode. Please use a demo code.",
+            status_code=status.HTTP_403_FORBIDDEN,
+        )
+        return JSONResponse(content=error_data, status_code=status.HTTP_403_FORBIDDEN)
+
     # Validate input
     purge_expired_unverified_users()
 
@@ -665,6 +750,17 @@ async def login(request: LoginRequest):
         )
         return JSONResponse(content=error_data, status_code=status.HTTP_403_FORBIDDEN)
 
+    # In demo mode, only admin accounts may log in through the normal login page
+    from backend.api.utils.config_loader import get_config as _get_config
+    if _get_config().demo.enabled and not getattr(user, "is_admin", False):
+        error_data = unauthorized_response("Invalid credentials or insufficient access.")
+        return JSONResponse(content=error_data, status_code=status.HTTP_401_UNAUTHORIZED)
+
+    # Reject deactivated accounts
+    if not getattr(user, "is_active", True):
+        error_data = unauthorized_response("Invalid credentials or insufficient access.")
+        return JSONResponse(content=error_data, status_code=status.HTTP_401_UNAUTHORIZED)
+
     if getattr(user, "login_two_factor_enabled", False):
         if not user.email or not getattr(user, "email_verified", False):
             error_data = error_response(
@@ -680,11 +776,13 @@ async def login(request: LoginRequest):
             data=challenge.model_dump(exclude_none=True),
             message="Enter the login code sent to your email" if challenge.verification_preview_code is None else "Enter the login code shown below to finish signing in.",
         )
-    
-    # Create access token
+
+    # Create access token — include role claims so endpoints can check without a DB lookup
     token_data = {
         "user_id": user.id,
-        "username": user.username
+        "username": user.username,
+        "role": "admin" if getattr(user, "is_admin", False) else "user",
+        "is_admin": getattr(user, "is_admin", False),
     }
     access_token = create_access_token(data=token_data)
     

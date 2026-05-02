@@ -62,6 +62,20 @@ async def lifespan(app: FastAPI):
         admin_user = ensure_admin_user()
         logger.info("Admin panel user ready", extra={"admin_username": admin_user.username})
 
+        # Bootstrap first CASSIE admin user from env vars if DEMO_MODE_ENABLED and no admin exists
+        from backend.api.services.user_service import bootstrap_admin_user
+        demo_cfg = config.demo
+        if demo_cfg.admin_bootstrap_email and demo_cfg.admin_bootstrap_password:
+            bootstrapped = bootstrap_admin_user(
+                email=demo_cfg.admin_bootstrap_email,
+                password=demo_cfg.admin_bootstrap_password,
+            )
+            if bootstrapped:
+                logger.info(
+                    "Bootstrap admin user created",
+                    extra={"email": demo_cfg.admin_bootstrap_email},
+                )
+
         if kubernetes_is_available():
             try:
                 recovery_summary = get_kubernetes_pipeline_runner().recover_orphaned_executions()
@@ -389,6 +403,9 @@ from backend.api.routes import auth, jobs, storage, pipelines, folders, data_fil
 from backend.api.routes.admin_panel import router as admin_panel_router
 from backend.api.routes.estimator import router as estimator_router
 from backend.api.routes import tools
+from backend.api.routes.config_routes import router as config_router
+from backend.api.routes.demo_routes import router as demo_router
+from backend.api.routes.admin_routes import router as admin_router
 
 # Register routers
 app.include_router(auth.router, prefix=config.api.prefix)
@@ -400,6 +417,9 @@ app.include_router(data_files.router, prefix=config.api.prefix)
 app.include_router(estimator_router, prefix=config.api.prefix)
 app.include_router(tools.router, prefix=config.api.prefix)
 app.include_router(forum.router, prefix=config.api.prefix)
+app.include_router(config_router, prefix=config.api.prefix)
+app.include_router(demo_router, prefix=config.api.prefix)
+app.include_router(admin_router, prefix=config.api.prefix)
 app.include_router(admin_panel_router)
 
 
