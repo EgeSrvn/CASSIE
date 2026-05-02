@@ -5,6 +5,7 @@ import {
   createJob,
   executeJob,
   getJob,
+  getJobPipelineVisualization,
   JobCreate,
   JobPipelineVisualization,
   PipelinePlanPreviewRequest,
@@ -30,6 +31,7 @@ import {
 import { getPipelines, getPipeline, Pipeline, getPipelineRequirements, PipelineRequirement, PipelineRequirements } from '../services/pipelineService'
 import { getDataFileTree } from '../services/dataFileService'
 import { FolderTreeItem, FileItem } from '../services/folderService'
+import { File as StorageFile, getFiles } from '../services/fileService'
 import { getToken } from '../services/authService'
 import { getCreateJobCatConfig } from '../../cats/config_cat_job_builder'
 import CatCornerCard from '../components/CatCornerCard'
@@ -470,6 +472,9 @@ export default function CreateJob() {
   const [editingManualToolDraftValues, setEditingManualToolDraftValues] = useState<Record<string, FlagValue>>({})
   const [editingManualToolErrors, setEditingManualToolErrors] = useState<Record<string, string>>({})
   const [retryPrefillApplied, setRetryPrefillApplied] = useState(false)
+  const [retrySourceInputFiles, setRetrySourceInputFiles] = useState<StorageFile[]>([])
+  const [retrySourcePipelineVisualization, setRetrySourcePipelineVisualization] = useState<JobPipelineVisualization | null>(null)
+  const [retrySourceManualInputBindings, setRetrySourceManualInputBindings] = useState<Array<Record<string, unknown>>>([])
   const [executionDataImprovementConsent, setExecutionDataImprovementConsent] = useState(
     () => Boolean(storedDraftRef.current?.executionDataImprovementConsent)
   )
@@ -590,12 +595,12 @@ export default function CreateJob() {
     const toolPlans: SavedPipelineToolPlan[] = orderedNodeIds
       .map((nodeId) => {
         const node = nodesById.get(nodeId)
-        const toolId = resolvePipelineToolId(node)
+        const requirementCard = toolRequirementsByNodeId.get(nodeId)
+        const toolId = String(requirementCard?.tool_id || resolvePipelineToolId(node)).trim().toUpperCase()
         const toolIndex = toolIndexByToolId.get(toolId)
         if (!toolId || toolIndex === undefined) {
           return null
         }
-        const requirementCard = toolRequirementsByNodeId.get(nodeId)
         const rawToolConfig = requirementCard?.tool_config || node?.data?.flagValues || node?.data?.toolConfig || {}
         return {
           nodeId,
@@ -802,17 +807,30 @@ export default function CreateJob() {
         if (cancelled) return
 
         const sourcePreferences = (sourceJob.execution_preferences || {}) as Record<string, any>
+        const sourceManualInputBindings = Array.isArray(sourcePreferences.manual_input_bindings)
+          ? (sourcePreferences.manual_input_bindings as Array<Record<string, unknown>>)
+          : []
+        const [sourceInputFilesResponse, sourcePipelineVisualization] = await Promise.all([
+          getFiles(retryJobId, 'input', 1, 1000),
+          getJobPipelineVisualization(retryJobId).catch(() => null),
+        ])
+        if (cancelled) return
+
         setJobName(sourceJob.name)
         setSelectedVM(sourceJob.vm_name || '')
         setSelectedIntentIds([])
         setCurrentLevel(1)
         setSlideDirection('forward')
+        setPipelineInputMappings({})
+        setToolFileMappings({})
+        setRetrySourceInputFiles(sourceInputFilesResponse.data || [])
+        setRetrySourcePipelineVisualization(sourcePipelineVisualization)
+        setRetrySourceManualInputBindings(sourceManualInputBindings)
 
         if (sourceJob.pipeline_id) {
           setSelectionMode('pipeline')
           setSelectedPipelineId(sourceJob.pipeline_id)
           setSelectedTools([])
-          setToolFileMappings({})
         } else {
           const snapshotStages = (sourcePreferences.visualization_snapshot?.stages || []) as Array<Record<string, any>>
           const sourceToolIds = snapshotStages
@@ -1886,97 +1904,51 @@ export default function CreateJob() {
 
   const getRuntimeInputAssignments = (): RuntimeInputAssignment[] => {
     if (selectionMode === 'pipeline') {
-      const selectableFiles = getCombinedSelectableFiles()
-      const fileById = new Map<number, FileItem & { folderPath?: string }>(
-        selectableFiles.map((file) => [file.id, file])
-      )
-      const nodesById = new Map<string, any>(
-        selectedPipelineNodes
-          .filter((node: any) => node && typeof node === 'object' && node.id != null)
-          .map((node: any) => [String(node.id), node])
-      )
-      const downstreamToolIdsByInput = new Map<string, string[]>()
+      if (!savedPipelineExecutionPlan) {
+        return []
+      }
 
-      selectedPipelineEdges.forEach((edge: any) => {
-        const sourceId = String(edge?.source || '').trim()
-        const targetId = String(edge?.target || '').trim()
-        if (!sourceId || !targetId) {
+      const groupedAssignments = new Map<string, RuntimeInputAssignment>()
+      savedPipelineExecutionPlan.plannedInputs.forEach((input) => {
+        const toolId = String(input.tool_id || '').trim().toUpperCase()
+        const requirementType = String(input.requirement_type || input.binding_id || '').trim()
+        if (!toolId || !requirementType) {
           return
         }
 
-        const sourceNode = nodesById.get(sourceId)
-        const targetNode = nodesById.get(targetId)
-        if (!sourceNode || !targetNode) {
-          return
-        }
-        if (!PIPELINE_INPUT_NODE_TYPES.has(resolvePipelineNodeType(sourceNode))) {
-          return
-        }
-        if (resolvePipelineNodeType(targetNode) !== 'tool') {
-          return
-        }
+        const key = `${toolId}:${requirementType}`
+        const sizeMib = (Number(input.size_bytes || 0) / (1024 * 1024)) || 0
+        const normalizedFormat = String(input.file_format || '').trim().toLowerCase()
+        const isCompressed =
+          normalizedFormat.includes('gz') ||
+          normalizedFormat.includes('bz2') ||
+          normalizedFormat.includes('xz') ||
+          normalizedFormat.includes('zip') ||
+          String(input.filename || '').toLowerCase().endsWith('.gz') ||
+          String(input.filename || '').toLowerCase().endsWith('.bz2') ||
+          String(input.filename || '').toLowerCase().endsWith('.xz') ||
+          String(input.filename || '').toLowerCase().endsWith('.zip')
 
-        const toolId = resolvePipelineToolId(targetNode)
-        if (!toolId) {
-          return
-        }
-
-        const currentToolIds = downstreamToolIdsByInput.get(sourceId) || []
-        if (!currentToolIds.includes(toolId)) {
-          downstreamToolIdsByInput.set(sourceId, [...currentToolIds, toolId])
-        }
-      })
-
-      const assignments: RuntimeInputAssignment[] = []
-      Object.entries(pipelineInputMappings).forEach(([inputKey, mappedFileIds]) => {
-        const downstreamToolIds = downstreamToolIdsByInput.get(String(inputKey)) || []
-        if (mappedFileIds.length === 0 || downstreamToolIds.length === 0) {
+        const existing = groupedAssignments.get(key)
+        if (existing) {
+          existing.total_input_size_mib = Number((existing.total_input_size_mib + sizeMib).toFixed(2))
+          existing.compressed_input_size_mib = Number((existing.compressed_input_size_mib + (isCompressed ? sizeMib : 0)).toFixed(2))
+          if (normalizedFormat && !existing.file_formats.includes(normalizedFormat)) {
+            existing.file_formats.push(normalizedFormat)
+          }
           return
         }
 
-        const totalInputSizeMib = mappedFileIds.reduce((sum, fileId) => {
-          const file = fileById.get(fileId)
-          const sizeBytes = typeof file?.size_bytes === 'number' ? file.size_bytes : 0
-          return sum + (sizeBytes > 0 ? sizeBytes / (1024 * 1024) : 0)
-        }, 0)
-        const compressedInputSizeMib = mappedFileIds.reduce((sum, fileId) => {
-          const file = fileById.get(fileId)
-          const filename = String(file?.filename || '').toLowerCase()
-          const fileFormat = String(file?.file_format || '').toLowerCase()
-          const isCompressed =
-            filename.endsWith('.gz') ||
-            filename.endsWith('.bz2') ||
-            filename.endsWith('.xz') ||
-            filename.endsWith('.zip') ||
-            fileFormat.includes('gz') ||
-            fileFormat.includes('bz2') ||
-            fileFormat.includes('xz') ||
-            fileFormat.includes('zip')
-          const sizeBytes = typeof file?.size_bytes === 'number' ? file.size_bytes : 0
-          return sum + (isCompressed && sizeBytes > 0 ? sizeBytes / (1024 * 1024) : 0)
-        }, 0)
-        const uniqueFormats = Array.from(new Set(
-          mappedFileIds
-            .map((fileId) => String(fileById.get(fileId)?.file_format || '').trim().toLowerCase())
-            .filter(Boolean)
-        ))
-
-        if (totalInputSizeMib <= 0) {
-          return
-        }
-
-        downstreamToolIds.forEach((toolId) => {
-          assignments.push({
-            tool_id: toolId,
-            requirement_type: inputKey,
-            total_input_size_mib: Number(totalInputSizeMib.toFixed(2)),
-            compressed_input_size_mib: Number(compressedInputSizeMib.toFixed(2)),
-            file_formats: uniqueFormats,
-          })
+        groupedAssignments.set(key, {
+          tool_id: toolId,
+          requirement_type: requirementType,
+          total_input_size_mib: Number(sizeMib.toFixed(2)),
+          compressed_input_size_mib: Number((isCompressed ? sizeMib : 0).toFixed(2)),
+          file_formats: normalizedFormat ? [normalizedFormat] : [],
         })
       })
 
-      return assignments
+      return Array.from(groupedAssignments.values())
     }
 
     const selectableFiles = getCombinedSelectableFiles()
@@ -2244,32 +2216,27 @@ export default function CreateJob() {
     const filesById = new Map(combinedSelectableFiles.map((file) => [file.id, file]))
 
     if (selectionMode === 'pipeline') {
-      if (!selectedPipelineId) {
+      if (!selectedPipelineId || !savedPipelineExecutionPlan) {
         return null
       }
-      const plannedInputs = pipelineInputRequirements.flatMap((inputReq) => {
-        const inputKey = String(inputReq.id || inputReq.label)
-        const mappedFileIds = pipelineInputMappings[inputKey] || []
-
-        return mappedFileIds
-          .map((fileId) => filesById.get(fileId))
-          .filter((file): file is FileItem & { folderPath?: string } => Boolean(file))
-          .map((file) => ({
-            id: file.id,
-            binding_id: inputKey,
-            label: inputBlockDisplayName(inputKey, inputReq.label),
-            filename: file.filename,
-            file_format: file.file_format || null,
-            size_bytes: file.size_bytes || 0,
-            s3_key: file.s3_key,
-            source: 'library' as const,
-          }))
-      })
-      const executionPreferences = buildPipelineExecutionPreferences(priorityGroups)
+      const executionPreferences: Record<string, unknown> = buildPipelineExecutionPreferences(priorityGroups)
+      if (savedPipelineExecutionPlan.manualToolConfigs.length > 0) {
+        executionPreferences.manual_tool_configs = savedPipelineExecutionPlan.manualToolConfigs
+      }
+      if (savedPipelineExecutionPlan.manualInputBindings.length > 0) {
+        executionPreferences.manual_input_bindings = savedPipelineExecutionPlan.manualInputBindings
+      }
+      if (savedPipelineExecutionPlan.inputSourceOverrides.length > 0) {
+        executionPreferences.input_source_overrides = savedPipelineExecutionPlan.inputSourceOverrides
+      }
+      executionPreferences.source_pipeline_id = selectedPipelineId
 
       return {
         pipeline_id: selectedPipelineId,
-        planned_inputs: plannedInputs,
+        planned_inputs: savedPipelineExecutionPlan.plannedInputs.map((input) => ({
+          ...input,
+          id: filesById.get(input.id)?.id || input.id,
+        })),
         execution_preferences: Object.keys(executionPreferences).length > 0
           ? executionPreferences
           : undefined,
@@ -2349,8 +2316,8 @@ export default function CreateJob() {
     getRequirementSource,
     inputBlockDisplayName,
     pipelineInputMappings,
-    pipelineInputRequirements,
     priorityGroups,
+    savedPipelineExecutionPlan,
     selectedPipelineId,
     selectedTools,
     selectionMode,
