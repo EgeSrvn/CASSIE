@@ -2179,7 +2179,18 @@ export default function CreateJob() {
     navigate('/')
   }
 
-  const shouldShowRuntimeEstimateCard = Boolean(loadingRuntimeEstimate || runtimeEstimate || runtimeEstimateError)
+  const runtimeEstimateStatusMessage = useMemo(() => {
+    if (!selectedVM) {
+      return 'Choose a VM in the configure step to calculate runtime and price.'
+    }
+    if (selectionMode === 'pipeline' && !selectedPipelineId) {
+      return 'Select a saved pipeline to calculate runtime and price.'
+    }
+    if (selectionMode === 'tools' && selectedTools.length === 0) {
+      return 'Select at least one tool to calculate runtime and price.'
+    }
+    return 'Preparing runtime prediction for the current selection...'
+  }, [selectedPipelineId, selectedTools.length, selectedVM, selectionMode])
   const storageSelectableFiles = useMemo(
     () => flattenFiles(dataFileTree),
     [dataFileTree]
@@ -3463,58 +3474,58 @@ export default function CreateJob() {
                   />
                 </div>
 
-                {shouldShowRuntimeEstimateCard && (
-                  <div className="runtime-estimate-card runtime-estimate-submit">
-                    <div className="runtime-estimate-header">
-                      <strong>Predicted Job Estimate</strong>
-                      <span>Ready for submission</span>
-                    </div>
-                    {loadingRuntimeEstimate ? (
-                      <p className="runtime-estimate-copy">Calculating runtime for the current selection...</p>
-                    ) : runtimeEstimate ? (
-                      <>
-                        <div className="runtime-estimate-summary-grid">
-                          <div className="runtime-estimate-panel">
-                            <span className="runtime-estimate-label">Estimated Runtime</span>
-                            <span className="runtime-estimate-value">{formatRuntimeEstimate(runtimeEstimate.estimated_runtime_minutes)}</span>
-                            <span className="runtime-estimate-subtle">
-                              about {runtimeEstimate.estimated_runtime_hours.toFixed(2)} hours on {runtimeEstimate.vm_display_name}
-                            </span>
-                          </div>
-                          <div className="runtime-estimate-panel">
-                            <span className="runtime-estimate-label">Estimated Price</span>
-                            <span className="runtime-estimate-value">{formatUsd(runtimeEstimate.estimated_price_usd)}</span>
-                            <span className="runtime-estimate-subtle">
-                              {formatUsd(runtimeEstimate.vm_price_per_minute)} per minute on {runtimeEstimate.vm_display_name}
-                            </span>
-                          </div>
-                          <div className="runtime-estimate-panel">
-                            <span className="runtime-estimate-label">Required Balance Hold</span>
-                            <span className="runtime-estimate-value">{formatUsd(runtimeEstimate.estimated_price_usd * 1.5)}</span>
-                            <span className="runtime-estimate-subtle">
-                              Final charge is actual runtime cost, capped at this hold.
-                            </span>
-                          </div>
-                        </div>
-                        <p className="runtime-estimate-copy">
-                          Model: {runtimeEstimate.execution_shape}. Partition factor: {runtimeEstimate.partition_factor.toFixed(2)}x. Input size: {runtimeEstimate.total_input_size_mib.toFixed(2)} MiB.
-                        </p>
-                        <div className="runtime-estimate-breakdown">
-                          {runtimeEstimate.tool_breakdown.map((tool) => (
-                            <span key={`${tool.tool_id}-${tool.tool_name}`} className="runtime-estimate-chip">
-                              {tool.tool_name}: {Math.round(tool.adjusted_minutes)}m, {tool.input_size_mib.toFixed(1)} MiB
-                            </span>
-                          ))}
-                        </div>
-                        {runtimeEstimate.assumptions.length > 0 && (
-                          <p className="runtime-estimate-copy">{runtimeEstimate.assumptions[0]}</p>
-                        )}
-                      </>
-                    ) : (
-                      <p className="runtime-estimate-error">{runtimeEstimateError}</p>
-                    )}
+                <div className="runtime-estimate-card runtime-estimate-submit">
+                  <div className="runtime-estimate-header">
+                    <strong>Predicted Job Estimate</strong>
+                    <span>{runtimeEstimate ? 'Ready for submission' : 'Calculating'}</span>
                   </div>
-                )}
+                  {loadingRuntimeEstimate ? (
+                    <p className="runtime-estimate-copy">Calculating runtime for the current selection...</p>
+                  ) : runtimeEstimate ? (
+                    <>
+                      <div className="runtime-estimate-summary-grid">
+                        <div className="runtime-estimate-panel">
+                          <span className="runtime-estimate-label">Estimated Runtime</span>
+                          <span className="runtime-estimate-value">{formatRuntimeEstimate(runtimeEstimate.estimated_runtime_minutes)}</span>
+                          <span className="runtime-estimate-subtle">
+                            about {runtimeEstimate.estimated_runtime_hours.toFixed(2)} hours on {runtimeEstimate.vm_display_name}
+                          </span>
+                        </div>
+                        <div className="runtime-estimate-panel">
+                          <span className="runtime-estimate-label">Estimated Price</span>
+                          <span className="runtime-estimate-value">{formatUsd(runtimeEstimate.estimated_price_usd)}</span>
+                          <span className="runtime-estimate-subtle">
+                            {formatUsd(runtimeEstimate.vm_price_per_minute)} per minute on {runtimeEstimate.vm_display_name}
+                          </span>
+                        </div>
+                        <div className="runtime-estimate-panel">
+                          <span className="runtime-estimate-label">Required Balance Hold</span>
+                          <span className="runtime-estimate-value">{formatUsd(runtimeEstimate.estimated_price_usd * 1.5)}</span>
+                          <span className="runtime-estimate-subtle">
+                            Final charge is actual runtime cost, capped at this hold.
+                          </span>
+                        </div>
+                      </div>
+                      <p className="runtime-estimate-copy">
+                        Model: {runtimeEstimate.execution_shape}. Partition factor: {runtimeEstimate.partition_factor.toFixed(2)}x. Input size: {runtimeEstimate.total_input_size_mib.toFixed(2)} MiB.
+                      </p>
+                      <div className="runtime-estimate-breakdown">
+                        {runtimeEstimate.tool_breakdown.map((tool) => (
+                          <span key={`${tool.tool_id}-${tool.tool_name}`} className="runtime-estimate-chip">
+                            {tool.tool_name}: {Math.round(tool.adjusted_minutes)}m, {tool.input_size_mib.toFixed(1)} MiB
+                          </span>
+                        ))}
+                      </div>
+                      {runtimeEstimate.assumptions.length > 0 && (
+                        <p className="runtime-estimate-copy">{runtimeEstimate.assumptions[0]}</p>
+                      )}
+                    </>
+                  ) : runtimeEstimateError ? (
+                    <p className="runtime-estimate-error">{runtimeEstimateError}</p>
+                  ) : (
+                    <p className="runtime-estimate-copy">{runtimeEstimateStatusMessage}</p>
+                  )}
+                </div>
 
                 {selectionMode === 'pipeline' && pipelineInputRequirements.length > 0 && (
                   <div className="builder-review-card" style={{ marginTop: '1rem' }}>
