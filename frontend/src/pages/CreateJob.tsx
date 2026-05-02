@@ -384,6 +384,38 @@ const renderPageModal = (content: ReactNode) => {
   return createPortal(content, document.body)
 }
 
+// Keep this hoisted: several render-time memos need it before the JSX section.
+function flattenFiles(tree: FolderTreeItem[]): Array<FileItem & { folderPath?: string }> {
+  if (!tree || tree.length === 0) {
+    return []
+  }
+
+  const files: Array<FileItem & { folderPath?: string }> = []
+  const traverse = (folders: FolderTreeItem[], parentPath: string = '') => {
+    if (!folders || folders.length === 0) return
+
+    folders.forEach(folder => {
+      if (!folder) return
+
+      const currentPath = parentPath ? `${parentPath}/${folder.name}` : (folder.name || '')
+
+      if (folder.files && Array.isArray(folder.files)) {
+        folder.files.forEach(file => {
+          if (file && file.id) {
+            files.push({ ...file, folderPath: currentPath || undefined })
+          }
+        })
+      }
+
+      if (folder.children && Array.isArray(folder.children) && folder.children.length > 0) {
+        traverse(folder.children, currentPath)
+      }
+    })
+  }
+  traverse(tree)
+  return files
+}
+
 export default function CreateJob() {
   const location = useLocation()
   const retryJobId = (location.state as { retryJobId?: number } | null)?.retryJobId
@@ -1764,40 +1796,6 @@ export default function CreateJob() {
     setSelectedPipelineId(null)
     setSelectedTools(option.tool_indices)
     setToolFileMappings({})
-  }
-
-  // Helper function to flatten file tree into a list of files with folder paths
-  const flattenFiles = (tree: FolderTreeItem[]): Array<FileItem & { folderPath?: string }> => {
-    if (!tree || tree.length === 0) {
-      return []
-    }
-    
-    const files: Array<FileItem & { folderPath?: string }> = []
-    const traverse = (folders: FolderTreeItem[], parentPath: string = '') => {
-      if (!folders || folders.length === 0) return
-      
-      folders.forEach(folder => {
-        if (!folder) return
-        
-        const currentPath = parentPath ? `${parentPath}/${folder.name}` : (folder.name || '')
-        
-        // Add files from this folder
-        if (folder.files && Array.isArray(folder.files)) {
-          folder.files.forEach(file => {
-            if (file && file.id) {
-              files.push({ ...file, folderPath: currentPath || undefined })
-            }
-          })
-        }
-        
-        // Recursively traverse children
-        if (folder.children && Array.isArray(folder.children) && folder.children.length > 0) {
-          traverse(folder.children, currentPath)
-        }
-      })
-    }
-    traverse(tree)
-    return files
   }
 
   const normalizeFileFormats = (file: FileItem & { folderPath?: string }): string[] => {
