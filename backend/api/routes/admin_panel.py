@@ -9,13 +9,15 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from html import escape
+from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, Form, Request, status
+from fastapi import APIRouter, Form, Request, status, UploadFile, File
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from backend.api.database.db_init import check_database_health, get_db_connection
@@ -1312,6 +1314,22 @@ def _collect_dashboard_data(selected_job_id: int | None = None) -> dict[str, Any
         for key, value in sorted(os.environ.items())
     }
 
+    demo_files_rows = []
+    demo_data_root = Path(os.getenv("DEMO_DATA_ROOT", "mock/data"))
+    if demo_data_root.exists() and demo_data_root.is_dir():
+        for f in demo_data_root.iterdir():
+            if f.is_file():
+                try:
+                    stat = f.stat()
+                    demo_files_rows.append({
+                        "filename": f.name,
+                        "size": stat.st_size,
+                        "modified": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
+                    })
+                except Exception:
+                    pass
+    demo_files_rows.sort(key=lambda x: x["filename"])
+
     with get_db_connection() as conn:
         cur = conn.cursor()
         try:
@@ -1533,6 +1551,7 @@ def _collect_dashboard_data(selected_job_id: int | None = None) -> dict[str, Any
         "app_config": app_config,
         "runtime_prediction_mode": _runtime_prediction_mode(app_config),
         "masked_env": masked_env,
+        "demo_files": demo_files_rows,
         "tool_registry_count": len(get_tool_registry()),
         "totals": {
             "users": total_users,
@@ -1792,6 +1811,21 @@ def _dashboard_page(
         for report in data["reports"]
     ]
 
+    demo_files_rendered = [
+        {
+            "filename": f'<code>{escape(f["filename"])}</code>',
+            "size": escape(_format_bytes(f["size"])),
+            "modified": escape(_format_datetime(f["modified"])),
+            "ops": (
+                f'<form class="inline-form" method="post" action="{escape(config.admin_panel.path)}/demo-files/delete">'
+                f'<input type="hidden" name="filename" value="{escape(f["filename"])}">'
+                f'<button type="submit" class="danger small-button">Delete</button>'
+                f'</form>'
+            ),
+        }
+        for f in data.get("demo_files", [])
+    ]
+
     report_total = len(data["reports"])
     open_reports = sum(1 for report in data["reports"] if str(report["status"]).lower() == "open")
     pipeline_reports = sum(1 for report in data["reports"] if report["target_type"] == "pipeline")
@@ -2006,6 +2040,27 @@ def _dashboard_page(
             <button type="submit">Update Password</button>
           </div>
         </form>
+      </div>
+
+      <div class="section">
+        <h2>Demo Files (Mock Data)</h2>
+        <p>Upload and list physical demo files stored in the <code>DEMO_DATA_ROOT</code> (default: <code>mock/data/</code>). Upload a new <code>manifest.json</code> to update dataset definitions.</p>
+        <form method="post" action="{escape(config.admin_panel.path)}/demo-files/upload" enctype="multipart/form-data">
+          <label for="demo_file">Select File</label>
+          <input id="demo_file" name="file" type="file" required style="margin-bottom:0.5rem">
+          <div class="row">
+            <button type="submit">Upload Demo File</button>
+          </div>
+        </form>
+        {_html_table(
+          [
+            ("filename", "Filename"),
+            ("size", "Size"),
+            ("modified", "Last Modified"),
+            ("ops", "Actions"),
+          ],
+          demo_files_rendered,
+        )}
       </div>
     """
 
@@ -2404,3 +2459,57 @@ async def admin_panel_logout():
         path=config.admin_panel.path,
     )
     return response
+
+
+@router.post(f"{config.admin_panel.path}/demo-files/upload")
+async def admin_panel_upload_demo_file(
+    request: Request,
+    file: UploadFile = File(...),
+):
+    ensure_admin_user()
+    admin_user = _get_authenticated_admin(request)
+    if not admin_user:
+        return _admin_redirect(message="Please sign in again", error=True, tab="system")
+
+    if not file.filename:
+        return _admin_redirect(message="No file selected", error=True, tab="system")
+
+    demo_data_root = Path(os.getenv("DEMO_DATA_ROOT", "mock/data"))
+    try:
+        demo_data_root.mkdir(parents=True, exist_ok=True)
+        filename = Path(file.filename).name
+        if not filename:
+            return _admin_redirect(message="Invalid filename", error=True, tab="system")
+        file_path = demo_data_root / filename
+        
+        with file_path.open("wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+    except Exception as exc:
+        return _admin_redirect(message=f"Failed to upload file: {exc}", error=True, tab="system")
+
+    return _admin_redirect(message=f"Uploaded {filename} to demo data", tab="system")
+
+
+@router.post(f"{config.admin_panel.path}/demo-files/delete")
+async def admin_panel_delete_demo_file(
+    request: Request,
+    filename: str = Form(...),
+):
+    ensure_admin_user()
+    admin_user = _get_authenticated_admin(request)
+    if not admin_user:
+        return _admin_redirect(message="Please sign in again", error=True, tab="system")
+
+    demo_data_root = Path(os.getenv("DEMO_DATA_ROOT", "mock/data"))
+    try:
+        clean_filename = Path(filename).name
+        if not clean_filename:
+            return _admin_redirect(message="Invalid filename", error=True, tab="system")
+        file_path = demo_data_root / clean_filename
+            
+        if file_path.exists() and file_path.is_file():
+            file_path.unlink()
+    except Exception as exc:
+        return _admin_redirect(message=f"Failed to delete file: {exc}", error=True, tab="system")
+
+    return _admin_redirect(message=f"Deleted {clean_filename}", tab="system")
