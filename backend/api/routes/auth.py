@@ -1135,7 +1135,7 @@ async def reset_password(request: PasswordResetRequest):
 
 
 @router.get("/status")
-async def get_auth_status(current_user: UserResponse = Depends(get_current_user)):
+async def get_auth_status(current_user: UserResponse = Depends(get_current_user_or_demo)):
     """
     Get current authenticated user status.
     
@@ -1152,7 +1152,7 @@ async def get_auth_status(current_user: UserResponse = Depends(get_current_user)
 
 
 @router.get("/me")
-async def get_current_user_info(current_user: UserResponse = Depends(get_current_user)):
+async def get_current_user_info(current_user: UserResponse = Depends(get_current_user_or_demo)):
     """
     Get current user information (alias for /status).
     

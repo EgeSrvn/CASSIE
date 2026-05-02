@@ -1,6 +1,6 @@
 import { useNavigate, useLocation } from 'react-router-dom'
 import { useState, useEffect, useRef } from 'react'
-import { logout, getToken, getCurrentUser, getStoredUser, isDemoToken, getDemoUser, User } from '../services/authService'
+import { logout, getToken, getCurrentUser, getStoredUser, isDemoToken, User } from '../services/authService'
 import { useAppConfig } from '../contexts/AppConfigContext'
 import '../styles/Navigation.css'
 
@@ -35,7 +35,7 @@ export default function Navigation({ onLogout }: NavigationProps) {
       setIsAuthenticated(authenticated)
 
       if (authenticated && isDemoToken(token)) {
-        setUser(getStoredUser() || getDemoUser())
+        setUser(getStoredUser())
         return
       }
 

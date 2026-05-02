@@ -1,5 +1,5 @@
 import axios, { AxiosInstance, AxiosError } from 'axios'
-import { getToken, clearToken } from './authService'
+import { getToken, clearToken, isDemoToken } from './authService'
 
 // Use relative URLs to leverage Vite proxy, or use environment variable
 const API_BASE_URL = import.meta.env.VITE_API_URL || ''
@@ -62,13 +62,14 @@ apiClient.interceptors.response.use(
   (response) => response,
   (error: AxiosError) => {
     if (error.response?.status === 401) {
-      const hadToken = !!getToken()
+      const token = getToken()
+      const hadToken = !!token
       const requestUrl = `${error.config?.url || ''}`
       const isLoginRequest = requestUrl.includes('/api/auth/login')
       const isRegisterRequest = requestUrl.includes('/api/auth/register')
       const isDemoCodeRequest = requestUrl.includes('/api/demo/validate-code')
 
-      if (hadToken && !isLoginRequest && !isRegisterRequest && !isDemoCodeRequest) {
+      if (hadToken && !isDemoToken(token) && !isLoginRequest && !isRegisterRequest && !isDemoCodeRequest) {
         clearToken()
         if (window.location.pathname !== '/login') {
           window.location.href = '/login'

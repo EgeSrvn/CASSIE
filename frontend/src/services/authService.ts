@@ -295,6 +295,11 @@ export const setStoredUser = (user: User | null): void => {
 }
 
 export const getStoredUser = (): User | null => {
+  const token = getToken()
+  if (isDemoToken(token)) {
+    return getDemoUser()
+  }
+
   const raw = localStorage.getItem(USER_KEY)
   if (!raw) {
     return null
@@ -409,7 +414,8 @@ export const demoLogin = async (code: string): Promise<DemoAuthResponse> => {
       { code }
     )
     if (response.data.success && response.data.data.access_token) {
-      storeAuthenticatedSession(getDemoUser(), response.data.data.access_token)
+      setStoredUser(null)
+      setToken(response.data.data.access_token)
       return response.data.data
     }
     throw new Error(response.data.message || 'Invalid or expired demo code.')

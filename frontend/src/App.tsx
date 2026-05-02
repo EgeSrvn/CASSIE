@@ -77,7 +77,7 @@ function AppRoutes({ isAuthenticated, setIsAuthenticated }: { isAuthenticated: b
             : (!isAuthenticated ? <Register /> : <Navigate to="/" />)
         }
       />
-      <Route path="/demo-login" element={<DemoLogin />} />
+      <Route path="/demo-login" element={isAuthenticated ? <Navigate to="/" replace /> : <DemoLogin />} />
       <Route path="/verify-email" element={<VerifyEmail />} />
       <Route path="/forgot-password" element={<ForgotPassword />} />
       <Route path="/" element={<Home />} />
