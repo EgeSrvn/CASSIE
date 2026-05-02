@@ -39,7 +39,7 @@ from backend.api.services.kubernetes_manager import (
     kubernetes_is_available,
 )
 from backend.api.services.runtime_estimator_service import APP_CONFIG_PATH
-from backend.api.services.user_service import ensure_admin_user, get_user_by_username, update_user_password
+from backend.api.services.user_service import ensure_admin_user, get_user_by_id, get_user_by_username, set_user_admin, update_user_password
 from backend.api.services import demo_service as _demo_svc
 from backend.api.utils.config_loader import get_config
 from backend.api.services.workflow_service import get_workflow_by_id
@@ -411,10 +411,17 @@ def _get_authenticated_admin(request: Request):
         return None
     if payload.get("token_type") != "admin_panel":
         return None
-    if payload.get("username") != config.admin_panel.username:
+    user_id = payload.get("user_id")
+    if not user_id:
         return None
 
-    return get_user_by_username(config.admin_panel.username)
+    try:
+        user = get_user_by_id(int(user_id))
+    except (TypeError, ValueError):
+        return None
+    if not user or not user.is_admin or not user.is_active:
+        return None
+    return user
 
 
 def _mask_value(key: str, value: Any) -> Any:
@@ -1396,11 +1403,12 @@ def _collect_dashboard_data(selected_job_id: int | None = None) -> dict[str, Any
                     u.email,
                     u.created_at,
                     u.suspended_until,
+                    u.is_admin,
                     COUNT(j.id) AS job_count,
                     COUNT(*) FILTER (WHERE j.status = 'running') AS running_job_count
                 FROM users u
                 LEFT JOIN jobs j ON j.user_id = u.id
-                GROUP BY u.id, u.username, u.email, u.created_at, u.suspended_until
+                GROUP BY u.id, u.username, u.email, u.created_at, u.suspended_until, u.is_admin
                 ORDER BY u.created_at DESC
                 """
             )
@@ -1479,8 +1487,9 @@ def _collect_dashboard_data(selected_job_id: int | None = None) -> dict[str, Any
             "email": row[2] or "-",
             "created_at": row[3],
             "suspended_until": row[4],
-            "job_count": int(row[5] or 0),
-            "running_job_count": int(row[6] or 0),
+            "is_admin": bool(row[5]),
+            "job_count": int(row[6] or 0),
+            "running_job_count": int(row[7] or 0),
         }
         for row in user_rows
     ]
@@ -1679,10 +1688,20 @@ def _dashboard_page(
         {
             "username": escape(user["username"]),
             "email": escape(user["email"]),
+            "role": f'<span class="{_status_class("completed" if user["is_admin"] else "pending")}">{"Admin" if user["is_admin"] else "User"}</span>',
             "joined": escape(_format_datetime(user["created_at"])),
             "suspension": escape(_format_datetime(user["suspended_until"])) if user.get("suspended_until") else "-",
             "jobs": str(user["job_count"]),
             "running": str(user["running_job_count"]),
+            "actions": (
+                f'<form class="inline-form" method="post" action="{escape(config.admin_panel.path)}/users/admin-status">'
+                f'<input type="hidden" name="user_id" value="{user["user_id"]}">'
+                f'<input type="hidden" name="is_admin" value="{"false" if user["is_admin"] else "true"}">'
+                f'<button class="small-button {"danger" if user["is_admin"] else "secondary"}" type="submit">'
+                f'{"Revoke Admin" if user["is_admin"] else "Make Admin"}'
+                f'</button>'
+                f'</form>'
+            ),
         }
         for user in data["users"]
     ]
@@ -1831,6 +1850,7 @@ def _dashboard_page(
             [
               ("username", "Username"),
               ("email", "Email"),
+              ("role", "Role"),
               ("joined", "Joined"),
               ("suspension", "Blocked Until"),
               ("jobs", "Jobs"),
@@ -1869,10 +1889,12 @@ def _dashboard_page(
           [
             ("username", "Username"),
             ("email", "Email"),
+            ("role", "Role"),
             ("joined", "Joined"),
             ("suspension", "Blocked Until"),
             ("jobs", "Jobs"),
             ("running", "Running"),
+            ("actions", "Actions"),
           ],
           user_rows,
         )}
@@ -2008,7 +2030,7 @@ def _dashboard_page(
       </div>
       {_notice(message if active_tab != "demo" else None, error=error)}
       <div class="meta">
-        <div><strong>Admin Username</strong> <code>{escape(config.admin_panel.username)}</code></div>
+        <div><strong>Bootstrap Admin Username</strong> <code>{escape(config.admin_panel.username)}</code></div>
         <div><strong>Cookie Scope</strong> <code>{escape(config.admin_panel.path)}</code></div>
         <div><strong>Database Status</strong> <span class="{_status_class(db_status)}">{escape(db_status)}</span></div>
       </div>
@@ -2072,9 +2094,9 @@ async def admin_panel_login(
     password: str = Form(...),
 ):
     ensure_admin_user()
-    admin_user = get_user_by_username(config.admin_panel.username)
+    admin_user = get_user_by_username(username)
 
-    if not admin_user or username != config.admin_panel.username or not verify_password(password, admin_user.password_hash):
+    if not admin_user or not admin_user.is_admin or not admin_user.is_active or not verify_password(password, admin_user.password_hash):
         return RedirectResponse(
             url=f"{config.admin_panel.path}?message=Invalid+credentials&error=1",
             status_code=status.HTTP_303_SEE_OTHER,
@@ -2125,7 +2147,12 @@ async def admin_panel_change_password(
 
     update_user_password(admin_user.id, new_password)
 
-    refreshed_admin = get_user_by_username(config.admin_panel.username)
+    refreshed_admin = get_user_by_id(admin_user.id)
+    if not refreshed_admin:
+        return RedirectResponse(
+            url=f"{config.admin_panel.path}?message=Please+sign+in+again&error=1",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
     token = create_scoped_token(
         {"username": refreshed_admin.username, "user_id": refreshed_admin.id},
         token_type="admin_panel",
@@ -2157,6 +2184,28 @@ async def admin_panel_runtime_prediction_mode(
         return _admin_redirect(message="Failed to update runtime prediction mode", error=True, tab="system")
 
     return _admin_redirect(message=f"Runtime prediction mode set to {prediction_mode}", tab="system")
+
+
+@router.post(f"{config.admin_panel.path}/users/admin-status")
+async def admin_panel_update_user_admin_status(
+    request: Request,
+    user_id: int = Form(...),
+    is_admin: bool = Form(...),
+):
+    ensure_admin_user()
+    admin_user = _get_authenticated_admin(request)
+    if not admin_user:
+        return _admin_redirect(message="Please sign in again", error=True, tab="users")
+
+    if admin_user.id == user_id and not is_admin:
+        return _admin_redirect(message="You cannot revoke admin from the signed-in admin account", error=True, tab="users")
+
+    updated_user = set_user_admin(user_id, is_admin)
+    if not updated_user:
+        return _admin_redirect(message=f"User {user_id} was not found", error=True, tab="users")
+
+    role_label = "admin" if updated_user.is_admin else "regular user"
+    return _admin_redirect(message=f"{updated_user.username} is now a {role_label}", tab="users")
 
 
 @router.post(f"{config.admin_panel.path}/invitation-codes")

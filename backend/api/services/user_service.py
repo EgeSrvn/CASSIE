@@ -428,6 +428,9 @@ def ensure_admin_user() -> UserInDB:
 
     existing = get_user_by_username(config.admin_panel.username)
     if existing:
+        if not existing.is_admin:
+            updated = set_user_admin(existing.id, True)
+            return updated or existing
         return existing
 
     with get_db_connection() as conn:
@@ -438,8 +441,8 @@ def ensure_admin_user() -> UserInDB:
             admin_email = f"{config.admin_panel.username}@local.admin"
             cur.execute(
                 f"""
-                INSERT INTO users (username, email, password_hash, bucket_name, email_verified)
-                VALUES (%s, %s, %s, %s, %s)
+                INSERT INTO users (username, email, password_hash, bucket_name, email_verified, is_admin, is_active)
+                VALUES (%s, %s, %s, %s, %s, TRUE, TRUE)
                 RETURNING {USER_SELECT_COLUMNS}
                 """,
                 (

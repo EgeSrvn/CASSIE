@@ -50,7 +50,7 @@ def generate_demo_codes(
             for _ in range(count):
                 plaintext = _generate_plaintext_code(code_length)
                 code_hash = hash_password(plaintext)
-                masked = plaintext[:4] + "*" * (code_length - 4)
+                masked = plaintext[:4] + "****"
 
                 cur.execute(
                     """
