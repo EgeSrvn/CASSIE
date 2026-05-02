@@ -1,0 +1,317 @@
+[
+  {
+    "id": 1,
+    "title": "Best parameters for FastQC on mixed read lengths?",
+    "body": "I am running FastQC on a dataset that combines 75 bp and 150 bp Illumina reads. The per-base quality plots look uneven near the tail, but the samples otherwise pass. Has anyone adjusted their review criteria for mixed read lengths?",
+    "tags": ["fastqc", "quality-control", "illumina"],
+    "author": "Mina",
+    "comments": [
+      {
+        "author": "Levent",
+        "body": "I usually split mixed read lengths before reviewing FastQC summaries. It makes the warning flags much easier to interpret."
+      },
+      {
+        "author": "Aylin",
+        "body": "Check whether the trimming step produced the length mix. If so, MultiQC can help you compare the samples without overreacting to one warning."
+      },
+      {
+        "author": "Jon",
+        "body": "The tail drop is common in 150 bp reads. I would focus more on adapter content and duplication than the final few bases."
+      }
+    ]
+  },
+  {
+    "id": 2,
+    "title": "How much memory should I reserve for BUSCO on a plant assembly?",
+    "body": "My genome assembly is about 1.4 Gb and I want to run BUSCO with the embryophyta lineage. I am unsure whether to use a smaller VM first or reserve a high-memory node from the start.",
+    "tags": ["busco", "assembly-assessment", "resources"],
+    "author": "Deniz",
+    "comments": [
+      {
+        "author": "Priya",
+        "body": "For a 1.4 Gb plant assembly I would start with at least 32 GB RAM, especially if you are running many CPUs."
+      },
+      {
+        "author": "Marco",
+        "body": "The lineage database and temporary files matter too. Make sure your scratch disk has plenty of room."
+      },
+      {
+        "author": "Selin",
+        "body": "If you are testing settings, run once on a small subset or with fewer threads before launching the full job."
+      }
+    ]
+  },
+  {
+    "id": 3,
+    "title": "SPAdes assembly failed after read correction",
+    "body": "SPAdes completed the error correction stage but failed during assembly with no obvious message in the summary log. The paired-end files passed quality control. What log files should I inspect first?",
+    "tags": ["spades", "troubleshooting", "assembly"],
+    "author": "Elif",
+    "comments": [
+      {
+        "author": "Ozan",
+        "body": "Open the main spades.log and search upward from the final error. The real cause is often a few dozen lines before the last traceback."
+      },
+      {
+        "author": "Hannah",
+        "body": "I would also check whether the temp directory filled up. SPAdes can fail abruptly when disk space runs out."
+      },
+      {
+        "author": "Burak",
+        "body": "If you used high k-mer values, try the default auto mode once to see whether it gets past the assembly stage."
+      }
+    ]
+  },
+  {
+    "id": 4,
+    "title": "Interpreting QUAST results for a fragmented metagenome assembly",
+    "body": "QUAST reports a low N50 and many contigs for a metagenome assembly. The reads are from a complex soil sample, so I expected fragmentation. Which metrics are most useful in this case?",
+    "tags": ["quast", "metagenomics", "metrics"],
+    "author": "Nora",
+    "comments": [
+      {
+        "author": "Kerem",
+        "body": "For metagenomes, I pay more attention to total assembled length, largest contig, and misassembly warnings than N50 alone."
+      },
+      {
+        "author": "Lara",
+        "body": "If you have a reference or binning results, run reference-based evaluation for the bins separately."
+      },
+      {
+        "author": "Emre",
+        "body": "Fragmentation can be normal for soil. Compare against other assemblies from the same input rather than using isolate-genome expectations."
+      }
+    ]
+  },
+  {
+    "id": 5,
+    "title": "Liftoff gene models missing on alternate haplotigs",
+    "body": "I used Liftoff to transfer annotations from a primary assembly to a haplotype-resolved assembly. Most primary chromosomes look good, but several alternate haplotigs have sparse gene coverage.",
+    "tags": ["liftoff", "annotation", "haplotypes"],
+    "author": "Cem",
+    "comments": [
+      {
+        "author": "Irem",
+        "body": "Check whether those haplotigs are highly diverged or mostly repetitive. Liftoff can miss models if the alignment identity drops."
+      },
+      {
+        "author": "Sam",
+        "body": "You may need to relax the identity and coverage thresholds, then manually inspect the genes that move."
+      },
+      {
+        "author": "Zeynep",
+        "body": "I would also confirm the sequence names in the target assembly. Naming mismatches can make debugging very confusing."
+      }
+    ]
+  },
+  {
+    "id": 6,
+    "title": "Choosing between hifiasm and Verkko for HiFi plus ONT data",
+    "body": "We have PacBio HiFi reads and moderate ONT coverage for a heterozygous sample. I am comparing hifiasm and Verkko for the first assembly pass. What tradeoffs should I expect?",
+    "tags": ["hifiasm", "verkko", "long-reads"],
+    "author": "Leyla",
+    "comments": [
+      {
+        "author": "Arda",
+        "body": "hifiasm is a very strong first pass for HiFi-heavy datasets. Verkko can shine when the ONT reads help bridge repeats."
+      },
+      {
+        "author": "Nina",
+        "body": "Run both if you can afford it, then compare contiguity, BUSCO, and k-mer completeness with Merqury."
+      },
+      {
+        "author": "Can",
+        "body": "The best choice may depend on heterozygosity. Look carefully at duplicated BUSCOs and haplotype purging."
+      }
+    ]
+  },
+  {
+    "id": 7,
+    "title": "Merqury spectra-cn plot shows unexpected second peak",
+    "body": "My Merqury spectra-cn plot has the expected main peak, but there is also a smaller second peak that I did not see in previous assemblies. Could this indicate retained haplotigs?",
+    "tags": ["merqury", "kmer", "haplotigs"],
+    "author": "Sofia",
+    "comments": [
+      {
+        "author": "Derya",
+        "body": "A second peak can indicate duplicated haplotype sequence, but contamination or uneven coverage can also produce odd patterns."
+      },
+      {
+        "author": "Leo",
+        "body": "Compare the plot with BUSCO duplication and read-depth tracks. One metric rarely tells the whole story."
+      },
+      {
+        "author": "Melis",
+        "body": "If you have purge results, run Merqury before and after purging to see whether that peak changes."
+      }
+    ]
+  },
+  {
+    "id": 8,
+    "title": "MetaSPAdes output has many short contigs after host filtering",
+    "body": "After host read removal, MetaSPAdes produced many short contigs and only a few above 10 kb. The sample is low biomass. Would you change the filtering or assembly settings?",
+    "tags": ["metaspades", "host-filtering", "low-biomass"],
+    "author": "Tuna",
+    "comments": [
+      {
+        "author": "Merve",
+        "body": "Low biomass samples often have limited microbial coverage. I would first check how many reads survived host filtering."
+      },
+      {
+        "author": "Alex",
+        "body": "Be careful with aggressive filtering. You might be discarding microbial reads that are close to host sequence."
+      },
+      {
+        "author": "Ece",
+        "body": "Try assembling with and without very strict quality trimming. Sometimes the stricter input fragments the graph more."
+      }
+    ]
+  },
+  {
+    "id": 9,
+    "title": "GenomeScope model fit looks poor for a polyploid sample",
+    "body": "GenomeScope estimated genome size much lower than expected and the model fit looks poor. The organism may be polyploid and has high heterozygosity. How should I interpret the result?",
+    "tags": ["genomescope", "polyploidy", "genome-size"],
+    "author": "Yasmin",
+    "comments": [
+      {
+        "author": "Bora",
+        "body": "GenomeScope can be hard to interpret for polyploids. Treat the estimate as exploratory unless the model fit is strong."
+      },
+      {
+        "author": "Nadia",
+        "body": "Try several k values and compare the histograms. Sometimes the default k-mer size hides the real structure."
+      },
+      {
+        "author": "Tolga",
+        "body": "External genome size evidence, like flow cytometry, is very helpful for sanity checking this case."
+      }
+    ]
+  },
+  {
+    "id": 10,
+    "title": "Workflow job stuck in queued state",
+    "body": "A workflow job has been queued for more than an hour even though smaller jobs are completing. The input files are already uploaded. What should I check before canceling it?",
+    "tags": ["workflow", "queue", "operations"],
+    "author": "Rana",
+    "comments": [
+      {
+        "author": "Kaan",
+        "body": "Look at the requested VM size and partition. Large memory requests may wait while smaller jobs continue to run."
+      },
+      {
+        "author": "Julia",
+        "body": "Check whether the job is waiting for a file staging step. Uploaded does not always mean copied into the execution workspace."
+      },
+      {
+        "author": "Sarp",
+        "body": "If it is reproducible, capture the job id and queue status before canceling so the admin can inspect it."
+      }
+    ]
+  },
+  {
+    "id": 11,
+    "title": "Recommended naming convention for pipeline outputs",
+    "body": "Our group is building reusable pipelines and wants output names that are clear across projects. Do people prefer sample-first names, tool-first names, or nested folders by tool?",
+    "tags": ["pipelines", "organization", "outputs"],
+    "author": "Ipek",
+    "comments": [
+      {
+        "author": "Noah",
+        "body": "I prefer sample-first filenames inside tool-specific folders. It keeps comparisons easy without huge filenames."
+      },
+      {
+        "author": "Asli",
+        "body": "Include the major parameter set only when it changes the interpretation, otherwise names become too long."
+      },
+      {
+        "author": "Mehmet",
+        "body": "A small README or manifest in each run folder saves a lot of confusion later."
+      }
+    ]
+  },
+  {
+    "id": 12,
+    "title": "FastQC adapter warning after trimming",
+    "body": "FastQC still reports adapter content after I trimmed with a standard adapter list. The warning is low but appears in multiple samples. Should I re-trim with custom adapters?",
+    "tags": ["fastqc", "trimming", "adapters"],
+    "author": "Ari",
+    "comments": [
+      {
+        "author": "Defne",
+        "body": "Inspect the overrepresented sequences. If they match a library-specific adapter, custom trimming is worth it."
+      },
+      {
+        "author": "Mateo",
+        "body": "A tiny residual signal may not matter, especially if the reads map well and downstream metrics are stable."
+      },
+      {
+        "author": "Ekin",
+        "body": "Run MultiQC across the batch. A pattern across samples often points to library prep rather than a one-off issue."
+      }
+    ]
+  },
+  {
+    "id": 13,
+    "title": "Can I reuse a Meryl database across assemblies?",
+    "body": "I built a Meryl database from the raw reads for one assembly evaluation. Can I reuse the same database for later assemblies from the same sample, or should I rebuild it each time?",
+    "tags": ["meryl", "merqury", "reuse"],
+    "author": "Berk",
+    "comments": [
+      {
+        "author": "Ela",
+        "body": "You can reuse the read k-mer database for assemblies from the same read set and k value."
+      },
+      {
+        "author": "Victor",
+        "body": "Document the k value and input read files carefully. Reuse gets risky when those details are unclear."
+      },
+      {
+        "author": "Gunes",
+        "body": "If reads were filtered or corrected differently, rebuild so the comparison remains honest."
+      }
+    ]
+  },
+  {
+    "id": 14,
+    "title": "Handling large reference files in shared storage",
+    "body": "Several workflows use the same large reference genome and annotation files. Uploading them into every project wastes storage. What is the cleanest way to manage shared references?",
+    "tags": ["storage", "references", "workflows"],
+    "author": "Seda",
+    "comments": [
+      {
+        "author": "Omer",
+        "body": "A shared read-only references folder works well if permissions are handled carefully."
+      },
+      {
+        "author": "Grace",
+        "body": "Version the reference directory names. Even small annotation updates can change downstream results."
+      },
+      {
+        "author": "Alp",
+        "body": "Store checksums next to the files so users can verify they are pointing to the expected version."
+      }
+    ]
+  },
+  {
+    "id": 15,
+    "title": "What should go into a reproducible run note?",
+    "body": "I want every completed analysis to have a short note that makes it reproducible later. Beyond tool versions and input files, what else should be captured?",
+    "tags": ["reproducibility", "metadata", "documentation"],
+    "author": "Maya",
+    "comments": [
+      {
+        "author": "Eren",
+        "body": "Record parameters, reference versions, container image tags, and the exact workflow revision."
+      },
+      {
+        "author": "Clara",
+        "body": "Add a short reason for non-default settings. Future you will appreciate knowing why a value changed."
+      },
+      {
+        "author": "Fatma",
+        "body": "I also include resource settings and runtime. They help when planning the next run."
+      }
+    ]
+  }
+]

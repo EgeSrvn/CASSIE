@@ -163,8 +163,8 @@ async def estimate_runtime(
 
             estimate = await run_in_threadpool(
                 estimate_runtime_for_pipeline_graph,
-                list(pipeline.nodes or []),
-                list(pipeline.edges or []),
+                pipeline.nodes or [],
+                pipeline.edges or [],
                 request.vm_name,
                 input_assignments,
             )

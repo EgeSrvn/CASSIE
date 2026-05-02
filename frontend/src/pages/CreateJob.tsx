@@ -95,6 +95,7 @@ const getManualInputBlockDefaultName = (block: ManualToolInputBlock): string => 
 }
 
 const PIPELINE_STAGE_NODE_TYPES = new Set(['tool', 'checkpoint'])
+const PIPELINE_INPUT_NODE_TYPES = new Set(['fastqinput', 'fastainput', 'input', 'inputnode', 'start'])
 const CREATE_JOB_DRAFT_STORAGE_KEY = 'cassie:create-job-draft:v6'
 
 interface CreateJobDraft {
@@ -222,6 +223,10 @@ const resolvePipelineNodeType = (node: any): string => (
 
 const resolvePipelineNodeLabel = (node: any, fallbackLabel: string): string => (
   String(node?.data?.label ?? node?.label ?? fallbackLabel)
+)
+
+const resolvePipelineToolId = (node: any): string => (
+  String(node?.data?.toolId ?? node?.data?.tool_id ?? node?.toolId ?? node?.tool_id ?? '').trim().toUpperCase()
 )
 
 const renderPageModal = (content: ReactNode) => {
@@ -538,8 +543,11 @@ export default function CreateJob() {
   }, [
     dataFileTree,
     manualToolFlagValues,
+    pipelineInputMappings,
     requirementSourceSelections,
+    selectedPipelineEdges,
     selectedPipelineId,
+    selectedPipelineNodes,
     selectedTools,
     selectedVM,
     selectionMode,
@@ -1417,7 +1425,97 @@ export default function CreateJob() {
 
   const getRuntimeInputAssignments = (): RuntimeInputAssignment[] => {
     if (selectionMode === 'pipeline') {
-      return []
+      const selectableFiles = getCombinedSelectableFiles()
+      const fileById = new Map<number, FileItem & { folderPath?: string }>(
+        selectableFiles.map((file) => [file.id, file])
+      )
+      const nodesById = new Map<string, any>(
+        selectedPipelineNodes
+          .filter((node: any) => node && typeof node === 'object' && node.id != null)
+          .map((node: any) => [String(node.id), node])
+      )
+      const downstreamToolIdsByInput = new Map<string, string[]>()
+
+      selectedPipelineEdges.forEach((edge: any) => {
+        const sourceId = String(edge?.source || '').trim()
+        const targetId = String(edge?.target || '').trim()
+        if (!sourceId || !targetId) {
+          return
+        }
+
+        const sourceNode = nodesById.get(sourceId)
+        const targetNode = nodesById.get(targetId)
+        if (!sourceNode || !targetNode) {
+          return
+        }
+        if (!PIPELINE_INPUT_NODE_TYPES.has(resolvePipelineNodeType(sourceNode))) {
+          return
+        }
+        if (resolvePipelineNodeType(targetNode) !== 'tool') {
+          return
+        }
+
+        const toolId = resolvePipelineToolId(targetNode)
+        if (!toolId) {
+          return
+        }
+
+        const currentToolIds = downstreamToolIdsByInput.get(sourceId) || []
+        if (!currentToolIds.includes(toolId)) {
+          downstreamToolIdsByInput.set(sourceId, [...currentToolIds, toolId])
+        }
+      })
+
+      const assignments: RuntimeInputAssignment[] = []
+      Object.entries(pipelineInputMappings).forEach(([inputKey, mappedFileIds]) => {
+        const downstreamToolIds = downstreamToolIdsByInput.get(String(inputKey)) || []
+        if (mappedFileIds.length === 0 || downstreamToolIds.length === 0) {
+          return
+        }
+
+        const totalInputSizeMib = mappedFileIds.reduce((sum, fileId) => {
+          const file = fileById.get(fileId)
+          const sizeBytes = typeof file?.size_bytes === 'number' ? file.size_bytes : 0
+          return sum + (sizeBytes > 0 ? sizeBytes / (1024 * 1024) : 0)
+        }, 0)
+        const compressedInputSizeMib = mappedFileIds.reduce((sum, fileId) => {
+          const file = fileById.get(fileId)
+          const filename = String(file?.filename || '').toLowerCase()
+          const fileFormat = String(file?.file_format || '').toLowerCase()
+          const isCompressed =
+            filename.endsWith('.gz') ||
+            filename.endsWith('.bz2') ||
+            filename.endsWith('.xz') ||
+            filename.endsWith('.zip') ||
+            fileFormat.includes('gz') ||
+            fileFormat.includes('bz2') ||
+            fileFormat.includes('xz') ||
+            fileFormat.includes('zip')
+          const sizeBytes = typeof file?.size_bytes === 'number' ? file.size_bytes : 0
+          return sum + (isCompressed && sizeBytes > 0 ? sizeBytes / (1024 * 1024) : 0)
+        }, 0)
+        const uniqueFormats = Array.from(new Set(
+          mappedFileIds
+            .map((fileId) => String(fileById.get(fileId)?.file_format || '').trim().toLowerCase())
+            .filter(Boolean)
+        ))
+
+        if (totalInputSizeMib <= 0) {
+          return
+        }
+
+        downstreamToolIds.forEach((toolId) => {
+          assignments.push({
+            tool_id: toolId,
+            requirement_type: inputKey,
+            total_input_size_mib: Number(totalInputSizeMib.toFixed(2)),
+            compressed_input_size_mib: Number(compressedInputSizeMib.toFixed(2)),
+            file_formats: uniqueFormats,
+          })
+        })
+      })
+
+      return assignments
     }
 
     const selectableFiles = getCombinedSelectableFiles()
@@ -1635,6 +1733,18 @@ export default function CreateJob() {
   const inputBlockDisplayName = useCallback((inputId: string, fallbackLabel: string): string => (
     inputBlockNames[inputId]?.trim() || fallbackLabel
   ), [inputBlockNames])
+
+  const getPipelineInputBindings = useCallback(() => (
+    pipelineInputRequirements.flatMap((inputReq) => {
+      const bindingId = String(inputReq.id || inputReq.label)
+      const mappedFileIds = pipelineInputMappings[bindingId] || []
+      return mappedFileIds.map((fileId) => ({
+        file_id: fileId,
+        binding_id: bindingId,
+        label: inputBlockDisplayName(bindingId, inputReq.label),
+      }))
+    })
+  ), [inputBlockDisplayName, pipelineInputMappings, pipelineInputRequirements])
 
   const handleInputBlockNameChange = (inputId: string, value: string) => {
     setInputBlockNames((prev) => ({ ...prev, [inputId]: value }))
@@ -2074,6 +2184,13 @@ export default function CreateJob() {
         jobData.pipeline_id = selectedPipelineId
         if (priorityGroups.length > 0) {
           jobData.execution_preferences = buildPipelineExecutionPreferences(priorityGroups)
+        }
+        const pipelineInputBindings = getPipelineInputBindings()
+        if (pipelineInputBindings.length > 0) {
+          jobData.execution_preferences = {
+            ...(jobData.execution_preferences || {}),
+            pipeline_input_bindings: pipelineInputBindings,
+          }
         }
       } else {
         if (selectedTools.length === 0) {

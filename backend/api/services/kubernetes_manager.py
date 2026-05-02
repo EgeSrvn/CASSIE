@@ -924,6 +924,23 @@ class KubernetesPipelineRunner:
                 return source
         return None
 
+    def _iter_declared_input_bindings(
+        self,
+        execution_preferences: Optional[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        if not isinstance(execution_preferences, dict):
+            return []
+
+        bindings: List[Dict[str, Any]] = []
+        for key in ("manual_input_bindings", "pipeline_input_bindings"):
+            raw_items = execution_preferences.get(key) or []
+            if not isinstance(raw_items, list):
+                continue
+            for item in raw_items:
+                if isinstance(item, dict):
+                    bindings.append(item)
+        return bindings
+
     def _build_stage_specs_from_pipeline(
         self,
         pipeline_id: int,
@@ -949,6 +966,23 @@ class KubernetesPipelineRunner:
             return []
 
         edges = extract_edges(pipeline.edges)
+        if isinstance(pipeline.nodes, dict):
+            raw_nodes = pipeline.nodes.get("nodes") if isinstance(pipeline.nodes.get("nodes"), list) else list(pipeline.nodes.values())
+        elif isinstance(pipeline.nodes, list):
+            raw_nodes = pipeline.nodes
+        else:
+            raw_nodes = []
+        nodes_by_id = {
+            str(node.get("id") or ""): node
+            for node in raw_nodes
+            if isinstance(node, dict) and str(node.get("id") or "").strip()
+        }
+        incoming_node_ids: Dict[str, List[str]] = {node_id: [] for node_id in stage_nodes}
+        for edge in edges:
+            source = str(edge.get("source") or "").strip()
+            target = str(edge.get("target") or "").strip()
+            if source and target in incoming_node_ids and source not in incoming_node_ids[target]:
+                incoming_node_ids[target].append(source)
         result_labels_by_stage = build_stage_result_label_map(pipeline.nodes, pipeline.edges)
         dependency_map: Dict[str, List[str]] = {node_id: [] for node_id in stage_nodes}
         for edge in edges:
@@ -990,6 +1024,40 @@ class KubernetesPipelineRunner:
                     continue
                 tool["input_requirements"] = get_tool_requirements(tool_id, tool_config)
                 stage_kind = "tool"
+            explicit_input_binding_ids_by_requirement: Dict[str, List[str]] = {}
+            if stage_kind == "tool":
+                explicit_input_binding_ids: List[str] = []
+                for upstream_node_id in incoming_node_ids.get(node_id, []):
+                    upstream_node = nodes_by_id.get(upstream_node_id)
+                    classification = self._classify_pipeline_input_node(upstream_node) if upstream_node else None
+                    if not classification:
+                        continue
+                    explicit_input_binding_ids.extend([
+                        upstream_node_id,
+                        f"input:{upstream_node_id}",
+                    ])
+                    classification_formats = {
+                        str(item).strip().lower()
+                        for item in (classification.get("formats") or [])
+                        if str(item).strip()
+                    }
+                    for requirement in tool.get("input_requirements", []) or []:
+                        requirement_type = str(requirement.get("type") or "").strip().lower()
+                        requirement_formats = {
+                            str(item).strip().lower()
+                            for item in (requirement.get("formats") or [])
+                            if str(item).strip()
+                        }
+                        if not requirement_type:
+                            continue
+                        if requirement_formats and classification_formats and not requirement_formats.intersection(classification_formats):
+                            continue
+                        current_binding_ids = explicit_input_binding_ids_by_requirement.setdefault(requirement_type, [])
+                        for binding_id in (upstream_node_id, f"input:{upstream_node_id}"):
+                            if binding_id not in current_binding_ids:
+                                current_binding_ids.append(binding_id)
+                if explicit_input_binding_ids:
+                    explicit_input_binding_ids_by_requirement["*"] = list(dict.fromkeys(explicit_input_binding_ids))
             stage_label = resolve_node_label(node) or str((tool or {}).get("name") or (tool or {}).get("id") or node_id)
             specs.append(
                 {
@@ -1002,6 +1070,8 @@ class KubernetesPipelineRunner:
                     "priority_order": int(((node.get("data") or {}).get("priorityOrder")) or stage_number - 1),
                     "stage_label": stage_label,
                     "result_labels": list(result_labels_by_stage.get(node_id, [])),
+                    "enforce_result_labels": True,
+                    "explicit_input_binding_ids_by_requirement": explicit_input_binding_ids_by_requirement,
                 }
             )
             stage_number += 1
@@ -1016,29 +1086,50 @@ class KubernetesPipelineRunner:
     ) -> List[Dict[str, Any]]:
         stage_tool = spec.get("tool") or {}
         stage_tool_id = str(stage_tool.get("id") or "").strip().upper()
-        initial_has_explicit_bindings = self._has_explicit_binding_metadata(initial_inputs)
+        requirement_binding_ids = spec.get("explicit_input_binding_ids_by_requirement") or {}
+        artifacts: List[Dict[str, Any]] = []
+        seen_artifact_keys: set[Tuple[str, str, str, str]] = set()
 
-        if stage_tool_id and initial_has_explicit_bindings:
-            artifacts = [
-                dict(item)
-                for item in initial_inputs
-                if str(item.get("tool_id") or "").strip().upper() == stage_tool_id
-            ]
-        else:
-            artifacts = [dict(item) for item in initial_inputs]
+        def append_artifact(artifact: Dict[str, Any]) -> None:
+            dedupe_key = (
+                str(artifact.get("s3_key") or ""),
+                str(artifact.get("filename") or ""),
+                str(artifact.get("tool_id") or "").strip().upper(),
+                str(artifact.get("requirement_type") or "").strip().lower(),
+            )
+            if dedupe_key in seen_artifact_keys:
+                return
+            artifacts.append(dict(artifact))
+            seen_artifact_keys.add(dedupe_key)
 
-        seen_keys = {
-            (str(item.get("s3_key") or ""), str(item.get("filename") or ""))
-            for item in artifacts
-        }
+        for requirement in stage_tool.get("input_requirements", []) or []:
+            requirement_type = str(requirement.get("type") or "").strip().lower()
+            if not requirement_type:
+                continue
+
+            for artifact in self._get_upstream_requirement_inputs(initial_inputs, requirement_type):
+                append_artifact(artifact)
+
+            bound_matches = self._get_bound_requirement_inputs(initial_inputs, stage_tool_id, requirement_type)
+            for artifact in bound_matches:
+                append_artifact(artifact)
+
+            explicit_binding_ids = list(requirement_binding_ids.get(requirement_type) or requirement_binding_ids.get("*") or [])
+            if explicit_binding_ids:
+                for artifact in self._select_preview_inputs(
+                    initial_inputs,
+                    binding_ids=explicit_binding_ids,
+                    requirement=requirement,
+                ):
+                    append_artifact(artifact)
+
+        if not artifacts:
+            for artifact in initial_inputs:
+                append_artifact(artifact)
 
         for dependency_id in spec.get("dependency_ids", []):
             for artifact in outputs_by_stage.get(dependency_id, []) or []:
-                dedupe_key = (str(artifact.get("s3_key") or ""), str(artifact.get("filename") or ""))
-                if dedupe_key in seen_keys:
-                    continue
-                artifacts.append(dict(artifact))
-                seen_keys.add(dedupe_key)
+                append_artifact(artifact)
 
         return artifacts
 
@@ -1433,6 +1524,9 @@ class KubernetesPipelineRunner:
             result_labels = list(spec.get("result_labels") or [])
             downstream_specs = dependents_by_stage.get(stage_id) or []
 
+            if spec.get("enforce_result_labels") and not result_labels:
+                continue
+
             for produced_type in list(tool.get("produces") or []):
                 produced_tool = {"produces": [produced_type]}
                 consumer_stage_ids = [
@@ -1746,6 +1840,7 @@ class KubernetesPipelineRunner:
                     "dependency_ids": [str(dep).strip() for dep in (item.get("dependency_stage_ids") or []) if str(dep).strip()],
                     "stage_label": stage_label,
                     "result_labels": list(item.get("result_labels") or []),
+                    "enforce_result_labels": bool(item.get("enforce_result_labels")),
                     "tool": {
                         "id": tool_id,
                         "name": tool_name,
@@ -1970,21 +2065,18 @@ class KubernetesPipelineRunner:
         execution_preferences: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         bindings_by_file: Dict[int, List[Dict[str, Any]]] = {}
-        if isinstance(execution_preferences, dict):
-            for item in execution_preferences.get("manual_input_bindings") or []:
-                if not isinstance(item, dict):
-                    continue
-                try:
-                    file_id = int(item.get("file_id"))
-                except (TypeError, ValueError):
-                    continue
-                binding_payload = {
-                    "binding_id": str(item.get("binding_id") or "").strip(),
-                    "tool_id": str(item.get("tool_id") or "").strip().upper(),
-                    "requirement_type": str(item.get("requirement_type") or "").strip().lower(),
-                    "label": str(item.get("label") or "").strip(),
-                }
-                bindings_by_file.setdefault(file_id, []).append(binding_payload)
+        for item in self._iter_declared_input_bindings(execution_preferences):
+            try:
+                file_id = int(item.get("file_id"))
+            except (TypeError, ValueError):
+                continue
+            binding_payload = {
+                "binding_id": str(item.get("binding_id") or "").strip(),
+                "tool_id": str(item.get("tool_id") or "").strip().upper(),
+                "requirement_type": str(item.get("requirement_type") or "").strip().lower(),
+                "label": str(item.get("label") or "").strip(),
+            }
+            bindings_by_file.setdefault(file_id, []).append(binding_payload)
 
         artifacts: List[Dict[str, Any]] = []
         for file_id in input_files:
@@ -2659,17 +2751,22 @@ exit "$CASSIE_STATUS"
 
         if tool["id"] == "HIFIASM":
             mode = str(tool_config.get("mode") or "hifi").strip().lower()
+            has_explicit_bindings = self._has_explicit_binding_metadata(current_inputs)
             if mode == "ont":
                 primary_reads = self._prefer_primary_long_read_inputs(
                     self._get_bound_requirement_inputs(current_inputs, tool["id"], "ont_reads")
-                ) or self._prefer_primary_long_read_inputs(classified["reads_like"])
+                )
+                if not primary_reads and not has_explicit_bindings:
+                    primary_reads = self._prefer_primary_long_read_inputs(classified["reads_like"])
                 if not primary_reads:
                     raise ValueError("Hifiasm ONT mode requires ONT reads in FASTQ or FASTA format")
                 hifiasm_inputs = self._quoted_input_paths(input_dir, primary_reads)
             else:
                 primary_reads = self._prefer_primary_long_read_inputs(
                     self._get_bound_requirement_inputs(current_inputs, tool["id"], "hifi_reads")
-                ) or self._prefer_primary_long_read_inputs(classified["reads_like"])
+                )
+                if not primary_reads and not has_explicit_bindings:
+                    primary_reads = self._prefer_primary_long_read_inputs(classified["reads_like"])
                 if not primary_reads:
                     raise ValueError("Hifiasm requires HiFi reads in FASTQ or FASTA format")
                 hifiasm_inputs = self._quoted_input_paths(input_dir, primary_reads)
@@ -2733,13 +2830,14 @@ exit "$CASSIE_STATUS"
             )
 
         if tool["id"] == "VERKKO":
+            has_explicit_bindings = self._has_explicit_binding_metadata(current_inputs)
             hifi_reads = self._prefer_primary_long_read_inputs(
                 self._get_bound_requirement_inputs(current_inputs, tool["id"], "hifi_reads")
             )
             nano_reads = self._prefer_primary_long_read_inputs(
                 self._get_bound_requirement_inputs(current_inputs, tool["id"], "nanopore_reads")
             )
-            if not hifi_reads:
+            if not hifi_reads and not has_explicit_bindings:
                 hifi_reads, inferred_nano_reads = self._split_verkko_reads(
                     self._prefer_primary_long_read_inputs(classified["reads_like"])
                 )

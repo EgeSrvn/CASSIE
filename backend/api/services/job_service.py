@@ -173,6 +173,7 @@ def _build_pipeline_stage_snapshot(
                 "input_requirements": list(tool.get("input_requirements") or []),
                 "produces": list(tool.get("produces") or []),
                 "result_labels": list(result_labels_by_stage.get(str(node_id), [])),
+                "enforce_result_labels": True,
             }
         )
         stage_number += 1
