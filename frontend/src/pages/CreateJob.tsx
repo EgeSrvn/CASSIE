@@ -916,7 +916,7 @@ export default function CreateJob() {
         return
       }
 
-      if (selectionMode === 'pipeline' && (!savedPipelineExecutionPlan || savedPipelineExecutionPlan.toolIndices.length === 0)) {
+      if (selectionMode === 'pipeline' && !selectedPipelineId) {
         setRuntimeEstimate(null)
         setRuntimeEstimateError('')
         return
@@ -2204,24 +2204,26 @@ export default function CreateJob() {
     const filesById = new Map(combinedSelectableFiles.map((file) => [file.id, file]))
 
     if (selectionMode === 'pipeline') {
-      if (!selectedPipelineId || !savedPipelineExecutionPlan) {
+      if (!selectedPipelineId) {
         return null
       }
       const executionPreferences: Record<string, unknown> = buildPipelineExecutionPreferences(priorityGroups)
-      if (savedPipelineExecutionPlan.manualToolConfigs.length > 0) {
-        executionPreferences.manual_tool_configs = savedPipelineExecutionPlan.manualToolConfigs
-      }
-      if (savedPipelineExecutionPlan.manualInputBindings.length > 0) {
-        executionPreferences.manual_input_bindings = savedPipelineExecutionPlan.manualInputBindings
-      }
-      if (savedPipelineExecutionPlan.inputSourceOverrides.length > 0) {
-        executionPreferences.input_source_overrides = savedPipelineExecutionPlan.inputSourceOverrides
+      if (savedPipelineExecutionPlan) {
+        if (savedPipelineExecutionPlan.manualToolConfigs.length > 0) {
+          executionPreferences.manual_tool_configs = savedPipelineExecutionPlan.manualToolConfigs
+        }
+        if (savedPipelineExecutionPlan.manualInputBindings.length > 0) {
+          executionPreferences.manual_input_bindings = savedPipelineExecutionPlan.manualInputBindings
+        }
+        if (savedPipelineExecutionPlan.inputSourceOverrides.length > 0) {
+          executionPreferences.input_source_overrides = savedPipelineExecutionPlan.inputSourceOverrides
+        }
       }
       executionPreferences.source_pipeline_id = selectedPipelineId
 
       return {
         pipeline_id: selectedPipelineId,
-        planned_inputs: savedPipelineExecutionPlan.plannedInputs.map((input) => ({
+        planned_inputs: (savedPipelineExecutionPlan?.plannedInputs || []).map((input) => ({
           ...input,
           id: filesById.get(input.id)?.id || input.id,
         })),
