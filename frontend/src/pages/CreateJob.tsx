@@ -2374,7 +2374,7 @@ export default function CreateJob() {
       cancelled = true
       window.clearTimeout(timeoutId)
     }
-  }, [reviewPipelinePlanRequest, reviewPipelinePlanSignature])
+  }, [reviewPipelinePlanSignature])
 
   const livePipelineBox = (
     <div className="builder-live-pipeline-card">
