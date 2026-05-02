@@ -2484,6 +2484,12 @@ async def admin_panel_upload_demo_file(
         
         with file_path.open("wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
+            
+        try:
+            from backend.api.database.db_init import sync_demo_files
+            sync_demo_files()
+        except Exception:
+            pass
     except Exception as exc:
         return _admin_redirect(message=f"Failed to upload file: {exc}", error=True, tab="system")
 
