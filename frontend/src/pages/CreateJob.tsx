@@ -943,8 +943,7 @@ export default function CreateJob() {
           console.log('[RuntimeEstimate] Input assignments:', inputAssignments)
         } catch (assignmentErr) {
           console.error('[RuntimeEstimate] Error getting input assignments:', assignmentErr)
-          const errorMsg = assignmentErr instanceof Error ? assignmentErr.message : String(assignmentErr)
-          throw new Error(`Failed to prepare input assignments: ${errorMsg}`)
+          throw new Error(`Failed to prepare input assignments: ${assignmentErr.message}`)
         }
 
         const estimate = await estimateRuntime(
