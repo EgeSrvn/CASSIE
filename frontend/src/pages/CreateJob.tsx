@@ -272,8 +272,38 @@ const resolvePipelineNodeLabel = (node: any, fallbackLabel: string): string => (
   String(node?.data?.label ?? node?.label ?? fallbackLabel)
 )
 
+const PIPELINE_TOOL_LABEL_ALIASES: Array<{ toolId: string; aliases: string[] }> = [
+  { toolId: 'GENOMESCOPE2', aliases: ['Genomic Property Estimation (GenomeScope2)', 'GenomeScope2'] },
+  { toolId: 'METASPADES', aliases: ['Metagenome Assembly (metaSPAdes)', 'metaSPAdes', 'MetaSPAdes'] },
+  { toolId: 'HIFIASM', aliases: ['Assembly (Hifiasm)', 'Hifiasm', 'hifiasm'] },
+  { toolId: 'VERKKO', aliases: ['Assembly (Verkko)', 'Verkko', 'verkko'] },
+  { toolId: 'MERQURY', aliases: ['Assembly k-mer Evaluation (Merqury)', 'Merqury'] },
+  { toolId: 'FASTQC', aliases: ['Read Quality (FastQC)', 'FastQC'] },
+  { toolId: 'SPADES', aliases: ['Assembly (Spades)', 'SPAdes', 'Spades'] },
+  { toolId: 'QUAST', aliases: ['Quality Assessment for Assembly (QUAST)', 'QUAST', 'Quast'] },
+  { toolId: 'LIFTOFF', aliases: ['Annotation Transfer (Liftoff)', 'Liftoff'] },
+  { toolId: 'BUSCO', aliases: ['Assembly Completeness (BUSCO)', 'BUSCO'] },
+  { toolId: 'MERYL', aliases: ['K-mer Database (Meryl)', 'Meryl'] },
+  { toolId: 'CAT', aliases: ['Comparative Annotation Toolkit (CAT)', 'CAT'] },
+]
+
+const inferPipelineToolIdFromLabel = (label: string): string => {
+  const normalizedLabel = label.trim().toLowerCase()
+  if (!normalizedLabel) {
+    return ''
+  }
+
+  const aliases = PIPELINE_TOOL_LABEL_ALIASES.flatMap(({ toolId, aliases }) =>
+    aliases.map((alias) => ({ toolId, alias: alias.trim().toLowerCase() }))
+  ).sort((left, right) => right.alias.length - left.alias.length)
+
+  const match = aliases.find(({ alias }) => alias && (alias === normalizedLabel || normalizedLabel.includes(alias)))
+  return match?.toolId || ''
+}
+
 const resolvePipelineToolId = (node: any): string => (
-  String(node?.data?.toolId ?? node?.data?.tool_id ?? node?.toolId ?? node?.tool_id ?? '').trim().toUpperCase()
+  String(node?.data?.toolId ?? node?.data?.tool_id ?? node?.toolId ?? node?.tool_id ?? '').trim().toUpperCase() ||
+  inferPipelineToolIdFromLabel(resolvePipelineNodeLabel(node, ''))
 )
 
 const buildOrderedPipelineToolNodeIds = (nodes: any[], edges: any[]): string[] => {
@@ -1182,29 +1212,29 @@ export default function CreateJob() {
         .map((toolNodeId) => toolRequirementByNodeId.get(toolNodeId))
         .filter((card): card is ToolRequirementInfo => Boolean(card))
 
-      const matchedRequirements = downstreamCards.flatMap((card) => (
-        (card.requirements || []).filter((requirement) => {
-          const formats = new Set((requirement.formats || []).map((format) => String(format).toLowerCase()))
-          if (inputType === 'fastqinput') {
-            return formats.has('fastq')
-          }
-          if (inputType === 'fastainput') {
-            return formats.has('fasta')
-          }
-          return true
-        })
-      ))
+      const downstreamRequirements = downstreamCards.flatMap((card) => card.requirements || [])
+      const matchedRequirements = downstreamRequirements.filter((requirement) => {
+        const formats = new Set((requirement.formats || []).map((format) => String(format).toLowerCase()))
+        if (inputType === 'fastqinput') {
+          return formats.has('fastq')
+        }
+        if (inputType === 'fastainput') {
+          return formats.has('fasta')
+        }
+        return true
+      })
+      const requirementsForFormats = matchedRequirements.length > 0
+        ? matchedRequirements
+        : downstreamRequirements
 
       const formatSet = new Set<string>()
-      matchedRequirements.forEach((requirement) => {
+      requirementsForFormats.forEach((requirement) => {
         ;(requirement.formats || []).forEach((format) => formatSet.add(String(format).toLowerCase()))
       })
-      if (inputType === 'fastqinput') {
-        formatSet.clear()
+      if (formatSet.size === 0 && inputType === 'fastqinput') {
         formatSet.add('fastq')
       }
-      if (inputType === 'fastainput') {
-        formatSet.clear()
+      if (formatSet.size === 0 && inputType === 'fastainput') {
         formatSet.add('fasta')
       }
 
@@ -2571,11 +2601,8 @@ export default function CreateJob() {
           setCreating(false)
           return
         }
-        jobData.tool_indices = savedPipelineExecutionPlan.toolIndices
-        const manualExecutionPreferences: Record<string, unknown> = {}
-        if (savedPipelineExecutionPlan.manualPriorityGroups.length > 0) {
-          manualExecutionPreferences.manual_priority_groups = savedPipelineExecutionPlan.manualPriorityGroups
-        }
+        jobData.pipeline_id = selectedPipelineId || undefined
+        const manualExecutionPreferences: Record<string, unknown> = buildPipelineExecutionPreferences(priorityGroups)
         if (savedPipelineExecutionPlan.manualToolConfigs.length > 0) {
           manualExecutionPreferences.manual_tool_configs = savedPipelineExecutionPlan.manualToolConfigs
         }

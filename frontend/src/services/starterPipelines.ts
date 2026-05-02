@@ -27,7 +27,7 @@ export const STARTER_PIPELINE_TEMPLATES: StarterPipelineTemplate[] = [
       {
         id: '3',
         type: 'tool',
-        data: { label: 'Read Quality (FastQC)', description: ['Input: FASTQ', 'Output: QC reports'] },
+        data: { label: 'Read Quality (FastQC)', toolId: 'FASTQC', description: ['Input: FASTQ', 'Output: QC reports'] },
         position: { x: 340, y: 160 }
       },
       {
@@ -69,13 +69,13 @@ export const STARTER_PIPELINE_TEMPLATES: StarterPipelineTemplate[] = [
       {
         id: '4',
         type: 'tool',
-        data: { label: 'Assembly (Spades)', description: ['Input: paired reads', 'Output: contigs/scaffolds'] },
+        data: { label: 'Assembly (Spades)', toolId: 'SPADES', description: ['Input: paired reads', 'Output: contigs/scaffolds'] },
         position: { x: 320, y: 120 }
       },
       {
         id: '5',
         type: 'tool',
-        data: { label: 'Quality Assessment for Assembly (QUAST)', description: ['Input: assembly + reference', 'Output: assembly metrics'] },
+        data: { label: 'Quality Assessment for Assembly (QUAST)', toolId: 'QUAST', description: ['Input: assembly + reference', 'Output: assembly metrics'] },
         position: { x: 650, y: 180 }
       },
       {
@@ -126,19 +126,19 @@ export const STARTER_PIPELINE_TEMPLATES: StarterPipelineTemplate[] = [
       {
         id: '4',
         type: 'tool',
-        data: { label: 'Read Quality (FastQC)', description: ['Input: FASTQ', 'Output: QC reports'] },
+        data: { label: 'Read Quality (FastQC)', toolId: 'FASTQC', description: ['Input: FASTQ', 'Output: QC reports'] },
         position: { x: 300, y: 60 }
       },
       {
         id: '5',
         type: 'tool',
-        data: { label: 'Assembly (Spades)', description: ['Input: paired reads', 'Output: contigs/scaffolds'] },
+        data: { label: 'Assembly (Spades)', toolId: 'SPADES', description: ['Input: paired reads', 'Output: contigs/scaffolds'] },
         position: { x: 320, y: 240 }
       },
       {
         id: '6',
         type: 'tool',
-        data: { label: 'Quality Assessment for Assembly (QUAST)', description: ['Input: assembly + reference', 'Output: assembly metrics'] },
+        data: { label: 'Quality Assessment for Assembly (QUAST)', toolId: 'QUAST', description: ['Input: assembly + reference', 'Output: assembly metrics'] },
         position: { x: 620, y: 180 }
       },
       {
@@ -198,7 +198,7 @@ export const STARTER_PIPELINE_TEMPLATES: StarterPipelineTemplate[] = [
       {
         id: '4',
         type: 'tool',
-        data: { label: 'Comparative Annotation Toolkit (CAT)', description: ['Input: HAL alignment + reference annotation + reference genome name', 'Output: comparative annotations'] },
+        data: { label: 'Comparative Annotation Toolkit (CAT)', toolId: 'CAT', description: ['Input: HAL alignment + reference annotation + reference genome name', 'Output: comparative annotations'] },
         position: { x: 370, y: 220 }
       },
       {
@@ -235,7 +235,7 @@ export const STARTER_PIPELINE_TEMPLATES: StarterPipelineTemplate[] = [
       {
         id: '3',
         type: 'tool',
-        data: { label: 'Assembly k-mer Evaluation (Merqury)', description: ['Input: assembly FASTA + Meryl archive', 'Output: k-mer completeness and QV reports'] },
+        data: { label: 'Assembly k-mer Evaluation (Merqury)', toolId: 'MERQURY', description: ['Input: assembly FASTA + Meryl archive', 'Output: k-mer completeness and QV reports'] },
         position: { x: 360, y: 220 }
       },
       {

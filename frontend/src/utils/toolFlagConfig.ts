@@ -234,12 +234,12 @@ export const resolveToolRequirementsForFlags = (
 
     if (mode === 'ont') {
       return [
-        cloneRequirement('ont_reads', 'ONT Reads', ['fastq', 'fasta'], { input_behavior: 'multiple' }),
+        cloneRequirement('ont_reads', 'ONT Reads', ['fastq'], { input_behavior: 'multiple' }),
       ]
     }
 
     const resolvedRequirements: ToolRequirement[] = [
-      cloneRequirement('hifi_reads', 'HiFi Reads', ['fastq', 'fasta'], { input_behavior: 'multiple' }),
+      cloneRequirement('hifi_reads', 'HiFi Reads', ['fastq'], { input_behavior: 'multiple' }),
     ]
 
     if (mode === 'hifi_hic') {
@@ -249,7 +249,7 @@ export const resolveToolRequirementsForFlags = (
       )
     } else if (mode === 'hifi_ul') {
       resolvedRequirements.push(
-        cloneRequirement('ul_reads', 'Ultra-Long ONT Reads', ['fastq', 'fasta'], { input_behavior: 'multiple' })
+        cloneRequirement('ul_reads', 'Ultra-Long ONT Reads', ['fastq'], { input_behavior: 'multiple' })
       )
     }
 
@@ -258,12 +258,12 @@ export const resolveToolRequirementsForFlags = (
 
   if (normalizedToolId === 'VERKKO') {
     const resolvedRequirements: ToolRequirement[] = [
-      cloneRequirement('hifi_reads', 'HiFi Reads', ['fastq', 'fasta'], { input_behavior: 'multiple' }),
+      cloneRequirement('hifi_reads', 'HiFi Reads', ['fastq'], { input_behavior: 'multiple' }),
     ]
 
     if (Boolean(flagValues?.include_nano)) {
       resolvedRequirements.push(
-        cloneRequirement('nanopore_reads', 'Nanopore Reads', ['fastq', 'fasta'], { input_behavior: 'multiple' })
+        cloneRequirement('nanopore_reads', 'Nanopore Reads', ['fastq'], { input_behavior: 'multiple' })
       )
     }
     if (Boolean(flagValues?.include_hic)) {

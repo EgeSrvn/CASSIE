@@ -3155,27 +3155,19 @@ exit "$CASSIE_STATUS"
         if not artifacts:
             return []
 
-        eligible: List[Dict[str, Any]] = []
         fastq_preferred: List[Dict[str, Any]] = []
-        fasta_fallback: List[Dict[str, Any]] = []
 
         for artifact in artifacts:
             formats = self._artifact_formats(artifact)
-            if "fastq" not in formats and "fasta" not in formats:
+            if "fastq" not in formats:
                 continue
             if self._is_assembly_artifact(artifact):
                 continue
-            eligible.append(artifact)
-            if "fastq" in formats:
-                fastq_preferred.append(artifact)
-            elif "fasta" in formats:
-                fasta_fallback.append(artifact)
+            fastq_preferred.append(artifact)
 
         if fastq_preferred:
             return sorted(fastq_preferred, key=lambda item: str(item.get("filename") or "").lower())
-        if fasta_fallback:
-            return sorted(fasta_fallback, key=lambda item: str(item.get("filename") or "").lower())
-        return sorted(eligible, key=lambda item: str(item.get("filename") or "").lower())
+        return []
 
     def _has_explicit_binding_metadata(self, artifacts: List[Dict[str, Any]]) -> bool:
         return any(
