@@ -25,7 +25,7 @@ export default function DemoLogin() {
     try {
       await demoLogin(trimmed)
       window.dispatchEvent(new Event('auth-change'))
-      navigate('/')
+      navigate('/', { replace: true })
     } catch (err: any) {
       setError(err?.message || 'Invalid or expired demo code.')
     } finally {

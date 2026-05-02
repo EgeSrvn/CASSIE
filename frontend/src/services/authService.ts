@@ -361,6 +361,17 @@ export interface DemoAuthResponse {
   role: string
 }
 
+export const getDemoUser = (): User => ({
+  id: 0,
+  username: 'demo',
+  email: '',
+  display_name: 'Demo User',
+  bucket_name: 'demo',
+  cash_balance_usd: 0,
+  cash_reserved_usd: 0,
+  cash_available_usd: 0,
+})
+
 /**
  * Parse the JWT payload without verifying the signature.
  * Used only for reading non-sensitive claims (role, is_demo, exp).
@@ -398,7 +409,7 @@ export const demoLogin = async (code: string): Promise<DemoAuthResponse> => {
       { code }
     )
     if (response.data.success && response.data.data.access_token) {
-      setToken(response.data.data.access_token)
+      storeAuthenticatedSession(getDemoUser(), response.data.data.access_token)
       return response.data.data
     }
     throw new Error(response.data.message || 'Invalid or expired demo code.')

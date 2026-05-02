@@ -66,8 +66,9 @@ apiClient.interceptors.response.use(
       const requestUrl = `${error.config?.url || ''}`
       const isLoginRequest = requestUrl.includes('/api/auth/login')
       const isRegisterRequest = requestUrl.includes('/api/auth/register')
+      const isDemoCodeRequest = requestUrl.includes('/api/demo/validate-code')
 
-      if (hadToken && !isLoginRequest && !isRegisterRequest) {
+      if (hadToken && !isLoginRequest && !isRegisterRequest && !isDemoCodeRequest) {
         clearToken()
         if (window.location.pathname !== '/login') {
           window.location.href = '/login'

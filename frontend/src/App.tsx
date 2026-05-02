@@ -97,7 +97,7 @@ function AppRoutes({ isAuthenticated, setIsAuthenticated }: { isAuthenticated: b
       <Route path="/forum/:threadId" element={<ForumThread />} />
       <Route
         path="/profile"
-        element={isAuthenticated ? <Profile /> : <Navigate to="/login" />}
+        element={isDemo ? <Navigate to="/" replace /> : (isAuthenticated ? <Profile /> : <Navigate to="/login" />)}
       />
       {/* Storage is blocked for demo users */}
       <Route
