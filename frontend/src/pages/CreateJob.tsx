@@ -1892,7 +1892,11 @@ export default function CreateJob() {
 
   const getRuntimeInputAssignments = (): RuntimeInputAssignment[] => {
     if (selectionMode === 'pipeline') {
+      // For pipelines, we can still estimate runtime even without savedPipelineExecutionPlan
+      // The backend can use the pipeline structure to estimate, and explicit assignments are optional
       if (!savedPipelineExecutionPlan) {
+        // If no explicit execution plan is available, return empty array
+        // The backend's estimate_runtime_for_pipeline_graph can handle empty input assignments
         return []
       }
 
@@ -2205,9 +2209,14 @@ export default function CreateJob() {
 
     if (selectionMode === 'pipeline') {
       if (!selectedPipelineId) {
+        console.warn('[CreateJob] Pipeline mode selected but selectedPipelineId is not set. Cannot create preview request.')
         return null
       }
+      
+      // Build execution preferences from the pipeline's priority groups
       const executionPreferences: Record<string, unknown> = buildPipelineExecutionPreferences(priorityGroups)
+      
+      // Add optional manual configurations if available from the execution plan
       if (savedPipelineExecutionPlan) {
         if (savedPipelineExecutionPlan.manualToolConfigs.length > 0) {
           executionPreferences.manual_tool_configs = savedPipelineExecutionPlan.manualToolConfigs
@@ -2218,10 +2227,14 @@ export default function CreateJob() {
         if (savedPipelineExecutionPlan.inputSourceOverrides.length > 0) {
           executionPreferences.input_source_overrides = savedPipelineExecutionPlan.inputSourceOverrides
         }
+      } else {
+        console.warn('[CreateJob] No savedPipelineExecutionPlan available. Preview will use backend-reconstructed pipeline.')
       }
       executionPreferences.source_pipeline_id = selectedPipelineId
 
-      return {
+      // Build the preview request with pipeline_id and optional planned_inputs
+      // The backend can reconstruct the pipeline visualization from just the pipeline_id if needed
+      const request: PipelinePlanPreviewRequest = {
         pipeline_id: selectedPipelineId,
         planned_inputs: (savedPipelineExecutionPlan?.plannedInputs || []).map((input) => ({
           ...input,
@@ -2231,6 +2244,8 @@ export default function CreateJob() {
           ? executionPreferences
           : undefined,
       }
+      console.log('[CreateJob] Created pipeline preview request:', request)
+      return request
     }
 
     if (selectionMode !== 'tools') {
@@ -3432,6 +3447,11 @@ export default function CreateJob() {
                   {reviewPipelinePreviewError && (
                     <p style={{ margin: '0 0 0.75rem', color: '#7c4036', fontSize: '0.9rem' }}>
                       {reviewPipelinePreviewError}
+                    </p>
+                  )}
+                  {!loadingReviewPipelinePreview && !reviewPipelinePreviewError && !effectiveReviewPipelinePreview && !reviewPipelinePlanRequest && (
+                    <p style={{ margin: '0 0 0.75rem', color: '#7c4036', fontSize: '0.9rem' }}>
+                      Pipeline preview could not be generated. Please ensure a pipeline is selected and try refreshing.
                     </p>
                   )}
                   <PipelineVisualization
