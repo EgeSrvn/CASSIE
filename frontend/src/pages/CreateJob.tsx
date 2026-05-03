@@ -452,6 +452,8 @@ export default function CreateJob() {
   const [loadingToolRequirements, setLoadingToolRequirements] = useState(false)
   const [toolFileMappings, setToolFileMappings] = useState<Record<string, Record<string, number[]>>>(() => storedDraftRef.current?.toolFileMappings || {}) // Maps tool_index -> requirement_type -> file_id[]
   const [pipelineInputMappings, setPipelineInputMappings] = useState<Record<string, number[]>>(() => storedDraftRef.current?.pipelineInputMappings || {})
+  const [retryToolFileMappings, setRetryToolFileMappings] = useState<Record<string, Record<string, number[]>> | null>(null)
+  const [retryPipelineInputMappings, setRetryPipelineInputMappings] = useState<Record<string, number[]> | null>(null)
   const [requirementSourceSelections, setRequirementSourceSelections] = useState<Record<string, 'external' | 'upstream'>>(() => storedDraftRef.current?.requirementSourceSelections || {})
   const [manualToolFlagValues, setManualToolFlagValues] = useState<Record<string, Record<string, FlagValue>>>(() => storedDraftRef.current?.manualToolFlagValues || {})
   const [recommendationIntents, setRecommendationIntents] = useState<RecommendationIntent[]>([])
@@ -865,6 +867,32 @@ export default function CreateJob() {
           setRequirementSourceSelections(sourceOverrides)
         }
 
+        if (sourceJob.pipeline_id) {
+          const savedPipelineMappings = sourcePreferences.pipeline_input_mappings as Record<string, number[]> | undefined
+          if (savedPipelineMappings && Object.keys(savedPipelineMappings).length > 0) {
+            setRetryPipelineInputMappings(savedPipelineMappings)
+          }
+        } else {
+          const toolMappings: Record<string, Record<string, number[]>> = {}
+          for (const binding of (sourcePreferences.manual_input_bindings || []) as Array<Record<string, any>>) {
+            const bindingId = String(binding?.binding_id || '')
+            const parts = bindingId.split(':')
+            if (parts[0] === 'manual' && parts.length >= 3) {
+              const toolIndex = parts[1]
+              const requirementType = String(binding?.requirement_type || '')
+              const fileId = Number(binding?.file_id)
+              if (toolIndex && requirementType && fileId) {
+                if (!toolMappings[toolIndex]) toolMappings[toolIndex] = {}
+                if (!toolMappings[toolIndex][requirementType]) toolMappings[toolIndex][requirementType] = []
+                toolMappings[toolIndex][requirementType].push(fileId)
+              }
+            }
+          }
+          if (Object.keys(toolMappings).length > 0) {
+            setRetryToolFileMappings(toolMappings)
+          }
+        }
+
         setRetryPrefillApplied(true)
       } catch (err: any) {
         if (!cancelled) {
@@ -1252,6 +1280,19 @@ export default function CreateJob() {
     selectedPipelineNodes,
     selectionMode,
   ])
+
+  useEffect(() => {
+    if (!retryToolFileMappings || selectionMode !== 'tools' || activeToolRequirementCards.length === 0) return
+    setToolFileMappings(retryToolFileMappings)
+    setRetryToolFileMappings(null)
+  }, [activeToolRequirementCards, retryToolFileMappings, selectionMode])
+
+  useEffect(() => {
+    if (!retryPipelineInputMappings || selectionMode !== 'pipeline' || pipelineInputRequirements.length === 0) return
+    setPipelineInputMappings(retryPipelineInputMappings)
+    setRetryPipelineInputMappings(null)
+  }, [pipelineInputRequirements, retryPipelineInputMappings, selectionMode])
+
   const selectedToolIds = useMemo(
     () => selectedTools
       .map((toolIndex) => availableTools.find((tool) => tool.id === toolIndex)?.tool_id)
@@ -2631,6 +2672,9 @@ export default function CreateJob() {
         }
         if (savedPipelineExecutionPlan.inputSourceOverrides.length > 0) {
           manualExecutionPreferences.input_source_overrides = savedPipelineExecutionPlan.inputSourceOverrides
+        }
+        if (Object.keys(pipelineInputMappings).length > 0) {
+          manualExecutionPreferences.pipeline_input_mappings = pipelineInputMappings
         }
         if (selectedPipelineId) {
           manualExecutionPreferences.source_pipeline_id = selectedPipelineId

@@ -7,6 +7,9 @@ import { configCatHome } from '../../cats/config_cat_home'
 import { configCatJobs } from '../../cats/config_cat_jobs'
 import { configCatPipelines } from '../../cats/config_cat_pipelines'
 import { configCatProfile } from '../../cats/config_cat_profile'
+import { configCatStorage } from '../../cats/config_cat_storage'  
+import { configCatStoragePlan } from '../../cats/config_cat_storage_plan'
+import { configCatBalance } from '../../cats/config_cat_balance'
 import type { CatCornerConfig } from '../../cats/types'
 import CatCornerCard from './CatCornerCard'
 
@@ -64,6 +67,18 @@ function getCatConfig(pathname: string): CatCornerConfig | null {
     pathname.startsWith('/profile/')
   ) {
     return configCatProfile
+  }
+
+  if (pathname === '/storage/upgrade') {
+    return configCatStoragePlan
+  }
+
+  if (pathname === '/storage' || pathname.startsWith('/storage/')) {
+    return configCatStorage
+  }
+
+  if (pathname === '/balance') {
+    return configCatBalance
   }
 
   return configCatAuth
