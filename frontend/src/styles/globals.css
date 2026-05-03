@@ -80,6 +80,65 @@ body {
   background-color: var(--bg-secondary);
 }
 
+.general-access-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--spacing-lg);
+  background:
+    linear-gradient(135deg, rgba(24, 59, 78, 0.94), rgba(39, 84, 138, 0.88)),
+    var(--bg-secondary);
+}
+
+.general-access-card {
+  width: min(100%, 420px);
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  padding: 2rem;
+  border: 1px solid rgba(245, 238, 220, 0.28);
+  border-radius: var(--radius-lg);
+  background: var(--bg-primary);
+  box-shadow: var(--shadow-xl);
+}
+
+.general-access-brand {
+  color: var(--primary);
+  font-weight: 900;
+  letter-spacing: 0.08em;
+}
+
+.general-access-card h1 {
+  margin: 0;
+  color: var(--gray-900);
+  font-size: 1.7rem;
+}
+
+.general-access-card p {
+  margin: 0;
+  color: var(--gray-600);
+}
+
+.general-access-card label {
+  color: var(--gray-800);
+  font-weight: 700;
+}
+
+.general-access-card input {
+  width: 100%;
+  border: 1px solid rgba(39, 84, 138, 0.22);
+  border-radius: var(--radius);
+  padding: 0.85rem 1rem;
+  background: rgba(255, 255, 255, 0.65);
+  color: var(--gray-900);
+  font-size: 1rem;
+}
+
+.general-access-error {
+  margin: 0;
+}
+
 /* Auth Pages */
 .auth-container {
   min-height: 100vh;

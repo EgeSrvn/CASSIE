@@ -1,147 +1,98 @@
-CASSIE KVKK AYDINLATMA METNI
-Kisisel Verilerin Korunmasi Hakkinda Bilgilendirme
+KİŞİSEL VERİLERİN İŞLENMESİNE İLİŞKİN AYDINLATMA METNİ
 
-Yururluk Tarihi: [Tarih Giriniz]
-Son Guncelleme: [Tarih Giriniz]
-
-ONEMLI NOT: Bu metin genel bilgilendirme amacli bir taslaktir ve hukuki danismanlik niteliginde degildir. CASSIE'yi kullanicilara, musteri kurumlara, arastirma ortaklarina veya kamuya acmadan once bu metni KVKK konusunda yetkin bir hukuk danismanina inceletmeniz onerilir.
-
-Bu Aydinlatma Metni, [Sirket/Kurum Unvani] ("Veri Sorumlusu", "biz" veya "CASSIE") tarafindan sunulan CASSIE platformunun kullanimi sirasinda islenen kisisel verilere iliskin olarak 6698 sayili Kisisel Verilerin Korunmasi Kanunu ("KVKK") kapsaminda hazirlanmistir.
+Bu aydınlatma metni, CASSIE adlı web tabanlı genom montaj ve anotasyon platformu kapsamında işlenen kişisel verilere ilişkin olarak kullanıcıları bilgilendirmek amacıyla hazırlanmıştır.
 
 1. Veri Sorumlusu
+Bu platform kapsamında kişisel verileriniz, CASSIE projesini geliştiren proje ekibi tarafından, projenin amacı ve işleyişi çerçevesinde veri sorumlusu sıfatıyla işlenebilecektir.
 
-Veri Sorumlusu:
+2. İşlenen Kişisel Veriler
+Platformun kullanımı sırasında aşağıdaki kişisel veriler işlenebilir:
 
-[Sirket/Kurum Unvani]
-[Adres]
-[E-posta Adresi]
-[Telefon, varsa]
+Kimlik ve hesap bilgileri: ad-soyad, kullanıcı adı, e-posta adresi
+Güvenlik bilgileri: parola özeti, oturum kayıtları, IP bilgisi, giriş-çıkış bilgileri, iki faktörlü doğrulama tercihleri
+Kullanım verileri: yüklenen dosyalar, iş akışı tercihleri, sistem logları, hata kayıtları, işlem geçmişi
+İletişim verileri: bildirim tercihleri, destek talepleri, e-posta doğrulama ve parola sıfırlama kayıtları
+Kullanıcının paylaşması halinde forum, yorum, görsel ve topluluk içerikleri
+Kullanıcı tarafından yüklenen biyoinformatik veri dosyaları ve bunlardan üretilen çıktı dosyaları
 
-2. Islenen Kisisel Veri Kategorileri
+3. Kişisel Verilerin İşlenme Amaçları
+Kişisel verileriniz aşağıdaki amaçlarla işlenebilir:
 
-CASSIE'nin kullanimi kapsaminda asagidaki veri kategorileri islenebilir:
+Kullanıcı hesabı oluşturulması ve yönetilmesi
+Kimlik doğrulama, oturum yönetimi ve hesap güvenliğinin sağlanması
+Yüklenen verilerin işlenmesi, iş akışlarının çalıştırılması ve sonuçların sunulması
+Sistem performansının, güvenliğinin ve hata yönetiminin sağlanması
+Kullanıcıya bildirim gönderilmesi
+Forum, topluluk ve paylaşım özelliklerinin sunulması
+Akademik proje geliştirme, test, bakım ve iyileştirme faaliyetlerinin yürütülmesi
+Yetkisiz erişimlerin önlenmesi ve sistem kayıtlarının tutulması
 
-a. Kimlik ve hesap verileri: kullanici adi, ad-soyad veya gorunen ad, e-posta adresi, sifre ozeti, hesap durumu, rol ve yetki bilgileri.
+4. Kişisel Verilerin Toplanma Yöntemi ve Hukuki Sebebi
+Kişisel verileriniz, platform üzerindeki kayıt formları, giriş ekranları, dosya yükleme alanları, forum/paylaşım ekranları, otomatik sistem logları ve kullanıcı işlemleri aracılığıyla elektronik ortamda toplanabilir.
+Bu veriler, platformun çalıştırılması, hesap oluşturulması, güvenliğin sağlanması, kullanıcının talep ettiği hizmetlerin sunulması ve gerekli hallerde açık rızanızın alınması hukuki sebeplerine dayalı olarak işlenebilir.
 
-b. Iletisim verileri: e-posta adresi, bildirim tercihleri ve destek talebi iletisim bilgileri.
+5. Kişisel Verilerin Aktarılması
+Kişisel verileriniz, hizmetin sunulabilmesi amacıyla sınırlı olmak üzere bulut altyapısı, depolama, kimlik doğrulama, e-posta bildirimi ve benzeri teknik hizmet sağlayıcılarla paylaşılabilir.
+Yasal yükümlülük bulunması halinde yetkili kamu kurum ve kuruluşları ile paylaşım yapılabilir.
 
-c. Islem guvenligi verileri: IP adresi, oturum bilgileri, erisim loglari, kimlik dogrulama kayitlari, iki asamali dogrulama kayitlari, sistem olaylari ve guvenlik loglari.
+6. Kişisel Verilerin Saklanma Süresi
+Kişisel verileriniz, işlenme amacı için gerekli olan süre boyunca ve ilgili mevzuatta öngörülen saklama süreleri kadar muhafaza edilir. Sürenin sona ermesi veya işleme amacının ortadan kalkması halinde veriler silinir, yok edilir veya anonim hale getirilir.
 
-d. Kullanim ve islem verileri: olusturulan isler, pipeline tanimlari, secilen araclar, calistirma parametreleri, zaman damgalari, is durumu, hata mesajlari, kaynak kullanim olcumleri, hesap ve depolama hareketleri.
+7. Veri Güvenliği
+Platform kapsamında uygun teknik ve idari güvenlik tedbirleri alınmaya çalışılmaktadır. Yetkisiz erişim, veri kaybı, ifşa veya kötüye kullanımı önlemeye yönelik erişim kontrolü, hesap güvenliği, izolasyon ve kayıt mekanizmaları uygulanmaktadır.
 
-e. Depolama ve dosya metaverileri: dosya adi, dosya boyutu, dosya turu, dosya formati, klasor bilgisi, yukleme tarihi, dosya kaynagi, checksum ve nesne depolama anahtari.
+8. İlgili Kişi Olarak Haklarınız
+KVKK’nın 11. maddesi kapsamında, veri işlenip işlenmediğini öğrenme, işlenmişse bilgi talep etme, amacına uygun kullanılıp kullanılmadığını öğrenme, düzeltme, silme veya yok edilmesini isteme ve kanunda öngörülen diğer haklara sahipsiniz.
 
-f. Icerik verileri: kullanicinin yukledigi dosyalar, is sonuclari, pipeline ciktisi, yorumlar, forum gonderileri, destek mesajlari ve kullanici tarafindan paylasilan diger icerikler.
+9. İletişim
+Kişisel verilerinizle ilgili taleplerinizi proje ekibiyle paylaşılan iletişim kanalları üzerinden iletebilirsiniz.
 
-g. Finansal ve abonelik verileri: bakiye, ucret tahmini, rezervasyon, odeme veya abonelik bilgileri. Odeme karti gibi hassas odeme bilgileri kullaniliyorsa bunlar ilgili odeme hizmeti saglayicisi tarafindan ayrica islenebilir.
 
-3. Genomik, Biyolojik ve Arastirma Verileri
+PRIVACY NOTICE REGARDING THE PROCESSING OF PERSONAL DATA
 
-CASSIE genomik, biyolojik, dizileme, ornek veya arastirma verilerinin islenmesi icin kullanilabilir. Bu tur veriler kisisel veri, ozel nitelikli kisisel veri, ticari sir, fikri mulkiyet, kontrollu erisim verisi veya etik izinlere tabi arastirma verisi niteliginde olabilir.
+This Privacy Notice has been prepared to inform users about the processing of personal data within the scope of the web-based genome assembly and annotation platform called CASSIE.
 
-Kullanicilar, CASSIE'ye yukledikleri verilerin hukuka uygun olarak toplandigini, yuklendigini, islendigi ve paylasildigini saglamakla sorumludur. Kimligi belirli veya belirlenebilir kisilere ait insan genomik verileri, saglik verileri, klinik veriler veya ozel nitelikli kisisel veriler ancak gerekli acik riza, etik kurul izni, kurum izni, veri kullanim anlasmasi ve diger yasal sartlar saglanmis ise islenmelidir.
+1. Data Controller
+Within the scope of this platform, your personal data may be processed by the CASSIE project team, acting as the data controller within the scope of the project’s purpose and operation.
 
-Aksi yazili olarak kararlastirilmadikca CASSIE; klinik tani, tedavi karari, tibbı cihaz amaci, HIPAA, CLIA, CAP, GxP, kontrollu genomik veri depolari veya benzeri ozel mevzuatlara uygunluk taahhudu vermez.
+2. Personal Data Processed
+During the use of the platform, the following personal data may be processed:
 
-4. Kisisel Verilerin Islenme Amaclari
+Identity and account information: full name, username, email address
+Security information: password hash, session records, IP information, login/logout records, two-factor authentication preferences
+Usage data: uploaded files, workflow preferences, system logs, error records, transaction history
+Communication data: notification preferences, support requests, email verification and password reset records
+Forum, comment, image, and community content shared by the user
+Bioinformatics data files uploaded by the user and output files generated from them
 
-Kisisel veriler asagidaki amaclarla islenebilir:
+3. Purposes of Processing Personal Data
+Your personal data may be processed for the following purposes:
 
-a. Hesap olusturma, kimlik dogrulama ve kullanici yonetimi.
+Creating and managing user accounts
+Providing authentication, session management, and account security
+Processing uploaded data, running workflows, and presenting results
+Ensuring system performance, security, and error management
+Sending notifications to users
+Providing forum, community, and sharing features
+Carrying out academic project development, testing, maintenance, and improvement activities
+Preventing unauthorized access and keeping system records
 
-b. CASSIE hizmetlerinin sunulmasi, pipeline olusturma, is calistirma, dosya yukleme, cikti uretme ve kullanici depolama alaninin yonetimi.
+4. Method and Legal Basis of Collection
+Your personal data may be collected electronically through registration forms, login screens, file upload interfaces, forum/sharing pages, automated system logs, and user actions on the platform.
+Such data may be processed on the legal bases of operating the platform, creating user accounts, ensuring security, providing services requested by the user, and obtaining explicit consent where necessary.
 
-c. Sistem guvenliginin saglanmasi, yetkisiz erisimin onlenmesi, hata tespiti, loglama, denetim ve kotuye kullanimla mucadele.
+5. Transfer of Personal Data
+Your personal data may be shared, to the limited extent necessary for service provision, with technical service providers such as cloud infrastructure, storage, authentication, email notification, and similar providers.
+It may also be shared with authorized public institutions and authorities where legally required.
 
-d. Kullanicilara bildirim, destek, sifre sifirlama, e-posta dogrulama ve hizmet iletisimleri gonderilmesi.
+6. Retention Period
+Your personal data is retained for as long as necessary for the purpose of processing and for any retention periods required under applicable legislation. Once the purpose ceases to exist or the retention period expires, the data will be deleted, destroyed, or anonymized.
 
-e. Ucretlendirme, bakiye, abonelik, kapasite ve kaynak kullanimi yonetimi.
+7. Data Security
+Appropriate technical and administrative measures are aimed to be implemented within the platform. Access control, account security, isolation, and logging mechanisms are used to help prevent unauthorized access, loss, disclosure, or misuse of data.
 
-f. Hizmet kalitesinin olculmesi, performans iyilestirmeleri, hata ayiklama ve urun gelistirme.
+8. Your Rights as a Data Subject
+Under applicable data protection rules, you may have the right to learn whether your personal data is being processed, request information if it has been processed, learn whether it is used in line with its purpose, request correction, deletion, or destruction, and exercise other rights granted by law.
 
-g. Kullanici acik riza veya tercih verdiyse, is yurutme verileri ve calistirma metaverilerinin CASSIE urunlerini, tahmin modellerini, kaynak planlamasini ve arac calisma profillerini iyilestirmek icin kullanilmasi.
-
-h. Yasal yukumluluklerin yerine getirilmesi ve yetkili kurum veya kuruluslardan gelen hukuka uygun taleplerin karsilanmasi.
-
-5. Kisisel Verilerin Islenme Hukuki Sebepleri
-
-Kisisel veriler KVKK madde 5 ve ilgili mevzuat kapsaminda asagidaki hukuki sebeplere dayanarak islenebilir:
-
-a. Bir sozlesmenin kurulmasi veya ifasi icin gerekli olmasi.
-
-b. Veri sorumlusunun hukuki yukumlulugunu yerine getirmesi.
-
-c. Bir hakkin tesisi, kullanilmasi veya korunmasi icin veri islemenin zorunlu olmasi.
-
-d. Ilgili kisinin temel hak ve ozgurluklerine zarar vermemek kaydiyla veri sorumlusunun mesru menfaati.
-
-e. Kanunlarda acikca ongorulmesi.
-
-f. Gerekli hallerde ilgili kisinin acik rizasi.
-
-Ozel nitelikli kisisel veriler, ancak KVKK ve ilgili mevzuatta ongorulen sartlar saglandiginda ve gerekli guvenlik onlemleri alindiginda islenmelidir.
-
-6. Kisisel Verilerin Aktarilmasi
-
-Kisisel veriler, isleme amaclariyla sinirli olmak uzere asagidaki taraflarla paylasilabilir:
-
-a. Bulut altyapi, depolama, veritabani, yedekleme, e-posta, izleme, guvenlik ve destek hizmeti saglayicilari.
-
-b. CASSIE'nin barindirma, bakim, operasyon, gelistirme ve teknik destek sureclerinde gorev alan yetkili calisanlar, danismanlar ve hizmet saglayicilar.
-
-c. Odeme veya abonelik hizmeti saglayicilari.
-
-d. Yetkili kamu kurumlari, mahkemeler, kolluk birimleri veya yasal olarak bilgi talep etmeye yetkili diger merciler.
-
-Kisisel veriler yurt disinda bulunan hizmet saglayicilara aktarilacaksa, bu aktarim KVKK ve ilgili ikincil mevzuata uygun olarak gerceklestirilmelidir.
-
-7. Saklama Suresi
-
-Kisisel veriler, isleme amaclari icin gerekli olan sure boyunca ve ilgili mevzuatta ongorulen zamana kadar saklanir. Saklama suresi sona erdiginde veya isleme amaci ortadan kalktiginda kisisel veriler silinir, yok edilir veya anonim hale getirilir.
-
-Kullanici tarafindan yuklenen dosyalar, is ciktisi ve loglar; hesap ayarlari, abonelik durumu, saklama politikalari, yasal yukumlulukler ve ayrica imzalanmis sozlesmeler dikkate alinarak saklanabilir veya silinebilir.
-
-8. Veri Guvenligi
-
-CASSIE, kisisel verilerin guvenligini saglamak icin makul teknik ve idari tedbirler uygular. Bu tedbirler erisim kontrolu, kimlik dogrulama, yetkilendirme, loglama, sifreleme, ag guvenligi, yedekleme ve guvenlik izleme sureclerini icerebilir.
-
-Kullanicilar guclu sifre kullanmak, hesap bilgilerini korumak, yetkisiz kisilerle veri paylasmamak ve veri yuklemeden once gerekli yasal izinleri almakla sorumludur.
-
-9. Ilgili Kisi Haklari
-
-KVKK madde 11 kapsaminda ilgili kisiler asagidaki haklara sahiptir:
-
-a. Kisisel veri islenip islenmedigini ogrenme.
-
-b. Kisisel verileri islenmisse buna iliskin bilgi talep etme.
-
-c. Islenme amacini ve verilerin amacina uygun kullanilip kullanilmadigini ogrenme.
-
-d. Yurt icinde veya yurt disinda kisisel verilerin aktarildigi ucuncu kisileri bilme.
-
-e. Eksik veya yanlis islenmis verilerin duzeltilmesini isteme.
-
-f. KVKK kapsaminda silme veya yok etme talep etme.
-
-g. Duzeltme, silme veya yok etme islemlerinin aktarim yapilan ucuncu kisilere bildirilmesini isteme.
-
-h. Otomatik sistemler araciligiyla analiz sonucu kisinin aleyhine bir sonucun ortaya cikmasina itiraz etme.
-
-i. Kanuna aykiri isleme sebebiyle zarara ugramasi halinde zararin giderilmesini talep etme.
-
-10. Basvuru Yontemi
-
-KVKK kapsamindaki haklarinizi kullanmak icin [E-posta Adresi] adresinden veya [Posta Adresi] uzerinden bizimle iletisime gecebilirsiniz. Basvurunuzda kimliginizi dogrulamaya yetecek bilgileri ve talebinizi acik sekilde belirtmeniz gerekir.
-
-Basvurular, KVKK ve ilgili mevzuatta ongorulen sureler icinde degerlendirilir.
-
-11. Degisiklikler
-
-Bu Aydinlatma Metni zaman zaman guncellenebilir. Guncel metin CASSIE arayuzunde veya ilgili web sayfasinda yayinlanir. Degisikliklerden sonra hizmeti kullanmaya devam etmeniz, guncel metni okudugunuz ve bilgilendirildiginiz anlamina gelir.
-
-12. Iletisim
-
-[Sirket/Kurum Unvani]
-[Adres]
-[E-posta Adresi]
-[Telefon, varsa]
+9. Contact
+You may submit your requests regarding your personal data through the communication channels shared by the project team.

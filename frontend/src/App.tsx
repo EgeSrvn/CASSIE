@@ -1,5 +1,5 @@
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom'
-import { Component, ReactNode, useState, useEffect } from 'react'
+import { Component, FormEvent, ReactNode, useState, useEffect } from 'react'
 import Login from './pages/Login'
 import Register from './pages/Register'
 import Home from './pages/Home'
@@ -24,6 +24,10 @@ import ForgotPassword from './pages/ForgotPassword'
 import { getToken } from './services/authService'
 import { startPendingJobUploadProcessor } from './services/pendingJobUploadService'
 import { startStorageUploadProcessor } from './services/storageUploadService'
+
+const generalAccessPassword = import.meta.env.VITE_GENERAL_ACCESS_PASSWORD?.trim() || ''
+const generalAccessSessionKey = 'cassie-general-access-authenticated'
+const generalAccessReturnPathKey = 'cassie-general-access-return-path'
 
 class AppErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
   state: { error: Error | null } = { error: null }
@@ -56,8 +60,69 @@ class AppErrorBoundary extends Component<{ children: ReactNode }, { error: Error
   }
 }
 
+function GeneralAccessLogin({ onAuthenticated }: { onAuthenticated: () => void }) {
+  const [password, setPassword] = useState('')
+  const [error, setError] = useState('')
+
+  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+
+    if (password === generalAccessPassword) {
+      sessionStorage.setItem(generalAccessSessionKey, 'true')
+      setError('')
+      onAuthenticated()
+      return
+    }
+
+    setError('Invalid access code.')
+    setPassword('')
+  }
+
+  return (
+    <div className="general-access-page">
+      <form className="general-access-card" onSubmit={handleSubmit}>
+        <div className="general-access-brand">CASSIE</div>
+        <h1>Admin Authentication</h1>
+        <p>Enter the general access code to continue.</p>
+        <label htmlFor="general-access-password">Access code</label>
+        <input
+          id="general-access-password"
+          type="password"
+          value={password}
+          onChange={(event) => setPassword(event.target.value)}
+          autoComplete="current-password"
+          autoFocus
+        />
+        {error ? <div className="error-message general-access-error">{error}</div> : null}
+        <button type="submit" className="btn-primary">
+          Continue
+        </button>
+      </form>
+    </div>
+  )
+}
+
 function App() {
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => !!getToken())
+  const [hasGeneralAccess, setHasGeneralAccess] = useState<boolean>(() => {
+    if (!generalAccessPassword) {
+      return true
+    }
+
+    return sessionStorage.getItem(generalAccessSessionKey) === 'true'
+  })
+
+  useEffect(() => {
+    if (hasGeneralAccess || !generalAccessPassword) {
+      return
+    }
+
+    const currentPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
+    if (currentPath !== '/admin-auth') {
+      sessionStorage.setItem(generalAccessReturnPathKey, currentPath)
+      window.history.replaceState(null, '', '/admin-auth')
+    }
+  }, [hasGeneralAccess])
 
   useEffect(() => {
     // Check if user is authenticated
@@ -86,12 +151,26 @@ function App() {
   }, [])
 
   useEffect(() => {
+    if (!hasGeneralAccess) {
+      return
+    }
+
     void startPendingJobUploadProcessor()
     void startStorageUploadProcessor()
-  }, [])
+  }, [hasGeneralAccess])
 
   return (
     <AppErrorBoundary>
+      {!hasGeneralAccess ? (
+        <GeneralAccessLogin
+          onAuthenticated={() => {
+            setHasGeneralAccess(true)
+            const returnPath = sessionStorage.getItem(generalAccessReturnPathKey) || '/'
+            sessionStorage.removeItem(generalAccessReturnPathKey)
+            window.history.replaceState(null, '', returnPath)
+          }}
+        />
+      ) : (
       <Router>
         <>
           <Routes>
@@ -221,6 +300,7 @@ function App() {
           <SiteCatWidget />
         </>
       </Router>
+      )}
     </AppErrorBoundary>
   )
 }
