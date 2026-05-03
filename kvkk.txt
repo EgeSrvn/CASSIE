@@ -1,98 +1,100 @@
-KİŞİSEL VERİLERİN İŞLENMESİNE İLİŞKİN AYDINLATMA METNİ
-
-Bu aydınlatma metni, CASSIE adlı web tabanlı genom montaj ve anotasyon platformu kapsamında işlenen kişisel verilere ilişkin olarak kullanıcıları bilgilendirmek amacıyla hazırlanmıştır.
+Bu Aydınlatma Metni, CASSIE adlı platformu kullanan kişilerin kişisel verilerinin hangi kapsamda işlendiği konusunda bilgilendirilmesi amacıyla hazırlanmıştır.
 
 1. Veri Sorumlusu
-Bu platform kapsamında kişisel verileriniz, CASSIE projesini geliştiren proje ekibi tarafından, projenin amacı ve işleyişi çerçevesinde veri sorumlusu sıfatıyla işlenebilecektir.
+
+CASSIE platformu kapsamında paylaştığınız kişisel veriler, platformun geliştirilmesi, sunulması, güvenliğinin sağlanması, test edilmesi, bakımının yapılması ve kullanıcı işlemlerinin yürütülmesi amaçlarıyla proje ekibi tarafından veri sorumlusu sıfatıyla işlenebilecektir.
 
 2. İşlenen Kişisel Veriler
-Platformun kullanımı sırasında aşağıdaki kişisel veriler işlenebilir:
 
-Kimlik ve hesap bilgileri: ad-soyad, kullanıcı adı, e-posta adresi
-Güvenlik bilgileri: parola özeti, oturum kayıtları, IP bilgisi, giriş-çıkış bilgileri, iki faktörlü doğrulama tercihleri
-Kullanım verileri: yüklenen dosyalar, iş akışı tercihleri, sistem logları, hata kayıtları, işlem geçmişi
-İletişim verileri: bildirim tercihleri, destek talepleri, e-posta doğrulama ve parola sıfırlama kayıtları
-Kullanıcının paylaşması halinde forum, yorum, görsel ve topluluk içerikleri
-Kullanıcı tarafından yüklenen biyoinformatik veri dosyaları ve bunlardan üretilen çıktı dosyaları
+Platformun kullanımı sırasında tarafınızdan doğrudan sağlanan veya sistem tarafından işlem güvenliği kapsamında otomatik olarak oluşan bazı veriler işlenebilmektedir. Bu veriler arasında ad-soyad, kullanıcı adı, e-posta adresi, profil bilgileri, bildirim tercihleri, parola özeti, oturum bilgileri, giriş ve çıkış kayıtları, doğrulama ve güvenlik kayıtları, IP adresi, kullanım bilgileri, sistem logları, hata kayıtları, oluşturulan iş akışları, seçilen araçlar ve parametreler, yüklenen veri dosyaları, bunlardan üretilen çıktı dosyaları, forum ve topluluk alanlarında paylaşılan içerikler, yorumlar ve görseller yer alabilir.
+
+Kullanıcının platforma yüklediği dosyaların içeriğinde kişisel veri, hassas veri, genetik veri veya üçüncü kişilere ait veri bulunması halinde, bu içerikler de kullanıcı tarafından sisteme aktarılmış olmaları sebebiyle işleme kapsamına girebilir.
 
 3. Kişisel Verilerin İşlenme Amaçları
-Kişisel verileriniz aşağıdaki amaçlarla işlenebilir:
 
-Kullanıcı hesabı oluşturulması ve yönetilmesi
-Kimlik doğrulama, oturum yönetimi ve hesap güvenliğinin sağlanması
-Yüklenen verilerin işlenmesi, iş akışlarının çalıştırılması ve sonuçların sunulması
-Sistem performansının, güvenliğinin ve hata yönetiminin sağlanması
-Kullanıcıya bildirim gönderilmesi
-Forum, topluluk ve paylaşım özelliklerinin sunulması
-Akademik proje geliştirme, test, bakım ve iyileştirme faaliyetlerinin yürütülmesi
-Yetkisiz erişimlerin önlenmesi ve sistem kayıtlarının tutulması
+Kişisel verileriniz, kullanıcı hesabının oluşturulması ve yönetilmesi, kimlik doğrulama süreçlerinin yürütülmesi, oturum güvenliğinin sağlanması, e-posta doğrulama ve parola sıfırlama işlemlerinin gerçekleştirilmesi, platforma yüklenen verilerin saklanması ve işlenmesi, iş akışlarının çalıştırılması, sonuçların ve çıktı dosyalarının tarafınıza sunulması, forum ve topluluk özelliklerinin işletilmesi, sistem güvenliğinin sağlanması, yetkisiz erişimlerin önlenmesi, teknik hata ve arızaların tespiti, bakım, test, geliştirme ve iyileştirme çalışmalarının yürütülmesi, kullanıcı destek süreçlerinin yerine getirilmesi ve platformun akademik ve teknik amaçları doğrultusunda sürdürülebilmesi amacıyla işlenebilir.
 
-4. Kişisel Verilerin Toplanma Yöntemi ve Hukuki Sebebi
-Kişisel verileriniz, platform üzerindeki kayıt formları, giriş ekranları, dosya yükleme alanları, forum/paylaşım ekranları, otomatik sistem logları ve kullanıcı işlemleri aracılığıyla elektronik ortamda toplanabilir.
-Bu veriler, platformun çalıştırılması, hesap oluşturulması, güvenliğin sağlanması, kullanıcının talep ettiği hizmetlerin sunulması ve gerekli hallerde açık rızanızın alınması hukuki sebeplerine dayalı olarak işlenebilir.
+4. Kişisel Verilerin Toplanma Yöntemi
 
-5. Kişisel Verilerin Aktarılması
-Kişisel verileriniz, hizmetin sunulabilmesi amacıyla sınırlı olmak üzere bulut altyapısı, depolama, kimlik doğrulama, e-posta bildirimi ve benzeri teknik hizmet sağlayıcılarla paylaşılabilir.
-Yasal yükümlülük bulunması halinde yetkili kamu kurum ve kuruluşları ile paylaşım yapılabilir.
+Kişisel verileriniz, kayıt ekranları, giriş formları, profil güncelleme alanları, dosya yükleme bölümleri, forum ve topluluk sayfaları, iş akışı oluşturma ve yürütme ekranları, destek ve iletişim kanalları ile sistemin çalışması sırasında otomatik olarak oluşan teknik kayıtlar aracılığıyla elektronik ortamda toplanabilir.
 
-6. Kişisel Verilerin Saklanma Süresi
-Kişisel verileriniz, işlenme amacı için gerekli olan süre boyunca ve ilgili mevzuatta öngörülen saklama süreleri kadar muhafaza edilir. Sürenin sona ermesi veya işleme amacının ortadan kalkması halinde veriler silinir, yok edilir veya anonim hale getirilir.
+5. Kişisel Verilerin Hukuki Sebebi
 
-7. Veri Güvenliği
-Platform kapsamında uygun teknik ve idari güvenlik tedbirleri alınmaya çalışılmaktadır. Yetkisiz erişim, veri kaybı, ifşa veya kötüye kullanımı önlemeye yönelik erişim kontrolü, hesap güvenliği, izolasyon ve kayıt mekanizmaları uygulanmaktadır.
+Kişisel verileriniz, platform hizmetlerinin sunulabilmesi, kullanıcı hesabının işletilebilmesi, veri güvenliğinin sağlanabilmesi, talep ettiğiniz işlevlerin yerine getirilebilmesi ve gerekli olduğu hallerde açık rızanızın alınması hukuki sebeplerine dayanılarak işlenebilir. Açık rıza gerektiren durumlarda, ilgili işlem ancak açık onayınız alınarak gerçekleştirilecektir.
 
-8. İlgili Kişi Olarak Haklarınız
-KVKK’nın 11. maddesi kapsamında, veri işlenip işlenmediğini öğrenme, işlenmişse bilgi talep etme, amacına uygun kullanılıp kullanılmadığını öğrenme, düzeltme, silme veya yok edilmesini isteme ve kanunda öngörülen diğer haklara sahipsiniz.
+6. Kişisel Verilerin Aktarılması
 
-9. İletişim
-Kişisel verilerinizle ilgili taleplerinizi proje ekibiyle paylaşılan iletişim kanalları üzerinden iletebilirsiniz.
+Kişisel verileriniz, platformun teknik olarak çalıştırılabilmesi için gerekli olduğu ölçüde barındırma, bulut altyapısı, veri depolama, kimlik doğrulama, e-posta bildirimi, güvenlik ve benzeri teknik hizmet sağlayıcılarla paylaşılabilir. Bu paylaşım, yalnızca hizmetin sunulması için gerekli olan kapsamla sınırlı tutulur.
+
+Ayrıca, yürürlükteki mevzuat kapsamında açıkça yetkili olan kamu kurum ve kuruluşlarının talepte bulunması halinde, kişisel verileriniz ilgili yasal yükümlülüklerin yerine getirilmesi amacıyla bu kurum ve kuruluşlarla paylaşılabilir.
+
+7. Kişisel Verilerin Saklanma Süresi
+
+Kişisel verileriniz, işlenme amacı için gerekli olan süre boyunca ve ilgili mevzuatta öngörülen saklama süreleri kadar muhafaza edilir. İşlenme amacı ortadan kalktığında veya saklama süresi sona erdiğinde, kişisel verileriniz silinir, yok edilir veya anonim hale getirilir.
+
+Kullanıcı hesabına bağlı veriler, hesap ilişkisinin devam ettiği süre boyunca saklanabilir. Yüklenen dosyalar, çıktı dosyaları, sistem kayıtları ve diğer içerikler ise hizmetin sunulması, güvenliğin sağlanması, hata tespiti ve teknik gereklilikler çerçevesinde belirli bir süre muhafaza edilebilir.
+
+8. Veri Güvenliğine İlişkin Tedbirler
+
+Platform kapsamında kişisel verilerin hukuka aykırı olarak işlenmesini ve erişilmesini önlemek, verilerin muhafazasını sağlamak ve güvenlik risklerini azaltmak amacıyla uygun teknik ve idari tedbirler alınmaya çalışılmaktadır. Bu kapsamda erişim kontrolü, oturum güvenliği, hesap doğrulama mekanizmaları, veri izolasyonu, kayıt tutma, yetkilendirme ve benzeri güvenlik önlemleri uygulanabilir.
+
+Ancak internet ortamında yürütülen hiçbir sistemin mutlak güvenlik garantisi veremeyeceği dikkate alınmalı, kullanıcılar da kendi hesap güvenliklerini korumak için gerekli özeni göstermelidir.
+
+9. İlgili Kişinin Hakları
+
+Kişisel verisi işlenen ilgili kişi olarak, yürürlükteki veri koruma mevzuatı kapsamında kişisel verilerinizin işlenip işlenmediğini öğrenme, işlenmişse buna ilişkin bilgi talep etme, işlenme amacını ve amacına uygun kullanılıp kullanılmadığını öğrenme, eksik veya yanlış işlenmiş olması halinde düzeltilmesini isteme, gerekli şartların oluşması halinde silinmesini veya yok edilmesini talep etme ve kanunda öngörülen diğer hakları kullanma hakkına sahipsiniz.
+
+10. İletişim
+
+Kişisel verilerinizle ilgili her türlü talep, başvuru ve sorularınızı proje ekibi tarafından duyurulan iletişim kanalları üzerinden iletebilirsiniz.
 
 
-PRIVACY NOTICE REGARDING THE PROCESSING OF PERSONAL DATA
-
-This Privacy Notice has been prepared to inform users about the processing of personal data within the scope of the web-based genome assembly and annotation platform called CASSIE.
+This Privacy Notice has been prepared to inform users of the CASSIE platform about the scope and purpose of the processing of their personal data.
 
 1. Data Controller
-Within the scope of this platform, your personal data may be processed by the CASSIE project team, acting as the data controller within the scope of the project’s purpose and operation.
+
+Your personal data may be processed by the project team acting as the data controller for the purposes of developing, operating, testing, maintaining, securing, and providing the CASSIE platform and its services.
 
 2. Personal Data Processed
-During the use of the platform, the following personal data may be processed:
 
-Identity and account information: full name, username, email address
-Security information: password hash, session records, IP information, login/logout records, two-factor authentication preferences
-Usage data: uploaded files, workflow preferences, system logs, error records, transaction history
-Communication data: notification preferences, support requests, email verification and password reset records
-Forum, comment, image, and community content shared by the user
-Bioinformatics data files uploaded by the user and output files generated from them
+During the use of the platform, certain personal data provided directly by you or generated automatically for security and technical operation may be processed. Such data may include your full name, username, email address, profile information, notification preferences, password hash, session information, login and logout records, verification and security records, IP address, usage information, system logs, error records, workflows created by you, selected tools and parameters, uploaded data files, generated output files, and any content, comments, or images shared by you in forum or community sections.
 
-3. Purposes of Processing Personal Data
-Your personal data may be processed for the following purposes:
+If the files uploaded by the user contain personal data, sensitive data, genetic data, or data belonging to third parties, such content may also fall within the scope of processing as a result of being uploaded to the platform by the user.
 
-Creating and managing user accounts
-Providing authentication, session management, and account security
-Processing uploaded data, running workflows, and presenting results
-Ensuring system performance, security, and error management
-Sending notifications to users
-Providing forum, community, and sharing features
-Carrying out academic project development, testing, maintenance, and improvement activities
-Preventing unauthorized access and keeping system records
+3. Purposes of Processing
 
-4. Method and Legal Basis of Collection
-Your personal data may be collected electronically through registration forms, login screens, file upload interfaces, forum/sharing pages, automated system logs, and user actions on the platform.
-Such data may be processed on the legal bases of operating the platform, creating user accounts, ensuring security, providing services requested by the user, and obtaining explicit consent where necessary.
+Your personal data may be processed for the purposes of creating and managing your user account, carrying out authentication processes, maintaining session security, performing email verification and password reset operations, storing and processing uploaded data, executing workflows, presenting results and output files to you, operating forum and community features, ensuring system security, preventing unauthorized access, detecting technical errors and failures, carrying out maintenance, testing, development and improvement activities, handling support processes, and sustaining the platform for its academic and technical purposes.
 
-5. Transfer of Personal Data
-Your personal data may be shared, to the limited extent necessary for service provision, with technical service providers such as cloud infrastructure, storage, authentication, email notification, and similar providers.
-It may also be shared with authorized public institutions and authorities where legally required.
+4. Method of Collection
 
-6. Retention Period
-Your personal data is retained for as long as necessary for the purpose of processing and for any retention periods required under applicable legislation. Once the purpose ceases to exist or the retention period expires, the data will be deleted, destroyed, or anonymized.
+Your personal data may be collected electronically through registration pages, login forms, profile update interfaces, file upload areas, forum and community pages, workflow creation and execution interfaces, support and communication channels, and technical records automatically generated during system operation.
 
-7. Data Security
-Appropriate technical and administrative measures are aimed to be implemented within the platform. Access control, account security, isolation, and logging mechanisms are used to help prevent unauthorized access, loss, disclosure, or misuse of data.
+5. Legal Basis
 
-8. Your Rights as a Data Subject
-Under applicable data protection rules, you may have the right to learn whether your personal data is being processed, request information if it has been processed, learn whether it is used in line with its purpose, request correction, deletion, or destruction, and exercise other rights granted by law.
+Your personal data may be processed on the legal bases of providing platform services, operating user accounts, ensuring data security, fulfilling the functions requested by you, and obtaining your explicit consent where necessary. In cases where explicit consent is required, the relevant processing activity will only be carried out after your consent has been obtained.
 
-9. Contact
-You may submit your requests regarding your personal data through the communication channels shared by the project team.
+6. Transfer of Personal Data
+
+Your personal data may be shared, to the extent necessary for the operation of the platform, with hosting providers, cloud infrastructure providers, data storage providers, authentication services, email notification services, security services, and similar technical service providers. Such transfers are limited to what is necessary for the provision of the service.
+
+Your personal data may also be shared with public authorities and institutions where such disclosure is required under applicable law.
+
+7. Retention Period
+
+Your personal data will be retained for as long as necessary for the purpose for which it is processed and for any retention periods required by applicable legislation. Once the purpose ceases to exist or the retention period expires, your personal data will be deleted, destroyed, or anonymized.
+
+Data associated with a user account may be retained for the duration of the account relationship. Uploaded files, output files, system logs, and other content may also be retained for a certain period within the scope of service provision, security, error detection, and technical necessity.
+
+8. Data Security Measures
+
+Appropriate technical and administrative measures are aimed to be taken in order to prevent unlawful processing of personal data, unlawful access to personal data, and to ensure the proper safeguarding of data. These measures may include access control, session security, account verification mechanisms, data isolation, logging, authorization, and similar security practices.
+
+However, it should be noted that no internet-based system can guarantee absolute security, and users are also expected to take the necessary precautions to protect their own account security.
+
+9. Rights of the Data Subject
+
+As a data subject, you have the right under applicable data protection legislation to learn whether your personal data is being processed, request information if it has been processed, learn the purpose of processing and whether it is used in accordance with that purpose, request correction if it has been processed incompletely or inaccurately, request deletion or destruction where the legal conditions are met, and exercise any other rights granted by law.
+
+10. Contact
+
+You may submit any request, application, or question regarding your personal data through the communication channels announced by the project team.

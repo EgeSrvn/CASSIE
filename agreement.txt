@@ -1,39 +1,19 @@
-AÇIK RIZA METNİ
+CASSIE platformu kapsamında tarafıma sunulan Kişisel Verilerin İşlenmesine İlişkin Aydınlatma Metni’ni okuduğumu, anladığımı ve bu metin kapsamında bilgilendirildiğimi kabul ediyorum.
 
-CASSIE platformu kapsamında tarafıma sunulan aydınlatma metnini okuduğumu ve anladığımı kabul ediyorum.
+Bu kapsamda, platforma yüklediğim verilerin, sağladığım hesap bilgilerinin, kullanım kayıtlarımın ve platform üzerindeki işlemlerime ilişkin teknik kayıtların; kullanıcı hesabımın oluşturulması ve yönetilmesi, kimlik doğrulama süreçlerinin yürütülmesi, yüklediğim veri ve dosyaların saklanması ve işlenmesi, iş akışlarının çalıştırılması, sonuçların ve çıktıların tarafıma sunulması, sistem güvenliğinin sağlanması, hata tespiti, bakım, test ve iyileştirme çalışmalarının yürütülmesi ile hizmetin sunulabilmesi için gerekli teknik altyapılarda saklanması ve işlenmesi amaçlarıyla işlenmesine açık rıza verdiğimi beyan ederim.
 
-Bu kapsamda, platforma yüklediğim verilerin, sağladığım hesap bilgilerinin ve kullanım kayıtlarımın;
+Platforma yüklediğim veri ve dosyaların tarafımdan sisteme sağlandığını, bu veriler üzerinde gerekli kullanım yetkisine sahip olduğumu ve hukuka aykırı, yetkisiz veya üçüncü kişilere ait verileri gerekli izinler olmaksızın yüklememem gerektiğini bildiğimi kabul ederim.
 
-kullanıcı hesabımın oluşturulması ve yönetilmesi,
-iş akışlarının çalıştırılması,
-sonuçların tarafıma sunulması,
-sistem güvenliğinin sağlanması,
-hata tespiti, bakım, test ve iyileştirme çalışmalarının yürütülmesi,
-gerekli olduğu ölçüde teknik hizmet sağlayıcı altyapılarında saklanması ve işlenmesi
+Kişisel veri, hassas veri, genetik veri veya üçüncü kişilere ait veri içeren içerikleri platforma yüklemem halinde, bu yüklemeden doğabilecek hukuki sorumluluğun tarafıma ait olduğunu bildiğimi kabul ederim.
 
-amaçlarıyla işlenmesine açık rıza veriyorum.
+Açık rızamı dilediğim zaman geri çekebileceğimi, ancak geri çekme işleminden önce gerçekleştirilmiş veri işleme faaliyetlerinin hukuka uygunluğunun bu durumdan etkilenmeyeceğini bildiğimi kabul ederim.
 
-Platforma yüklediğim veri ve dosyaların tarafımdan sisteme sağlandığını, bu veriler üzerinde gerekli kullanım yetkisine sahip olduğumu ve hukuka aykırı, yetkisiz veya üçüncü kişilere ait verileri izinsiz yüklememem gerektiğini bildiğimi kabul ederim.
+I declare that I have read and understood the Privacy Notice presented to me within the scope of the CASSIE platform and that I have been informed accordingly.
 
-Özellikle kişisel veri, hassas veri veya genetik veri içeren içerikleri yüklemem halinde, bu yüklemenin hukuki sorumluluğunun tarafıma ait olduğunu; platformun yalnızca akademik ve teknik amaçlı bir bitirme projesi kapsamında çalıştığını bildiğimi kabul ederim.
+In this context, I expressly consent to the processing of the data I upload to the platform, the account information I provide, my usage records, and technical records related to my activities on the platform for the purposes of creating and managing my user account, carrying out authentication processes, storing and processing the data and files I upload, executing workflows, presenting results and outputs to me, ensuring system security, carrying out error detection, maintenance, testing, and improvement activities, and storing and processing such data in the technical infrastructures necessary for the provision of the service.
 
-Açık rızamı dilediğim zaman geri çekebileceğimi biliyorum. Ancak geri çekmenin, geri çekmeden önce yapılan işlemlerin hukuka uygunluğunu etkilemeyeceğini kabul ederim.
+I acknowledge that the data and files uploaded to the platform are provided by me, that I have the necessary authority to use such data, and that I must not upload unlawful, unauthorized, or third-party data without the necessary permissions.
 
-EXPLICIT CONSENT TEXT
+I understand and accept that if I upload content containing personal data, sensitive data, genetic data, or data belonging to third parties, any legal responsibility arising from such upload shall belong to me.
 
-I declare that I have read and understood the Privacy Notice provided to me within the scope of the CASSIE platform.
-
-In this context, I explicitly consent to the processing of the data I upload to the platform, the account information I provide, and my usage records for the following purposes:
-
-creation and management of my user account,
-execution of workflows,
-presentation of results to me,
-ensuring system security,
-carrying out error detection, maintenance, testing, and improvement activities,
-storing and processing data on technical service provider infrastructures to the extent necessary.
-
-I acknowledge that the data and files I upload to the platform are provided by me, that I have the necessary authority to use such data, and that I must not upload unlawful, unauthorized, or third-party data without permission.
-
-In particular, if I upload content containing personal data, sensitive data, or genetic data, I acknowledge that the legal responsibility for such upload belongs to me, and that the platform operates only as an academic senior project for technical and educational purposes.
-
-I understand that I may withdraw my explicit consent at any time. However, I acknowledge that such withdrawal will not affect the lawfulness of processing carried out before the withdrawal.
+I understand that I may withdraw my explicit consent at any time, but that such withdrawal will not affect the lawfulness of processing carried out before the withdrawal.
