@@ -897,15 +897,27 @@ export default function CreateJob() {
           for (const binding of (sourcePreferences.manual_input_bindings || []) as Array<Record<string, any>>) {
             const bindingId = String(binding?.binding_id || '')
             const parts = bindingId.split(':')
+            const requirementType = String(binding?.requirement_type || '')
+            const fileId = Number(binding?.file_id)
+            let toolIndex: string | null = null
+
             if (parts[0] === 'manual' && parts.length >= 3) {
-              const toolIndex = parts[1]
-              const requirementType = String(binding?.requirement_type || '')
-              const fileId = Number(binding?.file_id)
-              if (toolIndex && requirementType && fileId) {
-                if (!toolMappings[toolIndex]) toolMappings[toolIndex] = {}
-                if (!toolMappings[toolIndex][requirementType]) toolMappings[toolIndex][requirementType] = []
-                toolMappings[toolIndex][requirementType].push(fileId)
+              toolIndex = parts[1]
+            } else {
+              // binding_id may use requirement_id format; resolve tool_index via tool_id
+              const bindingToolId = String(binding?.tool_id || '').trim().toUpperCase()
+              const matchedTool = availableTools.find(
+                (t) => String(t.tool_id || '').trim().toUpperCase() === bindingToolId
+              )
+              if (matchedTool) {
+                toolIndex = matchedTool.id.toString()
               }
+            }
+
+            if (toolIndex && requirementType && fileId) {
+              if (!toolMappings[toolIndex]) toolMappings[toolIndex] = {}
+              if (!toolMappings[toolIndex][requirementType]) toolMappings[toolIndex][requirementType] = []
+              toolMappings[toolIndex][requirementType].push(fileId)
             }
           }
           if (Object.keys(toolMappings).length > 0) {
