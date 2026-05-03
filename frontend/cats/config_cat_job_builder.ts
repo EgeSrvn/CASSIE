@@ -1,4 +1,4 @@
-import kofteImage from '../images/koofte.jpeg'
+import kofteImage from '../images/kofte.jpeg'
 import type { CatCornerConfig } from './types'
 
 const jobBuilderCats: Record<number, CatCornerConfig> = {

@@ -1,4 +1,4 @@
-import firuzanImage from '../images/firuzan.png'
+import firuzanImage from '../images/firuzan.jpeg'
 import type { CatCornerConfig } from './types'
 
 export const configCatHome: CatCornerConfig = {

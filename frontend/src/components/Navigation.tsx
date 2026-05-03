@@ -2,6 +2,7 @@ import { useNavigate, useLocation } from 'react-router-dom'
 import { useState, useEffect, useRef } from 'react'
 import { logout, getToken, getCurrentUser, getStoredUser, User } from '../services/authService'
 import '../styles/Navigation.css'
+import cassieLogo from '../../images/cassie_logo.png'
 
 interface NavigationProps {
   onLogout?: () => void
@@ -192,6 +193,11 @@ export default function Navigation({ onLogout }: NavigationProps) {
     <nav className={`top-navigation ${isMobileMenuOpen ? 'top-navigation--mobile-open' : ''}`}>
       <div className="nav-container">
         <div className="nav-brand" onClick={() => navigateAndClose('/')}>
+          <img
+            className="nav-logo"
+            src={cassieLogo}
+            alt="CASSIE logo"
+          />
           <div>
             <h1 className="nav-title">CASSIE</h1>
           </div>
