@@ -18,6 +18,7 @@ export interface Job {
   name: string
   status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
   workflow_id: number
+  tool_indices?: number[]
   pipeline_config_id?: number
   pipeline_id?: number
   assembler?: string

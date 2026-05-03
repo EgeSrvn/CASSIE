@@ -819,13 +819,20 @@ export default function CreateJob() {
           setSelectedPipelineId(sourceJob.pipeline_id)
           setSelectedTools([])
         } else {
-          const snapshotStages = (sourcePreferences.visualization_snapshot?.stages || []) as Array<Record<string, any>>
-          const sourceToolIds = snapshotStages
-            .map(stage => String(stage.tool_id || '').trim().toUpperCase())
-            .filter(toolId => toolId && toolId !== 'CHECKPOINT')
-          const selectedToolIndices = availableTools
-            .filter(tool => sourceToolIds.includes(String(tool.tool_id || '').trim().toUpperCase()))
-            .map(tool => tool.id)
+          let selectedToolIndices = Array.isArray(sourceJob.tool_indices)
+            ? sourceJob.tool_indices.filter((index): index is number => Number.isInteger(index))
+            : []
+
+          if (selectedToolIndices.length === 0) {
+            const snapshotStages = (sourcePreferences.visualization_snapshot?.stages || []) as Array<Record<string, any>>
+            const sourceToolIds = snapshotStages
+              .map(stage => String(stage.tool_id || '').trim().toUpperCase())
+              .filter(toolId => toolId && toolId !== 'CHECKPOINT')
+            selectedToolIndices = availableTools
+              .filter(tool => sourceToolIds.includes(String(tool.tool_id || '').trim().toUpperCase()))
+              .map(tool => tool.id)
+          }
+
           setSelectionMode('tools')
           setSelectedTools(selectedToolIndices)
           setSelectedPipelineId(null)
@@ -3831,4 +3838,3 @@ export default function CreateJob() {
     </div>
   )
 }
-

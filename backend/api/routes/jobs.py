@@ -183,6 +183,7 @@ def _job_response_for_user(
         name=job.name,
         status=job.status,
         workflow_id=job.workflow_id,
+        tool_indices=_resolve_job_tool_indices(job),
         pipeline_config_id=job.pipeline_config_id,
         pipeline_id=job.pipeline_id,
         assembler=job.assembler,
@@ -199,6 +200,39 @@ def _job_response_for_user(
         updated_at=job.updated_at,
         interactive_outputs_enabled=interactive_outputs_enabled,
     ).model_dump(mode='json')
+
+
+def _resolve_job_tool_indices(job) -> Optional[List[int]]:
+    explicit_indices = getattr(job, "tool_indices", None)
+    if explicit_indices:
+        return [int(index) for index in explicit_indices if isinstance(index, int)]
+
+    workflow_id = getattr(job, "workflow_id", None)
+    user_id = getattr(job, "user_id", None)
+    if not workflow_id or not user_id:
+        return None
+
+    try:
+        from backend.api.services.workflow_service import (
+            get_workflow_by_id,
+            resolve_workflow_tool_indices,
+        )
+
+        workflow = get_workflow_by_id(workflow_id, user_id=user_id)
+        if not workflow:
+            return None
+
+        resolved_indices = resolve_workflow_tool_indices(workflow)
+        return resolved_indices or None
+    except Exception as exc:
+        logger.warning(
+            "Failed to resolve tool indices for job %s from workflow %s: %s",
+            getattr(job, "id", None),
+            workflow_id,
+            exc,
+            exc_info=True,
+        )
+        return None
 
 
 def _mark_active_executions_cancelled(
@@ -1763,6 +1797,7 @@ async def add_files_to_job(
                 name=updated_job.name,
                 status=updated_job.status,
                 workflow_id=updated_job.workflow_id,
+                tool_indices=_resolve_job_tool_indices(updated_job),
                 pipeline_config_id=updated_job.pipeline_config_id,
                 pipeline_id=updated_job.pipeline_id,
                 assembler=updated_job.assembler,
@@ -1859,6 +1894,7 @@ async def update_job_endpoint(
                 name=job.name,
                 status=job.status,
                 workflow_id=job.workflow_id,
+                tool_indices=_resolve_job_tool_indices(job),
                 pipeline_config_id=job.pipeline_config_id,
                 pipeline_id=job.pipeline_id,
                 assembler=job.assembler,
@@ -1976,4 +2012,3 @@ async def delete_job_endpoint(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
         return JSONResponse(content=error_data, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
-

@@ -7,9 +7,39 @@ from typing import Any, Dict, List, Optional
 
 from backend.api.database.db_init import get_db_connection
 from backend.api.utils.logger import get_logger
-from tool_registry import get_tool_by_index, tool_produces_requirement
+from tool_registry import get_tool_by_id, get_tool_by_index, get_tool_index_by_id, get_tool_registry, tool_produces_requirement
 
 logger = get_logger(__name__)
+
+
+def resolve_workflow_tool_indices(workflow: Dict[str, Any]) -> List[int]:
+    """
+    Resolve workflow tools from stable tool ids first, then legacy names.
+    """
+    resolved_indices: List[int] = []
+    available_tools = get_tool_registry()
+    by_id = {str(tool.get("id") or "").strip().upper(): idx for idx, tool in enumerate(available_tools)}
+    by_name = {str(tool.get("name") or "").strip().lower(): idx for idx, tool in enumerate(available_tools)}
+
+    for step in workflow.get("workflow_steps", []) or []:
+        tool_id = str(step.get("tool") or "").strip().upper()
+        if tool_id in by_id and by_id[tool_id] not in resolved_indices:
+            resolved_indices.append(by_id[tool_id])
+
+    if resolved_indices:
+        return resolved_indices
+
+    for item in workflow.get("tools_used", []) or []:
+        key = str(item or "").strip()
+        if not key:
+            continue
+        idx = by_id.get(key.upper())
+        if idx is None:
+            idx = by_name.get(key.lower())
+        if idx is not None and idx not in resolved_indices:
+            resolved_indices.append(idx)
+
+    return resolved_indices
 
 
 def _get_requirement_source_override(
