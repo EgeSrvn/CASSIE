@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useState } from 'react'
+import { createPortal } from 'react-dom'
 
 interface ReportDialogProps {
   isOpen: boolean
@@ -58,7 +59,7 @@ export default function ReportDialog({
     })
   }
 
-  return (
+  return createPortal(
     <div className="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="report-dialog-title">
       <div className="modal-content report-dialog-modal">
         <div className="modal-header">
@@ -100,6 +101,7 @@ export default function ReportDialog({
           </div>
         </form>
       </div>
-    </div>
+    </div>,
+    document.body
   )
 }
