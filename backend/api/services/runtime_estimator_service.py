@@ -32,7 +32,7 @@ RUNTIME_ESTIMATOR_CONFIG_PATH = PROJECT_ROOT / "config" / "runtime_estimator_pro
 APP_CONFIG_PATH = PROJECT_ROOT / "config" / "config.json"
 
 DEFAULT_TOOL_BASE_MINUTES: Dict[str, float] = {
-    "FASTQC": 8.0,
+    "FASTQC": 0.083,
     "SPADES": 140.0,
     "QUAST": 22.0,
     "GENOMESCOPE2": 26.0,
@@ -102,6 +102,10 @@ DEFAULT_TOOL_OUTPUT_SIZE_MULTIPLIER: Dict[str, float] = {
     "MERYL": 0.65,
     "MERQURY": 0.03,
 }
+
+# S3-to-pod bandwidth used to estimate the input-file copy that each tool performs
+# at container startup before any computation begins.
+DEFAULT_POD_COPY_BANDWIDTH_MIB_PER_SEC: float = 34.0
 
 
 @dataclass(frozen=True)
@@ -240,7 +244,7 @@ def _tool_base_minutes(tool_id: str) -> float:
         raw = configured.get(tool_id)
         if raw is not None:
             try:
-                return max(1.0, float(raw))
+                return max(0.001, float(raw))
             except (TypeError, ValueError):
                 pass
 
@@ -284,6 +288,24 @@ def _tool_output_size_multiplier(tool_id: str) -> float:
             except (TypeError, ValueError):
                 pass
     return DEFAULT_TOOL_OUTPUT_SIZE_MULTIPLIER.get(tool_id, 0.08)
+
+
+def _pod_copy_bandwidth_mib_per_sec() -> float:
+    config = _load_runtime_config()
+    raw = config.get("pod_input_copy_bandwidth_mib_per_sec")
+    try:
+        if raw is not None:
+            return max(1.0, float(raw))
+    except (TypeError, ValueError):
+        pass
+    return DEFAULT_POD_COPY_BANDWIDTH_MIB_PER_SEC
+
+
+def _upload_overhead_minutes(input_size_mib: float) -> float:
+    """Time to copy input_size_mib from S3 into the tool pod before execution starts."""
+    bandwidth = _pod_copy_bandwidth_mib_per_sec()
+    size = max(0.0, float(input_size_mib or 0.0))
+    return size / (bandwidth * 60.0)
 
 
 def _compression_penalty_factor(
@@ -393,7 +415,7 @@ def _size_factor(tool_id: str, input_size_mib: float) -> float:
     exponent = _tool_size_exponent(tool_id)
     normalized_size = max(1.0, float(input_size_mib or reference_input_mib))
     factor = (normalized_size / reference_input_mib) ** exponent
-    return max(0.35, min(4.5, factor))
+    return max(0.35, min(12.0, factor))
 
 
 def _build_tool_breakdown(
@@ -410,7 +432,11 @@ def _build_tool_breakdown(
         size_factor = _size_factor(tool_id, input_size_mib)
         penalty_summary = (penalty_summary_by_tool or {}).get(tool_id, {})
         compression_factor = float(penalty_summary.get("compression_factor", 1.0) or 1.0)
-        adjusted_minutes = round(base_minutes * partition_factor * size_factor * compression_factor, 1)
+        upload_overhead = _upload_overhead_minutes(input_size_mib)
+        adjusted_minutes = round(
+            base_minutes * partition_factor * size_factor * compression_factor + upload_overhead,
+            1,
+        )
         breakdown.append(
             {
                 "tool_id": tool_id,
@@ -421,6 +447,7 @@ def _build_tool_breakdown(
                 "input_suffixes": sorted(penalty_summary.get("file_formats", [])),
                 "size_factor": round(size_factor, 3),
                 "compression_factor": round(compression_factor, 3),
+                "upload_overhead_minutes": round(upload_overhead, 2),
                 "adjusted_minutes": adjusted_minutes,
             }
         )
@@ -809,6 +836,7 @@ def estimate_runtime_for_tool_indices(
             "Uses a reduced orchestration overhead for lighter single-tool and small-input jobs.",
             "Scales each tool using total mapped input sizes; downstream intermediate inputs are inferred from upstream output-size multipliers.",
             "Adds a bounded runtime penalty when mapped inputs are compressed file types such as .gz or .zip.",
+            "Adds a per-tool pod input-copy overhead based on input size and the configured S3-to-pod bandwidth (pod_input_copy_bandwidth_mib_per_sec).",
         ],
     )
     return _apply_configured_runtime_prediction(estimate)
@@ -859,6 +887,7 @@ def estimate_runtime_for_pipeline_graph(
             * partition_factor
             * _size_factor(tool_id, effective_input_size)
             * compression_factor
+            + _upload_overhead_minutes(effective_input_size)
         )
         output_sizes_by_node[node_id] = max(1.0, effective_input_size * _tool_output_size_multiplier(tool_id))
 
@@ -900,6 +929,7 @@ def estimate_runtime_for_pipeline_graph(
             "Uses a reduced orchestration overhead for lighter jobs before branch penalties are applied.",
             "Mapped input sizes are propagated through downstream intermediate tools using per-tool output size multipliers.",
             "Adds a bounded runtime penalty when mapped inputs are compressed file types such as .gz or .zip.",
+            "Adds a per-tool pod input-copy overhead based on input size and the configured S3-to-pod bandwidth (pod_input_copy_bandwidth_mib_per_sec).",
         ],
     )
     return _apply_configured_runtime_prediction(estimate)

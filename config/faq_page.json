@@ -3,6 +3,13 @@
   "description": "",
   "items": [
     {
+      "question": "What file formats does CASSIE accept as inputs?",
+      "answer": [
+        "CASSIE accepts FASTQ and FASTQ.GZ for raw reads, FASTA and FASTA.GZ for reference genomes and assemblies, GFF and GFF3 for annotations, and several tool-specific formats such as Meryl k-mer databases.",
+        "The file selector displays format hints per input block based on the tool requirements. If a file is accepted but flagged as unrecognised format, you can set the format manually from the storage page before attaching it to a job."
+      ]
+    },
+    {
       "question": "How do I get a job to start correctly?",
       "answer": [
         "Make sure every required input block has at least one selected file, that a VM has been chosen, and that the review stage shows the expected pipeline before submission.",
@@ -21,6 +28,62 @@
       "answer": [
         "Use the job details page for execution tracking, live stage status, logs, required inputs, and output availability. That page should be the first stop for run-specific problems.",
         "If the issue looks platform-wide rather than job-specific, gather the visible error text, the affected page, and the approximate time, then contact support with that information."
+      ]
+    },
+    {
+      "question": "Can I reuse a pipeline across multiple datasets?",
+      "answer": [
+        "Yes. Save any pipeline from the builder and it will appear in your pipeline library. When creating a new job, select the saved pipeline and attach different input files without modifying the graph itself.",
+        "Tool flag overrides and block rename choices travel with the saved pipeline, so the configuration is preserved across runs. If you need a variation, duplicate the pipeline in the builder before editing."
+      ]
+    },
+    {
+      "question": "How does the runtime and cost estimate work?",
+      "answer": [
+        "The estimator combines per-tool baseline runtimes, a size-scaling factor derived from your mapped input files, a compression penalty for gzipped inputs, and the time required to copy input files into each execution pod before the tool starts.",
+        "VM selection affects the estimate through a partition density multiplier — shared-resource VMs produce a slower per-job factor. Estimates are indicative; actual runtime can vary with queue depth, data characteristics, and assembly complexity."
+      ]
+    },
+    {
+      "question": "What happens to my data after a job completes?",
+      "answer": [
+        "Input and output files remain in your storage library until you delete them manually. Output files are accessible from the job details page and can be downloaded individually or as a ZIP archive.",
+        "Intermediate files generated between pipeline stages are retained for inspection but do not count toward your primary storage quota the same way library files do."
+      ]
+    },
+    {
+      "question": "Is it possible to run the same job again with the same inputs?",
+      "answer": [
+        "Yes. Use the Retry Job button on any failed or cancelled job. The retry form reopens with the original pipeline or tool selection and the same input files pre-selected, so you can resubmit immediately or adjust tool flags before relaunching.",
+        "A retry creates a new job record rather than overwriting the original, which means the previous logs and outputs remain available for comparison."
+      ]
+    },
+    {
+      "question": "How is storage usage calculated and what are the limits?",
+      "answer": [
+        "Storage usage reflects the total size of all files in your library, including inputs and outputs. The current quota and remaining space are shown on the Storage page.",
+        "If you need additional capacity, a storage upgrade can be purchased from the Storage page. Upgrades are billed on a weekly cycle and can be cancelled at any time from the same page."
+      ]
+    },
+    {
+      "question": "Can pipelines be shared with other users?",
+      "answer": [
+        "Pipelines can be published to the community space, where other users can browse, inspect, and clone them into their own library. Publishing a pipeline does not share your input files or job history.",
+        "To publish, open the pipeline in the builder and use the share option. You can unpublish at any time, after which the pipeline is no longer visible to other users but remains in your own library."
+      ]
+    },
+    {
+      "question": "Which assembly and annotation tools are currently available?",
+      "answer": [
+        "Available tools include FastQC for read quality control, SPAdes and metaSPAdes for short-read and metagenome assembly, Hifiasm and Verkko for long-read assembly, QUAST for assembly quality assessment, BUSCO and Merqury for completeness evaluation, GenomeScope2 and Meryl for k-mer analysis, Liftoff for annotation transfer, and CAT for comparative annotation.",
+        "The tool list is updated as new versions are validated. If a tool you require is not listed, contact support with the tool name, version, and use case."
+      ]
+    },
+    {
+      "question": "How can I cancel a running job?",
+      "answer": [
+        "Open the Jobs page and click Cancel Job on any job with a pending or running status. Active Kubernetes stages are stopped and the job is marked as cancelled, but the record and any partial outputs remain in your history.",
+        "Cancellation is immediate for pending jobs and may take a short moment to propagate to stages that are already running. Once cancelled, the job can be retried from the same record."
       ]
     },
     {

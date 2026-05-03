@@ -1,5 +1,6 @@
 {
   "fixed_overhead_minutes": 0.25,
+  "pod_input_copy_bandwidth_mib_per_sec": 34,
   "vm_speed_multipliers": {
     "vm1": 1.0,
     "vm2": 1.35,
@@ -53,16 +54,16 @@
     "MERQURY": 0.08
   },
   "tool_base_minutes": {
-    "FASTQC": 1.1,
+    "FASTQC": 0.083,
     "SPADES": 35,
     "QUAST": 3,
     "GENOMESCOPE2": 2,
     "METASPADES": 50,
-    "HIFIASM": 12,
-    "VERKKO": 20,
-    "LIFTOFF": 3,
+    "HIFIASM": 30,
+    "VERKKO": 60,
+    "LIFTOFF": 10,
     "CAT": 25,
-    "BUSCO": 6,
+    "BUSCO": 25,
     "MERYL": 10,
     "MERQURY": 25
   }
