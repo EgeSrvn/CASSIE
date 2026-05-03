@@ -31,6 +31,7 @@ import {
 import { getPipelines, getPipeline, Pipeline, getPipelineRequirements, PipelineRequirement, PipelineRequirements } from '../services/pipelineService'
 import { getDataFileTree } from '../services/dataFileService'
 import { FolderTreeItem, FileItem } from '../services/folderService'
+import { getFiles } from '../services/fileService'
 
 import { getToken } from '../services/authService'
 import { getCreateJobCatConfig } from '../../cats/config_cat_job_builder'
@@ -454,6 +455,7 @@ export default function CreateJob() {
   const [pipelineInputMappings, setPipelineInputMappings] = useState<Record<string, number[]>>(() => storedDraftRef.current?.pipelineInputMappings || {})
   const [retryToolFileMappings, setRetryToolFileMappings] = useState<Record<string, Record<string, number[]>> | null>(null)
   const [retryPipelineInputMappings, setRetryPipelineInputMappings] = useState<Record<string, number[]> | null>(null)
+  const [retrySourceInputFiles, setRetrySourceInputFiles] = useState<Array<FileItem & { folderPath?: string }>>([])
   const [requirementSourceSelections, setRequirementSourceSelections] = useState<Record<string, 'external' | 'upstream'>>(() => storedDraftRef.current?.requirementSourceSelections || {})
   const [manualToolFlagValues, setManualToolFlagValues] = useState<Record<string, Record<string, FlagValue>>>(() => storedDraftRef.current?.manualToolFlagValues || {})
   const [recommendationIntents, setRecommendationIntents] = useState<RecommendationIntent[]>([])
@@ -815,6 +817,24 @@ export default function CreateJob() {
         setSlideDirection('forward')
         setPipelineInputMappings({})
         setToolFileMappings({})
+        setRetrySourceInputFiles([])
+
+        const sourceInputFilesResponse = await getFiles(retryJobId, 'input', 1, 1000)
+        if (!cancelled) {
+          const mappedRetryFiles = (sourceInputFilesResponse.data || []).map((file) => ({
+            id: file.id,
+            filename: file.filename,
+            s3_key: file.s3_key,
+            file_type: file.file_type,
+            file_format: file.file_format || null,
+            size_bytes: file.size_bytes ?? null,
+            checksum: file.checksum || null,
+            uploaded_at: file.uploaded_at || null,
+            created_at: file.created_at,
+            folderPath: 'Retry source job',
+          }))
+          setRetrySourceInputFiles(mappedRetryFiles)
+        }
 
         if (sourceJob.pipeline_id) {
           setSelectionMode('pipeline')
@@ -1858,7 +1878,21 @@ export default function CreateJob() {
   }
 
   const getCombinedSelectableFiles = (): Array<FileItem & { folderPath?: string }> => {
-    return flattenFiles(dataFileTree)
+    const libraryFiles = flattenFiles(dataFileTree)
+    if (retrySourceInputFiles.length === 0) {
+      return libraryFiles
+    }
+
+    const combinedById = new Map<number, FileItem & { folderPath?: string }>()
+    libraryFiles.forEach((file) => {
+      combinedById.set(file.id, file)
+    })
+    retrySourceInputFiles.forEach((file) => {
+      if (!combinedById.has(file.id)) {
+        combinedById.set(file.id, file)
+      }
+    })
+    return Array.from(combinedById.values())
   }
 
   const getRuntimeInputAssignments = (): RuntimeInputAssignment[] => {
@@ -2248,7 +2282,7 @@ export default function CreateJob() {
   )
   const combinedSelectableFiles = useMemo(
     () => getCombinedSelectableFiles(),
-    [dataFileTree]
+    [dataFileTree, retrySourceInputFiles]
   )
   const canAdvanceFromLevelTwo = inputStepMappingsComplete
 
