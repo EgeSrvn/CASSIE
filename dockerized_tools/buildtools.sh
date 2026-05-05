@@ -35,7 +35,7 @@ build_with_logs() {
     
     # Check if image already exists
     if image_exists "$tag"; then
-        log_build "[TOOLS] ✓ $tool_name image already exists, skipping build"
+        log_build "[TOOLS] [OK] $tool_name image already exists, skipping build"
         log_build "[TOOLS] ========================================"
         return 0
     fi
@@ -57,9 +57,9 @@ docker build --no-cache \
     
     local exit_code=$?
     if [ $exit_code -eq 0 ]; then
-        log_build "[TOOLS] ✓ $tool_name image built successfully"
+        log_build "[TOOLS] [OK] $tool_name image built successfully"
     else
-        log_build "[TOOLS] ✗ $tool_name image build failed with exit code $exit_code"
+        log_build "[TOOLS] [ERROR] $tool_name image build failed with exit code $exit_code"
         return $exit_code
     fi
 }

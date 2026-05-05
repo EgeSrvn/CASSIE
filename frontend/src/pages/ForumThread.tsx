@@ -644,7 +644,7 @@ export default function ForumThread() {
                 aria-label="Report comment"
                 title="Report"
               >
-                ⚑
+                !
               </button>
               {renderActionMenu(commentKey, [
                 {
@@ -766,7 +766,7 @@ export default function ForumThread() {
                   aria-label="Report forum post"
                   title="Report"
                 >
-                  ⚑
+                  !
                 </button>
                 {renderActionMenu('thread-main', [
                   ...(thread.user_id === currentUserId

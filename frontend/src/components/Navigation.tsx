@@ -8,6 +8,8 @@ interface NavigationProps {
   onLogout?: () => void
 }
 
+const uiPreferenceKey = 'cassie-ui-preference'
+
 export default function Navigation({ onLogout }: NavigationProps) {
   const navigate = useNavigate()
   const location = useLocation()
@@ -15,6 +17,7 @@ export default function Navigation({ onLogout }: NavigationProps) {
   const [user, setUser] = useState<User | null>(() => getStoredUser())
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false)
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false)
+  const [isModernUi, setIsModernUi] = useState(() => localStorage.getItem(uiPreferenceKey) === 'modern')
   const userMenuRef = useRef<HTMLDivElement | null>(null)
   const mobileUserMenuRef = useRef<HTMLDivElement | null>(null)
 
@@ -71,6 +74,19 @@ export default function Navigation({ onLogout }: NavigationProps) {
   }, [])
 
   useEffect(() => {
+    const syncUiPreference = () => {
+      setIsModernUi(localStorage.getItem(uiPreferenceKey) === 'modern')
+    }
+
+    window.addEventListener('storage', syncUiPreference)
+    window.addEventListener('ui-preference-change', syncUiPreference)
+    return () => {
+      window.removeEventListener('storage', syncUiPreference)
+      window.removeEventListener('ui-preference-change', syncUiPreference)
+    }
+  }, [])
+
+  useEffect(() => {
     setIsUserMenuOpen(false)
     setIsMobileMenuOpen(false)
   }, [location.pathname])
@@ -110,6 +126,14 @@ export default function Navigation({ onLogout }: NavigationProps) {
     navigate(path)
   }
 
+  const toggleModernUi = () => {
+    const nextPreference = isModernUi ? 'classic' : 'modern'
+    localStorage.setItem(uiPreferenceKey, nextPreference)
+    document.documentElement.dataset.ui = nextPreference
+    setIsModernUi(!isModernUi)
+    window.dispatchEvent(new Event('ui-preference-change'))
+  }
+
   const renderAvatar = () => {
     if (!isAuthenticated || !user) {
       return (
@@ -143,6 +167,18 @@ export default function Navigation({ onLogout }: NavigationProps) {
     if (isAuthenticated) {
       return (
         <div className="nav-user-menu" role="menu">
+          <button
+            type="button"
+            className="nav-user-menu-item nav-user-menu-toggle"
+            onClick={toggleModernUi}
+            role="switch"
+            aria-checked={isModernUi}
+          >
+            <span>Dark Mode</span>
+            <span className="nav-toggle-track" aria-hidden="true">
+              <span className="nav-toggle-thumb" />
+            </span>
+          </button>
           <button type="button" className="nav-user-menu-item" onClick={() => navigateAndClose('/profile')}>
             Go Profile
           </button>
@@ -167,6 +203,18 @@ export default function Navigation({ onLogout }: NavigationProps) {
 
     return (
       <div className="nav-user-menu" role="menu">
+        <button
+          type="button"
+          className="nav-user-menu-item nav-user-menu-toggle"
+          onClick={toggleModernUi}
+          role="switch"
+          aria-checked={isModernUi}
+        >
+          <span>Dark Mode</span>
+          <span className="nav-toggle-track" aria-hidden="true">
+            <span className="nav-toggle-thumb" />
+          </span>
+        </button>
         <button type="button" className="nav-user-menu-item" onClick={() => navigateAndClose('/register')}>
           Register
         </button>

@@ -410,7 +410,7 @@ export default function Community() {
                       aria-label={`Report pipeline ${pipeline.name}`}
                       title="Report"
                     >
-                      ⚑
+                      !
                     </button>
                     <h3 className="pipeline-card-title">{pipeline.name}</h3>
                     {pipeline.description && (

@@ -92,7 +92,7 @@ export default function CatCornerCard({ config, className = '' }: CatCornerCardP
               aria-label="Close cat popup"
               onClick={() => setIsOpen(false)}
             >
-              ×
+              <span className="cat-corner-modal__close-icon" aria-hidden="true" />
             </button>
             <img
               className="cat-corner-modal__image"
@@ -112,4 +112,3 @@ export default function CatCornerCard({ config, className = '' }: CatCornerCardP
     </>
   )
 }
-

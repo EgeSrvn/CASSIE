@@ -1,4 +1,4 @@
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom'
+import { BrowserRouter as Router, Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { Component, FormEvent, ReactNode, useState, useEffect } from 'react'
 import Login from './pages/Login'
 import Register from './pages/Register'
@@ -28,6 +28,8 @@ import { startStorageUploadProcessor } from './services/storageUploadService'
 const generalAccessPassword = import.meta.env.VITE_GENERAL_ACCESS_PASSWORD?.trim() || ''
 const generalAccessSessionKey = 'cassie-general-access-authenticated'
 const generalAccessReturnPathKey = 'cassie-general-access-return-path'
+const uiPreferenceKey = 'cassie-ui-preference'
+const routeTransitionMs = 500
 
 class AppErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
   state: { error: Error | null } = { error: null }
@@ -102,6 +104,42 @@ function GeneralAccessLogin({ onAuthenticated }: { onAuthenticated: () => void }
   )
 }
 
+function RouteTransitionShell({ children }: { children: (location: ReturnType<typeof useLocation>) => ReactNode }) {
+  const location = useLocation()
+  const [displayLocation, setDisplayLocation] = useState(location)
+  const [isTransitioning, setIsTransitioning] = useState(false)
+
+  useEffect(() => {
+    const nextPath = `${location.pathname}${location.search}${location.hash}`
+    const currentPath = `${displayLocation.pathname}${displayLocation.search}${displayLocation.hash}`
+
+    if (nextPath === currentPath) {
+      return
+    }
+
+    setIsTransitioning(true)
+    const timer = window.setTimeout(() => {
+      setDisplayLocation(location)
+      window.requestAnimationFrame(() => setIsTransitioning(false))
+    }, routeTransitionMs)
+
+    return () => window.clearTimeout(timer)
+  }, [displayLocation, location])
+
+  return (
+    <div className={`app-route-shell ${isTransitioning ? 'app-route-shell--transitioning' : ''}`}>
+      <div className="app-route-content" aria-busy={isTransitioning}>
+        {children(displayLocation)}
+      </div>
+      {isTransitioning ? (
+        <div className="page-transition-overlay" aria-label="Page is loading" role="status">
+          <span className="loading-spinner" aria-hidden="true" />
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
 function App() {
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => !!getToken())
   const [hasGeneralAccess, setHasGeneralAccess] = useState<boolean>(() => {
@@ -151,6 +189,22 @@ function App() {
   }, [])
 
   useEffect(() => {
+    const applyUiPreference = () => {
+      const preference = localStorage.getItem(uiPreferenceKey) === 'modern' ? 'modern' : 'classic'
+      document.documentElement.dataset.ui = preference
+    }
+
+    applyUiPreference()
+    window.addEventListener('ui-preference-change', applyUiPreference)
+    window.addEventListener('storage', applyUiPreference)
+
+    return () => {
+      window.removeEventListener('ui-preference-change', applyUiPreference)
+      window.removeEventListener('storage', applyUiPreference)
+    }
+  }, [])
+
+  useEffect(() => {
     if (!hasGeneralAccess) {
       return
     }
@@ -173,7 +227,9 @@ function App() {
       ) : (
       <Router>
         <>
-          <Routes>
+          <RouteTransitionShell>
+            {(routeLocation) => (
+          <Routes location={routeLocation}>
           <Route 
             path="/login" 
             element={!isAuthenticated ? <Login onLogin={() => setIsAuthenticated(true)} /> : <Navigate to="/" />} 
@@ -297,6 +353,8 @@ function App() {
             element={<PipelineBuilder />} 
           />
           </Routes>
+            )}
+          </RouteTransitionShell>
           <SiteCatWidget />
         </>
       </Router>

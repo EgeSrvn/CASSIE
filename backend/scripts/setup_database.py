@@ -150,21 +150,21 @@ def main():
     
     # Step 1: Ensure container is running
     if not ensure_postgres_container():
-        print("\n❌ Failed to start PostgreSQL container.")
+        print("\n[ERROR] Failed to start PostgreSQL container.")
         return False
     
     # Step 2: Wait for PostgreSQL to be ready
     if not wait_for_postgres():
-        print("\n❌ PostgreSQL did not become ready.")
+        print("\n[ERROR] PostgreSQL did not become ready.")
         return False
     
     # Step 3: Create database
     if not create_database():
-        print("\n❌ Failed to create database.")
+        print("\n[ERROR] Failed to create database.")
         return False
     
     print("\n" + "=" * 60)
-    print("✅ Database setup complete!")
+    print("[OK] Database setup complete!")
     print("=" * 60)
     print("\nNext steps:")
     print("  1. Run the test script: python -m backend.tests.test_database_setup")

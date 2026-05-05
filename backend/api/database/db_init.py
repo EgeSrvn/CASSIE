@@ -538,24 +538,24 @@ def main():
         
         print()
         print("=" * 60)
-        print("✅ Database initialization completed successfully!")
+        print("[OK] Database initialization completed successfully!")
         print("=" * 60)
         
         # Run health check
         print()
         if check_database_health():
             print()
-            print("✅ Database is ready to use.")
+            print("[OK] Database is ready to use.")
             return True
         else:
             print()
-            print("⚠️  Database initialized but health check failed.")
+            print("[WARN] Database initialized but health check failed.")
             return False
             
     except Exception as e:
         print()
         print("=" * 60)
-        print("❌ Database initialization failed!")
+        print("[ERROR] Database initialization failed!")
         print("=" * 60)
         print(f"Error: {e}")
         print()

@@ -1112,7 +1112,7 @@ class EmulatorPipelineRunner:
                     )
                     
                     self._logger.info(
-                        f"✓ Uploaded {safe_filename} to storage bucket '{upload_result['bucket']}': "
+                        f"[OK] Uploaded {safe_filename} to storage bucket '{upload_result['bucket']}': "
                         f"{upload_result['size']} bytes, checksum: {upload_result['checksum']}"
                     )
                     
@@ -1131,7 +1131,7 @@ class EmulatorPipelineRunner:
                     
                     self._logger.info(f"Creating file record for job {job_id}: {safe_filename} (type: {file_type.value})")
                     file_record = create_file_record(file_data)
-                    self._logger.info(f"✓ Created file record: id={file_record.id}, job_id={file_record.job_id}, file_type={file_record.file_type.value}, filename={file_record.filename}")
+                    self._logger.info(f"[OK] Created file record: id={file_record.id}, job_id={file_record.job_id}, file_type={file_record.file_type.value}, filename={file_record.filename}")
                     uploaded_count += 1
                     
                 except Exception as e:
@@ -1164,12 +1164,12 @@ class EmulatorPipelineRunner:
                     )
                     if file_exists:
                         self._logger.info(
-                            f"  ✓ File {vf.id}: {vf.filename} (type: {vf.file_type.value}, "
+                            f"  [OK] File {vf.id}: {vf.filename} (type: {vf.file_type.value}, "
                             f"bucket: {bucket_name}, s3_key: {vf.s3_key})"
                         )
                     else:
                         self._logger.warning(
-                            f"  ✗ File {vf.id}: {vf.filename} NOT FOUND in bucket {bucket_name} "
+                            f"  [ERROR] File {vf.id}: {vf.filename} NOT FOUND in bucket {bucket_name} "
                             f"(s3_key: {vf.s3_key})"
                         )
             

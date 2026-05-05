@@ -1447,14 +1447,14 @@ export default function JobDetails() {
                       className="btn-secondary btn-collapse"
                       title={outputFilesCollapsed ? 'Expand files' : 'Collapse files'}
                     >
-                      {outputFilesCollapsed ? '▶' : '▼'} {outputFilesCollapsed ? 'Expand' : 'Collapse'}
+                      {outputFilesCollapsed ? 'Expand' : 'Collapse'}
                     </button>
                     <button
                       onClick={handlePrepareZip}
                       className="btn-primary"
                       disabled={startingZipGeneration}
                     >
-                      {startingZipGeneration ? 'Preparing ZIP...' : '📦 Download All as ZIP'}
+                      {startingZipGeneration ? 'Preparing ZIP...' : 'Download All as ZIP'}
                     </button>
                   </>
                 )}

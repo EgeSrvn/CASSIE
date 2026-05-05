@@ -202,7 +202,7 @@ export default function Forum() {
                   aria-label={`Report thread ${thread.title}`}
                   title="Report"
                 >
-                  ⚑
+                  !
                 </button>
                 <div className="forum-thread-topline">
                   <span>{new Date(thread.last_activity_at).toLocaleString()}</span>

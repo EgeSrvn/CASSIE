@@ -88,7 +88,7 @@ def seed_fastqc_workflow():
             workflow_id = cur.fetchone()[0]
             conn.commit()
             
-            logger.info(f"✓ Successfully seeded FastQC workflow with ID: {workflow_id}")
+            logger.info(f"[OK] Successfully seeded FastQC workflow with ID: {workflow_id}")
             return workflow_id
             
         except Exception as e:
@@ -109,4 +109,3 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"\n[ERROR] Failed to seed workflow: {e}")
         sys.exit(1)
-

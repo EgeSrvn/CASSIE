@@ -82,7 +82,7 @@ export default function FileTree({
           onClick={handleFolderClick}
         >
           <span className="file-tree-icon">
-            {hasChildren ? (isExpanded ? '📂' : '📁') : '📁'}
+            {hasChildren ? (isExpanded ? 'DIR-' : 'DIR+') : 'DIR'}
           </span>
           <span className="file-tree-name">{folder.name}</span>
           {showDeleteButtons && onFolderDelete && (
@@ -139,10 +139,10 @@ export default function FileTree({
 
   const getFileIcon = (format: string): string => {
     const formatLower = format.toLowerCase()
-    if (formatLower.includes('fastq')) return '🧬'
-    if (formatLower.includes('fasta')) return '📄'
-    if (formatLower.includes('sam') || formatLower.includes('bam')) return '📊'
-    return '📄'
+    if (formatLower.includes('fastq')) return 'SEQ'
+    if (formatLower.includes('fasta')) return 'DNA'
+    if (formatLower.includes('sam') || formatLower.includes('bam')) return 'BAM'
+    return 'FILE'
   }
 
   const formatFileSize = (bytes: number): string => {

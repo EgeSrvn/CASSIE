@@ -1,0 +1,382 @@
+CASSIE USER MANUAL
+==================
+Cloud-based Assembly Streamlined Service Integration Engine
+Version 1.0
+
+----------------------------------------------------------------
+TABLE OF CONTENTS
+----------------------------------------------------------------
+1.  Introduction
+2.  Getting Started
+    2.1  Registering an Account
+    2.2  Logging In
+    2.3  Navigating the Interface
+3.  Storage
+    3.1  Uploading Files
+    3.2  Organizing with Folders
+    3.3  Supported File Formats
+4.  Running a Job
+    4.1  Creating a One-off Job
+    4.2  Configuring Tool Parameters
+    4.3  Monitoring Job Progress
+    4.4  Downloading Results
+5.  Pipeline Builder
+    5.1  Creating a New Pipeline
+    5.2  Adding and Connecting Nodes
+    5.3  Saving and Naming Pipelines
+    5.4  Running a Pipeline Job
+    5.5  Publishing a Pipeline to the Community
+6.  Pipelines Browser
+7.  Community Forum
+8.  Profile Settings
+9.  Admin Panel (Admin Users Only)
+10. Supported Bioinformatics Tools
+11. Tips and Troubleshooting
+
+----------------------------------------------------------------
+1. INTRODUCTION
+----------------------------------------------------------------
+CASSIE is a web-based platform for genomic analysis. It lets
+researchers upload sequencing data, connect bioinformatics tools
+into reusable workflows (pipelines), execute jobs on cloud
+infrastructure, and share successful workflows with the
+community — without managing servers or containers.
+
+----------------------------------------------------------------
+2. GETTING STARTED
+----------------------------------------------------------------
+
+2.1 REGISTERING AN ACCOUNT
+---------------------------
+1. Open CASSIE in your web browser.
+2. Click "Register" or "Sign Up" on the landing page.
+3. Fill in your name, email address, and choose a password.
+4. Check your inbox for a verification email and click the
+   confirmation link.
+5. You will be redirected to the login page once verified.
+
+[SCREENSHOT: Registration form with name, email, and password
+fields visible. Show the "Create Account" submit button and any
+email-format validation message to illustrate field requirements.]
+
+2.2 LOGGING IN
+--------------
+1. Go to the CASSIE login page.
+2. Enter your registered email and password.
+3. Click "Log In". You will land on the Home dashboard.
+
+If you forget your password, use the "Forgot Password" link on
+the login page to request a reset email.
+
+[SCREENSHOT: Login page showing the email/password form and the
+"Forgot Password" link below the submit button.]
+
+2.3 NAVIGATING THE INTERFACE
+-----------------------------
+The main navigation bar runs along the left side (or top,
+depending on your screen size) and contains the following links:
+
+  - Home         : Your personal dashboard and recent activity
+  - Jobs         : History of all jobs you have run
+  - Create Job   : Start a new one-off tool job
+  - Pipelines    : Browse and manage saved pipelines
+  - Pipeline     : Open the visual pipeline builder
+    Builder
+  - Storage      : Manage your uploaded files
+  - Forum        : Community discussions and shared workflows
+  - Profile      : Your account settings
+
+[SCREENSHOT: Full application layout with the navigation sidebar
+expanded. Highlight each menu item label so users can match them
+to this list. Ideally captured on the Home/dashboard page.]
+
+----------------------------------------------------------------
+3. STORAGE
+----------------------------------------------------------------
+
+3.1 UPLOADING FILES
+--------------------
+1. Click "Storage" in the navigation.
+2. Click the "Upload" button (usually a "+" icon or labeled
+   "Upload File").
+3. Select one or more files from your computer using the file
+   picker. Accepted formats include FASTQ, FASTA, and GFF.
+4. Wait for the upload progress indicator to complete.
+5. Your file will appear in the file list once uploaded.
+
+[SCREENSHOT: Storage page with the upload dialog open. Show at
+least one file already listed below so users can see what the
+file list looks like after a successful upload.]
+
+3.2 ORGANIZING WITH FOLDERS
+-----------------------------
+1. On the Storage page, click "New Folder" or the folder-create
+   icon.
+2. Enter a folder name and confirm.
+3. Drag and drop files into the folder, or use the "Move"
+   option from a file's context menu.
+
+[SCREENSHOT: Storage page showing the folder tree on the left
+and files listed on the right. Capture while a folder is
+expanded to show files inside it.]
+
+3.3 SUPPORTED FILE FORMATS
+----------------------------
+CASSIE recognizes the following genomic file formats:
+
+  - FASTQ (.fastq, .fq, .fastq.gz)   : Short-read sequencing
+  - FASTA (.fasta, .fa, .fna)         : Reference sequences
+  - GFF   (.gff, .gff3)              : Genome annotations
+
+If CASSIE does not auto-detect a file's format, you can set it
+manually using the "Override Format" option next to the file.
+
+----------------------------------------------------------------
+4. RUNNING A JOB
+----------------------------------------------------------------
+
+4.1 CREATING A ONE-OFF JOB
+---------------------------
+1. Click "Create Job" in the navigation.
+2. In the "Tool" dropdown, select the bioinformatics tool you
+   want to run (e.g. FastQC, SPAdes).
+3. Under "Input Files", click "Add File" and pick the file(s)
+   from your Storage that the tool requires.
+4. Review the estimated runtime and cost shown on the right.
+5. Click "Submit Job" to queue the job for execution.
+
+[SCREENSHOT: Create Job page with a tool selected from the
+dropdown and at least one input file chosen. The cost/runtime
+estimate panel should be visible on the right side of the screen.]
+
+4.2 CONFIGURING TOOL PARAMETERS
+---------------------------------
+Most tools expose optional parameters below the file picker.
+Common examples include genome size, coverage depth, or output
+format flags. Hover over any parameter label to see a tooltip
+description. Leave parameters blank to use tool defaults.
+
+[SCREENSHOT: Create Job page scrolled down to show the
+parameters section for a selected tool (e.g., SPAdes showing
+k-mer size or coverage cutoff fields).]
+
+4.3 MONITORING JOB PROGRESS
+-----------------------------
+1. Click "Jobs" in the navigation to open your job history.
+2. Click on any job row to open its detail view.
+3. The detail view shows:
+     - Current status (Queued / Running / Completed / Failed)
+     - A stage-by-stage progress indicator
+     - Live log output that updates as the job runs
+4. If a job fails, an error summary appears at the top of the
+   log panel. You can click "Retry" to resubmit it.
+
+[SCREENSHOT: Job detail page while a job is running. Show the
+stage progress bar near the top and the scrolling log panel
+below it. Capture while at least one stage shows "In Progress".]
+
+4.4 DOWNLOADING RESULTS
+------------------------
+Once a job reaches the Completed status:
+1. Scroll down to the "Outputs" section in the job detail view.
+2. Click a file name to download it individually, or click
+   "Download All (ZIP)" to get everything in one archive.
+
+[SCREENSHOT: Job detail page scrolled to the Outputs section,
+showing a list of result files and the "Download All" button.]
+
+----------------------------------------------------------------
+5. PIPELINE BUILDER
+----------------------------------------------------------------
+
+5.1 CREATING A NEW PIPELINE
+-----------------------------
+1. Click "Pipeline Builder" in the navigation.
+2. If no pipeline is open, click "New Pipeline".
+3. Give your pipeline a name in the prompt that appears.
+
+[SCREENSHOT: Empty Pipeline Builder canvas right after creating
+a new pipeline. Show the blank canvas with the toolbar/node
+palette visible on the side or top.]
+
+5.2 ADDING AND CONNECTING NODES
+---------------------------------
+The builder canvas has four node types you can drag onto it:
+
+  - Input       : Represents an uploaded file from Storage
+  - Tool        : A bioinformatics processing step
+  - Checkpoint  : A pause point for manual review
+  - Result      : Marks the final output of the pipeline
+
+To build a pipeline:
+1. Drag an "Input" node onto the canvas.
+2. Drag a "Tool" node next to it and select the desired tool
+   from its dropdown.
+3. Click and drag from the output handle (right side) of the
+   Input node to the input handle (left side) of the Tool node
+   to connect them.
+4. Continue adding Tool nodes and connecting them in sequence.
+5. Finish with a "Result" node connected to the last tool.
+
+[SCREENSHOT: Pipeline Builder canvas with 3-4 connected nodes
+showing a simple linear workflow (Input → FastQC → SPAdes →
+Result). Highlight the connection arrows between nodes.]
+
+5.3 SAVING AND NAMING PIPELINES
+---------------------------------
+- Click the "Save" button in the toolbar at any time.
+- To rename, click the pipeline title at the top of the canvas
+  and type a new name.
+- To clone an existing pipeline, open it in the builder and
+  use the "Clone" option from the pipeline menu.
+
+[SCREENSHOT: Pipeline Builder toolbar area showing the Save
+button and the editable pipeline title field.]
+
+5.4 RUNNING A PIPELINE JOB
+----------------------------
+1. With a pipeline open in the builder (or from the Pipelines
+   browser), click "Run Pipeline".
+2. A dialog will ask you to map each Input node to a file from
+   your Storage.
+3. Confirm and click "Submit". The job appears in your Jobs
+   list immediately.
+
+[SCREENSHOT: The "Run Pipeline" dialog showing Input node
+labels on the left and file-picker dropdowns on the right,
+before the user clicks Submit.]
+
+5.5 PUBLISHING A PIPELINE TO THE COMMUNITY
+--------------------------------------------
+1. Open the pipeline in the builder.
+2. Click "Publish" from the pipeline options menu.
+3. Add a short description and any relevant tags.
+4. Confirm. Your pipeline will appear in the community section
+   of the Pipelines browser and in the Forum.
+
+[SCREENSHOT: Publish dialog with description text area and tags
+input field visible. Show a sample description already typed in.]
+
+----------------------------------------------------------------
+6. PIPELINES BROWSER
+----------------------------------------------------------------
+Click "Pipelines" in the navigation to see two tabs:
+
+  - My Pipelines       : Pipelines you have created or cloned
+  - Community          : Pipelines published by other users
+
+From either tab you can:
+  - Click a pipeline card to preview its structure
+  - Click "Run" to immediately queue a job from that pipeline
+  - Click "Clone" to copy a community pipeline to your account
+    and modify it in the builder
+
+[SCREENSHOT: Pipelines browser showing the Community tab with
+several pipeline cards displayed in a grid. One card should have
+its "Clone" and "Run" buttons visible on hover.]
+
+----------------------------------------------------------------
+7. COMMUNITY FORUM
+----------------------------------------------------------------
+The Forum is where users share results, discuss workflows, and
+ask questions.
+
+  - Browse posts on the main Forum page.
+  - Click a post to read details and replies.
+  - Click "New Post" to start a discussion, share a pipeline,
+    or report a result.
+  - Use the search bar at the top to find posts by keyword or
+    tag.
+
+[SCREENSHOT: Forum main page showing a list of posts with
+author avatars, titles, tag badges, and reply counts. Capture
+the "New Post" button in the top-right corner.]
+
+----------------------------------------------------------------
+8. PROFILE SETTINGS
+----------------------------------------------------------------
+Click "Profile" in the navigation to:
+
+  - View and edit your display name and email address.
+  - Change your password.
+  - See a summary of your usage (number of jobs run, storage
+    used).
+
+[SCREENSHOT: Profile settings page with the editable name and
+email fields and a "Save Changes" button visible.]
+
+----------------------------------------------------------------
+9. ADMIN PANEL (ADMIN USERS ONLY)
+----------------------------------------------------------------
+If your account has administrator privileges, an "Admin" link
+appears in the navigation. The Admin Panel provides:
+
+  - System Health   : Server status, queue depth, resource use
+  - User Management : View, disable, or promote user accounts
+  - Queue Monitor   : Inspect running and pending jobs across
+                      all users; cancel or requeue individual
+                      jobs
+
+[SCREENSHOT: Admin Panel dashboard showing the system health
+metrics cards at the top (CPU, memory, queue depth) and the
+tabs for Users and Queue below.]
+
+----------------------------------------------------------------
+10. SUPPORTED BIOINFORMATICS TOOLS
+----------------------------------------------------------------
+CASSIE currently supports the following tools. Each tool's
+required inputs and parameters are shown on the Create Job page
+when that tool is selected.
+
+  Tool            Purpose
+  --------------- ------------------------------------------
+  FastQC          Read quality control and QC reports
+  GenomeScope2    Genome size and heterozygosity estimation
+  SPAdes          Short-read genome assembly
+  metaSPAdes      Metagenomic assembly
+  Hifiasm         HiFi long-read genome assembly
+  Verkko          Long-read telomere-to-telomere assembly
+  QUAST           Assembly quality assessment
+  BUSCO           Genome completeness evaluation
+  CAT             Taxonomic classification of contigs
+  Liftoff         Annotation liftover between assemblies
+  Meryl           K-mer database construction
+  Merqury         Reference-free assembly evaluation
+
+----------------------------------------------------------------
+11. TIPS AND TROUBLESHOOTING
+----------------------------------------------------------------
+
+Job stays "Queued" for a long time
+  The compute cluster may be at capacity. Check the queue
+  status in the Admin Panel (if you have access) or wait a
+  few minutes and refresh the job detail page.
+
+File upload fails
+  Ensure your file is in a supported format and is not
+  corrupted. Very large files (>50 GB) may require a stable
+  network connection; try uploading in segments if possible.
+
+Tool parameter errors
+  Read the tooltip next to each parameter for valid value
+  ranges. Leaving a parameter blank uses the tool default,
+  which is safe for most analyses.
+
+Pipeline node won't connect
+  Connections are type-checked. An Input node must connect to
+  a Tool node's input handle; a Tool node's output handle must
+  connect to another Tool's input or to a Result node. Check
+  that you are dragging from the correct handle (small circle
+  on the edge of the node).
+
+Cannot see a published pipeline
+  Community pipelines may take a moment to appear after
+  publishing. Refresh the Pipelines browser and switch to the
+  Community tab.
+
+For further help, post a question in the Community Forum or
+contact your system administrator.
+
+----------------------------------------------------------------
+END OF MANUAL
+----------------------------------------------------------------

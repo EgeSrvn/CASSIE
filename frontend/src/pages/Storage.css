@@ -470,3 +470,78 @@
     flex-direction: column;
   }
 }
+
+:root[data-ui="modern"] .storage-page .storage-usage-card,
+:root[data-ui="modern"] .storage-page .storage-file-card,
+:root[data-ui="modern"] .storage-page .storage-output-card,
+:root[data-ui="modern"] .storage-page .storage-upgrade-plan,
+:root[data-ui="modern"] .storage-page .storage-upgrade-card,
+:root[data-ui="modern"] .storage-page .storage-upgrade-summary-card {
+  border-color: rgba(15, 23, 42, 0.1);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 252, 0.94)),
+    linear-gradient(135deg, rgba(37, 99, 235, 0.04), rgba(20, 184, 166, 0.08));
+  box-shadow: 0 18px 36px rgba(15, 23, 42, 0.08);
+}
+
+:root[data-ui="modern"] .storage-page .storage-usage-bar,
+:root[data-ui="modern"] .storage-page .storage-upgrade-progress {
+  background: rgba(15, 23, 42, 0.08);
+}
+
+:root[data-ui="modern"] .storage-page .storage-usage-fill,
+:root[data-ui="modern"] .storage-page .storage-upgrade-progress-fill {
+  background: linear-gradient(90deg, var(--primary), var(--secondary));
+}
+
+:root[data-ui="modern"] .storage-page .storage-tab,
+:root[data-ui="modern"] .storage-page .storage-file-row,
+:root[data-ui="modern"] .storage-page .storage-output-group,
+:root[data-ui="modern"] .storage-page .storage-search-row .community-search-input,
+:root[data-ui="modern"] .storage-page .storage-upgrade-summary-metrics {
+  border-color: rgba(15, 23, 42, 0.1);
+  background: rgba(255, 255, 255, 0.86);
+}
+
+:root[data-ui="modern"] .storage-page .storage-upgrade-card,
+:root[data-ui="modern"] .storage-page .storage-upgrade-summary-card,
+:root[data-ui="modern"] .storage-page .storage-usage-card,
+:root[data-ui="modern"] .storage-page .storage-file-card,
+:root[data-ui="modern"] .storage-page .storage-output-card {
+  border-color: rgba(15, 23, 42, 0.1) !important;
+  background: rgba(255, 255, 255, 0.94) !important;
+  box-shadow: 0 16px 34px rgba(15, 23, 42, 0.07) !important;
+}
+
+:root[data-ui="modern"] .storage-page .storage-upgrade-card,
+:root[data-ui="modern"] .storage-page .storage-upgrade-summary-card,
+:root[data-ui="modern"] .storage-page .storage-usage-card,
+:root[data-ui="modern"] .storage-page .storage-file-card,
+:root[data-ui="modern"] .storage-page .storage-output-card,
+:root[data-ui="modern"] .storage-page .storage-file-row,
+:root[data-ui="modern"] .storage-page .storage-output-group,
+:root[data-ui="modern"] .storage-page .storage-upgrade-summary-metrics {
+  border-color: rgba(148, 163, 184, 0.18) !important;
+  background:
+    linear-gradient(180deg, rgba(17, 24, 39, 0.96), rgba(15, 23, 42, 0.94)),
+    linear-gradient(135deg, rgba(56, 189, 248, 0.08), rgba(52, 211, 153, 0.06)) !important;
+  color: #f8fafc !important;
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.36) !important;
+}
+
+:root[data-ui="modern"] .storage-page .storage-tab,
+:root[data-ui="modern"] .storage-page .storage-search-row .community-search-input {
+  border-color: rgba(148, 163, 184, 0.2) !important;
+  background: rgba(15, 23, 42, 0.92) !important;
+  color: #f8fafc !important;
+}
+
+:root[data-ui="modern"] .storage-page .storage-tab.active {
+  background: linear-gradient(135deg, #0284c7, #0f766e) !important;
+  color: #ffffff !important;
+}
+
+:root[data-ui="modern"] .storage-page .storage-usage-bar,
+:root[data-ui="modern"] .storage-page .storage-upgrade-progress {
+  background: rgba(51, 65, 85, 0.72) !important;
+}

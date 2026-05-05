@@ -273,7 +273,7 @@ export default function Profile() {
                   aria-label={isEditing ? 'Close profile editor' : 'Edit profile'}
                   title={isEditing ? 'Close profile editor' : 'Edit profile'}
                 >
-                  ✎
+                  Edit
                 </button>
                 <button
                   type="button"

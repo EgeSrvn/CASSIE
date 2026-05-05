@@ -3261,11 +3261,11 @@ export default function CreateJob() {
                               </span>
                               {mappedFileIds.length > 0 ? (
                                 <span style={{ marginLeft: '0.5rem', color: '#16a34a', fontSize: '0.875rem', fontWeight: '500' }}>
-                                  ✓ {mappedFileIds.length} file{mappedFileIds.length !== 1 ? 's' : ''} selected
+                                  Selected: {mappedFileIds.length} file{mappedFileIds.length !== 1 ? 's' : ''}
                                 </span>
                               ) : (
                                 <span style={{ marginLeft: '0.5rem', color: '#f59e0b', fontSize: '0.875rem', fontWeight: '500' }}>
-                                  ⚠ Required
+                                  Required
                                 </span>
                               )}
                             </div>
