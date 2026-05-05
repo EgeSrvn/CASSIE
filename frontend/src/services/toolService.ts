@@ -232,6 +232,7 @@ export interface RecommendationResponseData {
     has_txt?: boolean
   }
   pipeline_options: RecommendationOption[]
+  source?: string
 }
 
 /**
@@ -287,6 +288,28 @@ export const getPipelineRecommendations = async (
     return null
   } catch (error) {
     console.error('Failed to get pipeline recommendations:', error)
+    return null
+  }
+}
+
+export const getRequestPipelineRecommendation = async (
+  request: string,
+  files: RecommendationFileSummary[]
+): Promise<RecommendationResponseData | null> => {
+  try {
+    const response = await apiClient.post<{ success: boolean; data: RecommendationResponseData; message?: string }>(
+      '/api/tools/recommendations/request',
+      {
+        request,
+        files,
+      }
+    )
+    if (response.data.success && response.data.data) {
+      return response.data.data
+    }
+    return null
+  } catch (error) {
+    console.error('Failed to get request-based pipeline recommendation:', error)
     return null
   }
 }

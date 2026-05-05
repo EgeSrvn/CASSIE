@@ -20,6 +20,7 @@ from backend.api.utils.response_builder import (
 from backend.api.utils.logger import get_logger
 from backend.api.services.intent_recommender import (
     get_recommendation_intents,
+    recommend_pipeline_from_request,
     recommend_pipelines,
 )
 from tool_registry import (
@@ -42,6 +43,11 @@ class RecommendationFileSummary(BaseModel):
 
 class RecommendationRequest(BaseModel):
     intent_ids: List[str] = Field(default_factory=list)
+    files: List[RecommendationFileSummary] = Field(default_factory=list)
+
+
+class FreeTextRecommendationRequest(BaseModel):
+    request: str = Field(..., min_length=3, max_length=2000)
     files: List[RecommendationFileSummary] = Field(default_factory=list)
 
 
@@ -116,6 +122,27 @@ async def get_recommendations(request: RecommendationRequest):
         error_data = error_response(
             error_code=ErrorCode.INTERNAL_ERROR,
             message="Failed to generate pipeline recommendations",
+            status_code=500,
+        )
+        return JSONResponse(content=error_data, status_code=500)
+
+
+@router.post("/recommendations/request")
+async def get_request_recommendations(request: FreeTextRecommendationRequest):
+    try:
+        recommendation_data = recommend_pipeline_from_request(
+            user_request=request.request,
+            file_entries=[file.model_dump() for file in request.files],
+        )
+        return success_response(
+            data=recommendation_data,
+            message="Request-based pipeline recommendation generated successfully",
+        )
+    except Exception as e:
+        logger.error(f"Error generating request-based recommendation: {e}", exc_info=True)
+        error_data = error_response(
+            error_code=ErrorCode.INTERNAL_ERROR,
+            message="Failed to generate request-based pipeline recommendation",
             status_code=500,
         )
         return JSONResponse(content=error_data, status_code=500)

@@ -103,7 +103,7 @@ PostgreSQL   MinIO/S3  Kubernetes
 - Upload FASTQ, FASTA, GFF, and other genomic formats. Hierarchical folder organization. Format hints per input block and manual format override.
 
 ### Runtime and Cost Estimation
-- Deterministic heuristic model that combines per-tool baseline runtimes, a size-scaling factor, a pod input-copy overhead, a compression penalty for gzipped inputs, and a VM partition multiplier. Optional Gemini or OpenAI LLM refinement layer configurable in `config/config.json`.
+- Deterministic heuristic model that combines per-tool baseline runtimes, a size-scaling factor, a pod input-copy overhead, a compression penalty for gzipped inputs, and a VM partition multiplier. Runtime and cost estimates do not call external prediction services.
 
 ### Community
 - Forum for sharing workflows and results. Pipelines can be published to a community library where other users can browse, inspect, and clone them. Publishing does not share input files or job history.

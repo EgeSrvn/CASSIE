@@ -12,14 +12,9 @@ The estimator is intentionally transparent and configurable. It combines:
 from __future__ import annotations
 
 import json
-import os
-import re
-import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from urllib import error as urllib_error
-from urllib import request as urllib_request
 
 from backend.api.services.vm_partition_service import get_vm_partition
 from backend.api.utils.logger import get_logger
@@ -29,7 +24,6 @@ logger = get_logger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 RUNTIME_ESTIMATOR_CONFIG_PATH = PROJECT_ROOT / "config" / "runtime_estimator_profiles.json"
-APP_CONFIG_PATH = PROJECT_ROOT / "config" / "config.json"
 
 DEFAULT_TOOL_BASE_MINUTES: Dict[str, float] = {
     "FASTQC": 0.083,
@@ -135,33 +129,6 @@ class RuntimeInputAssignment:
     file_formats: Optional[List[str]] = None
 
 
-@dataclass(frozen=True)
-class RuntimePredictionSettings:
-    mode: str
-
-
-@dataclass(frozen=True)
-class GeminiPredictionSettings:
-    enabled: bool
-    model: str
-    api_key_env_var: str
-    api_base_url: str
-    temperature: float
-    max_output_tokens: int
-    timeout_seconds: int
-
-
-@dataclass(frozen=True)
-class OpenAIPredictionSettings:
-    enabled: bool
-    model: str
-    api_key_env_var: str
-    api_base_url: str
-    temperature: float
-    max_output_tokens: int
-    timeout_seconds: int
-
-
 def _load_runtime_config() -> Dict[str, Any]:
     if not RUNTIME_ESTIMATOR_CONFIG_PATH.exists():
         return {}
@@ -172,69 +139,6 @@ def _load_runtime_config() -> Dict[str, Any]:
     except Exception as exc:
         logger.warning(f"Failed to read runtime estimator config {RUNTIME_ESTIMATOR_CONFIG_PATH}: {exc}")
         return {}
-
-
-def _load_app_config() -> Dict[str, Any]:
-    if not APP_CONFIG_PATH.exists():
-        return {}
-
-    try:
-        payload = json.loads(APP_CONFIG_PATH.read_text(encoding="utf-8"))
-        return payload if isinstance(payload, dict) else {}
-    except Exception as exc:
-        logger.warning(f"Failed to read app config {APP_CONFIG_PATH}: {exc}")
-        return {}
-
-
-def _load_gemini_prediction_settings() -> GeminiPredictionSettings:
-    config = _load_app_config()
-    gemini_config = config.get("gemini_prediction", {})
-    if not isinstance(gemini_config, dict):
-        gemini_config = {}
-
-    return GeminiPredictionSettings(
-        enabled=bool(gemini_config.get("use_gemini_for_runtime_predictions", False)),
-        model=str(gemini_config.get("model") or "gemini-2.5-flash"),
-        api_key_env_var=str(gemini_config.get("api_key_env_var") or "GEMINI_API_KEY"),
-        api_base_url=str(gemini_config.get("api_base_url") or "https://generativelanguage.googleapis.com"),
-        temperature=max(0.0, float(gemini_config.get("temperature", 0.1) or 0.1)),
-        max_output_tokens=max(256, int(gemini_config.get("max_output_tokens", 512) or 512)),
-        timeout_seconds=max(5, int(gemini_config.get("timeout_seconds", 25) or 25)),
-    )
-
-
-def _load_runtime_prediction_settings() -> RuntimePredictionSettings:
-    config = _load_app_config()
-    runtime_config = config.get("runtime_prediction", {})
-    if not isinstance(runtime_config, dict):
-        runtime_config = {}
-
-    raw_mode = str(runtime_config.get("mode") or "").strip().lower()
-    if not raw_mode:
-        if _load_gemini_prediction_settings().enabled:
-            raw_mode = "gemini"
-        else:
-            raw_mode = "deterministic"
-    if raw_mode not in {"deterministic", "gemini", "openai"}:
-        raw_mode = "deterministic"
-    return RuntimePredictionSettings(mode=raw_mode)
-
-
-def _load_openai_prediction_settings() -> OpenAIPredictionSettings:
-    config = _load_app_config()
-    openai_config = config.get("openai_prediction", {})
-    if not isinstance(openai_config, dict):
-        openai_config = {}
-
-    return OpenAIPredictionSettings(
-        enabled=True,
-        model=str(openai_config.get("model") or "gpt-4.1-mini"),
-        api_key_env_var=str(openai_config.get("api_key_env_var") or "OPENAI_API_KEY"),
-        api_base_url=str(openai_config.get("api_base_url") or "https://api.openai.com"),
-        temperature=max(0.0, float(openai_config.get("temperature", 0.0) or 0.0)),
-        max_output_tokens=max(1, int(openai_config.get("max_output_tokens", 16) or 16)),
-        timeout_seconds=max(5, int(openai_config.get("timeout_seconds", 25) or 25)),
-    )
 
 
 def _tool_base_minutes(tool_id: str) -> float:
@@ -570,220 +474,6 @@ def _topological_layers(nodes: List[Dict[str, Any]], edges: List[Dict[str, Any]]
     return critical_path, branch_factor
 
 
-def _tool_prediction_payload(tool: Dict[str, Any], position: int) -> Dict[str, Any]:
-    input_size_bytes = int(tool.get("input_size_bytes") or 0)
-    input_size_mib = float(tool.get("input_size_mib") or 0.0)
-    suffixes = [str(item) for item in tool.get("input_suffixes") or [] if str(item).strip()]
-    return {
-        "position": position,
-        "tool_id": tool.get("tool_id"),
-        "tool_name": tool.get("tool_name") or tool.get("tool_id"),
-        "input_size_bytes": input_size_bytes,
-        "input_size_mib": round(input_size_mib, 3),
-        "input_suffixes": suffixes or ["unknown"],
-        "contains_gzip_input": any("gz" in suffix.lower() for suffix in suffixes),
-    }
-
-
-def _build_runtime_prediction_prompt(estimate: RuntimeEstimate) -> str:
-    vm_partition = get_vm_partition(estimate.vm_name)
-    pipeline_steps = [
-        _tool_prediction_payload(tool, index + 1)
-        for index, tool in enumerate(estimate.tool_breakdown)
-    ]
-    vm_specs = {
-        "name": estimate.vm_name,
-        "display_name": estimate.vm_display_name,
-        "max_parallel_jobs": vm_partition.max_jobs if vm_partition else None,
-        "partition_factor": estimate.partition_factor,
-        "price_per_minute_usd": estimate.vm_price_per_minute,
-    }
-    context = {
-        "task": "predict_total_wall_clock_runtime_seconds",
-        "pipeline_execution_shape": estimate.execution_shape,
-        "pipeline_steps": pipeline_steps,
-        "selected_partition": vm_specs,
-        "total_explicit_input_size_mib": estimate.total_input_size_mib,
-        "fixed_overhead_seconds": int(round(estimate.fixed_overhead_minutes * 60)),
-    }
-    return (
-        "You are an expert bioinformatics workflow runtime estimator. Estimate the total wall-clock runtime "
-        "for the whole pipeline on the selected partition. Account for tool type, ordered pipeline steps, "
-        "input size, compressed inputs including .gz suffixes, orchestration overhead, and partition capacity. "
-        "Do not anchor your estimate to any deterministic heuristic; no trained runtime model is available yet. "
-        "Use your bioinformatics and systems knowledge to estimate from the supplied facts only. Output contract: "
-        "return exactly one positive integer number of seconds. Do not include units, labels, markdown, commas, "
-        "decimals, whitespace-only explanations, or any other characters.\n"
-        f"Context JSON: {json.dumps(context, separators=(',', ':'), ensure_ascii=False)}"
-    )
-
-
-def _parse_runtime_seconds(text_payload: str) -> Optional[int]:
-    normalized_text = str(text_payload or "").strip()
-    if not re.fullmatch(r"\d+(?:\.\d+)?", normalized_text):
-        return None
-    try:
-        return max(1, int(round(float(normalized_text))))
-    except (TypeError, ValueError):
-        return None
-
-
-def _request_gemini_runtime_seconds(prompt: str) -> Optional[int]:
-    settings = _load_gemini_prediction_settings()
-    api_key = os.getenv(settings.api_key_env_var, "").strip()
-    if not api_key:
-        logger.warning("Gemini runtime prediction enabled but %s is not set.", settings.api_key_env_var)
-        return None
-
-    endpoint = (
-        f"{settings.api_base_url.rstrip('/')}/v1beta/models/{settings.model}:generateContent"
-        f"?key={api_key}"
-    )
-    body = {
-        "contents": [
-            {
-                "parts": [
-                    {
-                        "text": prompt
-                    }
-                ]
-            }
-        ],
-        "generationConfig": {
-            "temperature": settings.temperature,
-            "maxOutputTokens": settings.max_output_tokens,
-        },
-    }
-
-    request = urllib_request.Request(
-        endpoint,
-        data=json.dumps(body).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-
-    try:
-        with urllib_request.urlopen(request, timeout=settings.timeout_seconds) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-    except (urllib_error.URLError, urllib_error.HTTPError, TimeoutError, json.JSONDecodeError) as exc:
-        logger.warning("Gemini runtime prediction request failed: %s", exc)
-        return None
-
-    try:
-        candidates = payload.get("candidates", [])
-        first_candidate = candidates[0] if candidates else {}
-        content = first_candidate.get("content", {}) if isinstance(first_candidate, dict) else {}
-        parts = content.get("parts", []) if isinstance(content, dict) else []
-        text_payload = ""
-        for part in parts:
-            if isinstance(part, dict) and part.get("text"):
-                text_payload += str(part["text"])
-        if not text_payload.strip():
-            return None
-        return _parse_runtime_seconds(text_payload)
-    except Exception as exc:
-        logger.warning("Gemini runtime prediction payload could not be parsed: %s", exc)
-        return None
-
-
-def _extract_openai_text(payload: Dict[str, Any]) -> str:
-    output_text = payload.get("output_text")
-    if isinstance(output_text, str):
-        return output_text
-
-    chunks: List[str] = []
-    for output_item in payload.get("output", []) if isinstance(payload.get("output"), list) else []:
-        if not isinstance(output_item, dict):
-            continue
-        for content_item in output_item.get("content", []) if isinstance(output_item.get("content"), list) else []:
-            if isinstance(content_item, dict):
-                text_value = content_item.get("text")
-                if isinstance(text_value, str):
-                    chunks.append(text_value)
-    return "".join(chunks)
-
-
-def _request_openai_runtime_seconds(prompt: str) -> Optional[int]:
-    settings = _load_openai_prediction_settings()
-    api_key = os.getenv(settings.api_key_env_var, "").strip()
-    if not api_key:
-        logger.warning("OpenAI runtime prediction enabled but %s is not set.", settings.api_key_env_var)
-        return None
-
-    endpoint = f"{settings.api_base_url.rstrip('/')}/v1/responses"
-    body = {
-        "model": settings.model,
-        "instructions": (
-            "You estimate bioinformatics pipeline wall-clock runtimes. "
-            "Your entire response must be a single positive integer number of seconds with no other text."
-        ),
-        "input": prompt,
-        "temperature": settings.temperature,
-        "max_output_tokens": settings.max_output_tokens,
-    }
-    request = urllib_request.Request(
-        endpoint,
-        data=json.dumps(body).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-        },
-        method="POST",
-    )
-
-    try:
-        with urllib_request.urlopen(request, timeout=settings.timeout_seconds) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-    except (urllib_error.URLError, urllib_error.HTTPError, TimeoutError, json.JSONDecodeError) as exc:
-        logger.warning("OpenAI runtime prediction request failed: %s", exc)
-        return None
-
-    parsed_seconds = _parse_runtime_seconds(_extract_openai_text(payload))
-    if parsed_seconds is None:
-        logger.warning("OpenAI runtime prediction payload could not be parsed as seconds.")
-    return parsed_seconds
-
-
-def _estimate_with_predicted_seconds(estimate: RuntimeEstimate, provider: str, predicted_seconds: Optional[int]) -> RuntimeEstimate:
-    if predicted_seconds is None:
-        return estimate
-
-    estimated_seconds = max(1, int(predicted_seconds))
-    estimated_minutes = max(1, int(math.ceil(estimated_seconds / 60.0)))
-    return RuntimeEstimate(
-        model_type=f"{estimate.model_type}+{provider}-runtime",
-        vm_name=estimate.vm_name,
-        vm_display_name=estimate.vm_display_name,
-        partition_factor=estimate.partition_factor,
-        vm_price_per_minute=estimate.vm_price_per_minute,
-        total_input_size_mib=estimate.total_input_size_mib,
-        estimated_runtime_seconds=estimated_seconds,
-        estimated_runtime_minutes=estimated_minutes,
-        estimated_runtime_hours=round(estimated_minutes / 60.0, 2),
-        estimated_price_usd=round(estimated_minutes * estimate.vm_price_per_minute, 2),
-        fixed_overhead_minutes=estimate.fixed_overhead_minutes,
-        execution_shape=estimate.execution_shape,
-        tool_breakdown=estimate.tool_breakdown,
-        assumptions=[
-            *estimate.assumptions,
-            f"Final runtime seconds were predicted by the configured {provider.title()} predictor in config/config.json.",
-        ],
-    )
-
-
-def _apply_configured_runtime_prediction(estimate: RuntimeEstimate) -> RuntimeEstimate:
-    mode = _load_runtime_prediction_settings().mode
-    if mode == "deterministic":
-        return estimate
-
-    prompt = _build_runtime_prediction_prompt(estimate)
-    if mode == "gemini":
-        return _estimate_with_predicted_seconds(estimate, "gemini", _request_gemini_runtime_seconds(prompt))
-    if mode == "openai":
-        return _estimate_with_predicted_seconds(estimate, "openai", _request_openai_runtime_seconds(prompt))
-    return estimate
-
-
 def estimate_runtime_for_tool_indices(
     tool_indices: List[int],
     vm_name: Optional[str],
@@ -839,7 +529,7 @@ def estimate_runtime_for_tool_indices(
             "Adds a per-tool pod input-copy overhead based on input size and the configured S3-to-pod bandwidth (pod_input_copy_bandwidth_mib_per_sec).",
         ],
     )
-    return _apply_configured_runtime_prediction(estimate)
+    return estimate
 
 
 def estimate_runtime_for_pipeline_graph(
@@ -932,4 +622,4 @@ def estimate_runtime_for_pipeline_graph(
             "Adds a per-tool pod input-copy overhead based on input size and the configured S3-to-pod bandwidth (pod_input_copy_bandwidth_mib_per_sec).",
         ],
     )
-    return _apply_configured_runtime_prediction(estimate)
+    return estimate

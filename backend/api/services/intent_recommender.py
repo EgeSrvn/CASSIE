@@ -8,10 +8,15 @@ and future intentions can be added without rewriting the planner.
 
 from __future__ import annotations
 
+import json
+import os
+import re
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from typing import Any, Dict, List, Set
 
-from tool_registry import get_tool_by_id, get_tool_index_by_id
+from tool_registry import get_tool_by_id, get_tool_index_by_id, get_tool_registry
 
 
 INTENT_REGISTRY: List[Dict[str, Any]] = [
@@ -434,3 +439,232 @@ def recommend_pipelines(intent_ids: List[str], file_entries: List[Dict[str, Any]
         "detected_inputs": detected.to_dict(),
         "pipeline_options": options,
     }
+
+
+def _local_llm_chat_url() -> str:
+    base_url = (
+        os.getenv("CASSIE_LOCAL_LLM_BASE_URL")
+        or os.getenv("LOCAL_LLM_BASE_URL")
+        or os.getenv("LOCAL_LLM_URL")
+        or ""
+    ).strip()
+    if not base_url:
+        return ""
+
+    normalized = base_url.rstrip("/")
+    if normalized.endswith("/chat/completions"):
+        return normalized
+    if normalized.endswith("/v1"):
+        return f"{normalized}/chat/completions"
+    return f"{normalized}/v1/chat/completions"
+
+
+def _tool_prompt_payload() -> List[Dict[str, str]]:
+    tools: List[Dict[str, str]] = []
+    for tool in get_tool_registry():
+        tools.append({
+            "id": str(tool.get("id", "")),
+            "name": str(tool.get("name", "")),
+            "type": str(tool.get("type", "")),
+            "description": str(tool.get("description", "")),
+        })
+    return tools
+
+
+def _extract_json_object(text: str) -> Dict[str, Any]:
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?", "", cleaned, flags=re.IGNORECASE).strip()
+        cleaned = re.sub(r"```$", "", cleaned).strip()
+
+    try:
+        parsed = json.loads(cleaned)
+        return parsed if isinstance(parsed, dict) else {}
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", cleaned, flags=re.DOTALL)
+        if not match:
+            return {}
+        try:
+            parsed = json.loads(match.group(0))
+            return parsed if isinstance(parsed, dict) else {}
+        except json.JSONDecodeError:
+            return {}
+
+
+def _call_local_llm_for_tools(user_request: str, file_entries: List[Dict[str, Any]]) -> Dict[str, Any]:
+    chat_url = _local_llm_chat_url()
+    if not chat_url:
+        return {}
+
+    model = (
+        os.getenv("CASSIE_LOCAL_LLM_MODEL")
+        or os.getenv("LOCAL_LLM_MODEL")
+        or "local-model"
+    )
+    timeout = float(os.getenv("CASSIE_LOCAL_LLM_TIMEOUT_SECONDS") or "25")
+    files_summary = [
+        {
+            "filename": str(file_entry.get("filename") or ""),
+            "file_format": str(file_entry.get("file_format") or ""),
+        }
+        for file_entry in file_entries
+    ]
+    system_prompt = (
+        "You select bioinformatics tools for CASSIE. "
+        "Return only compact JSON with tool_ids and explanation. "
+        "The explanation must be one short sentence. "
+        "Choose only tool ids from the available tools."
+    )
+    user_prompt = json.dumps({
+        "user_request": user_request,
+        "available_files": files_summary,
+        "available_tools": _tool_prompt_payload(),
+        "response_schema": {
+            "tool_ids": ["FASTQC"],
+            "explanation": "Short reason for the selected tools.",
+        },
+    })
+    body = json.dumps({
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "temperature": 0.1,
+        "max_tokens": 350,
+    }).encode("utf-8")
+
+    headers = {"Content-Type": "application/json"}
+    request = urllib.request.Request(chat_url, data=body, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError):
+        return {}
+
+    content = ""
+    choices = payload.get("choices") if isinstance(payload, dict) else None
+    if isinstance(choices, list) and choices:
+        first_choice = choices[0]
+        if isinstance(first_choice, dict):
+            message = first_choice.get("message")
+            if isinstance(message, dict):
+                content = str(message.get("content") or "")
+            else:
+                content = str(first_choice.get("text") or "")
+
+    return _extract_json_object(content)
+
+
+def _normalize_llm_tool_ids(raw_tool_ids: Any) -> List[str]:
+    if not isinstance(raw_tool_ids, list):
+        return []
+
+    registry = get_tool_registry()
+    tools_by_id = {str(tool.get("id", "")).upper(): tool for tool in registry}
+    ids_by_name = {str(tool.get("name", "")).strip().lower(): str(tool.get("id", "")).upper() for tool in registry}
+    selected_tool_ids: List[str] = []
+
+    for raw_tool_id in raw_tool_ids:
+        candidate = str(raw_tool_id or "").strip()
+        if not candidate:
+            continue
+        normalized = candidate.upper()
+        if normalized in tools_by_id:
+            tool_id = normalized
+        else:
+            tool_id = ids_by_name.get(candidate.lower(), "")
+        if tool_id and tool_id not in selected_tool_ids:
+            selected_tool_ids.append(tool_id)
+
+    return selected_tool_ids
+
+
+def _intent_ids_from_text(user_request: str, detected: DetectedInputs) -> List[str]:
+    text = user_request.lower()
+    matched: List[str] = []
+
+    keyword_intents = [
+        ("read_quality", ["quality", "qc", "fastqc", "read check"]),
+        ("genomic_properties_from_reads", ["genomescope", "genome size", "heterozygosity", "kmer", "k-mer"]),
+        ("metagenome_assembly", ["metagenome", "metagenomic", "microbiome", "mixed community"]),
+        ("telomere_to_telomere_assembly", ["t2t", "telomere", "verkko"]),
+        ("long_read_hifi_assembly", ["hifi", "long read", "long-read", "hifiasm", "pacbio"]),
+        ("assembly_from_short_reads", ["assemble", "assembly", "spades", "short read", "short-read"]),
+        ("assembly_quality_against_reference", ["quast", "reference quality", "compare assembly"]),
+        ("assembly_completeness", ["busco", "completeness", "ortholog"]),
+        ("assembly_kmer_quality", ["merqury", "meryl", "consensus quality"]),
+        ("annotation_liftover", ["liftoff", "lift annotation", "transfer annotation", "annotation lift"]),
+        ("comparative_annotation", ["comparative annotation", "cat", "hal alignment", "hal"]),
+    ]
+
+    for intent_id, keywords in keyword_intents:
+        if any(keyword in text for keyword in keywords) and intent_id not in matched:
+            matched.append(intent_id)
+
+    if not matched:
+        if detected.has_fastq:
+            matched.append("read_quality")
+        elif detected.has_fasta:
+            matched.append("assembly_completeness")
+
+    return matched
+
+
+def _build_llm_option(selected_tool_ids: List[str], explanation: str, source: str) -> Dict[str, Any] | None:
+    tool_indices = [get_tool_index_by_id(tool_id) for tool_id in selected_tool_ids]
+    tool_indices = [index for index in tool_indices if isinstance(index, int)]
+    if not tool_indices:
+        return None
+
+    tool_names = [
+        get_tool_by_id(tool_id).get("name", tool_id)
+        for tool_id in selected_tool_ids
+        if get_tool_by_id(tool_id)
+    ]
+    short_explanation = (explanation or "Selected tools that best match your request.").strip()
+    if len(short_explanation) > 180:
+        short_explanation = f"{short_explanation[:177].rstrip()}..."
+
+    return {
+        "id": f"{source}_request",
+        "title": "Suggested From Your Request",
+        "summary": short_explanation,
+        "intent_ids": [],
+        "tool_ids": selected_tool_ids,
+        "tool_indices": tool_indices,
+        "tool_names": tool_names,
+        "missing_inputs": [],
+        "assumptions": [],
+        "rationale": [short_explanation],
+        "tags": [source, "experimental"],
+        "score": 95 if source == "local_llm" else 60,
+    }
+
+
+def recommend_pipeline_from_request(user_request: str, file_entries: List[Dict[str, Any]]) -> Dict[str, Any]:
+    detected = detect_input_capabilities(file_entries)
+    llm_payload = _call_local_llm_for_tools(user_request, file_entries)
+    selected_tool_ids = _normalize_llm_tool_ids(llm_payload.get("tool_ids"))
+    explanation = str(llm_payload.get("explanation") or "").strip()
+    option = _build_llm_option(selected_tool_ids, explanation, "local_llm")
+
+    if option:
+        return {
+            "intents": get_recommendation_intents(),
+            "detected_inputs": detected.to_dict(),
+            "pipeline_options": [option],
+            "source": "local_llm",
+        }
+
+    fallback_intents = _intent_ids_from_text(user_request, detected)
+    fallback_data = recommend_pipelines(fallback_intents, file_entries)
+    fallback_options = fallback_data.get("pipeline_options", [])
+    fallback_explanation = "Matched your request to the closest built-in pipeline intentions."
+    for fallback_option in fallback_options:
+        fallback_option["summary"] = fallback_explanation
+        fallback_option["rationale"] = [fallback_explanation]
+        fallback_option["tags"] = list(dict.fromkeys([*fallback_option.get("tags", []), "heuristic", "experimental"]))
+
+    fallback_data["source"] = "heuristic"
+    return fallback_data

@@ -25,6 +25,7 @@ import {
   ToolRequirement,
   getRecommendationIntents,
   getPipelineRecommendations,
+  getRequestPipelineRecommendation,
   RecommendationIntent,
   RecommendationOption,
 } from '../services/toolService'
@@ -460,7 +461,9 @@ export default function CreateJob() {
   const [manualToolFlagValues, setManualToolFlagValues] = useState<Record<string, Record<string, FlagValue>>>(() => storedDraftRef.current?.manualToolFlagValues || {})
   const [recommendationIntents, setRecommendationIntents] = useState<RecommendationIntent[]>([])
   const [selectedIntentIds, setSelectedIntentIds] = useState<string[]>(() => storedDraftRef.current?.selectedIntentIds || [])
+  const [recommendationTab, setRecommendationTab] = useState<'intent' | 'request'>('intent')
   const [recommendationOptions, setRecommendationOptions] = useState<RecommendationOption[]>([])
+  const [pipelineRequestText, setPipelineRequestText] = useState('')
   const [loadingRecommendations, setLoadingRecommendations] = useState(false)
   const [priorityGroups, setPriorityGroups] = useState<PriorityGroup[]>(() => storedDraftRef.current?.priorityGroups || [])
   const [openPriorityGroups, setOpenPriorityGroups] = useState<number[]>(() => storedDraftRef.current?.openPriorityGroups?.length ? storedDraftRef.current.openPriorityGroups : [0])
@@ -486,7 +489,7 @@ export default function CreateJob() {
     flexWrap: 'wrap' as const,
     gap: '0.5rem',
     padding: '1rem',
-    border: '1px solid #e5e7eb',
+    border: '1px solid var(--border-color)',
     borderRadius: '4px',
     backgroundColor: 'var(--bg-primary)',
   }
@@ -2134,6 +2137,35 @@ export default function CreateJob() {
     }
   }
 
+  const handleGenerateRequestRecommendation = async () => {
+    const requestText = pipelineRequestText.trim()
+    if (requestText.length < 3) {
+      setError('Describe the pipeline you want before asking the local model')
+      return
+    }
+
+    const selectedFiles = getCombinedSelectableFiles()
+    setLoadingRecommendations(true)
+    try {
+      const response = await getRequestPipelineRecommendation(
+        requestText,
+        selectedFiles.map(file => ({
+          filename: file.filename,
+          file_format: file.file_format || null,
+        }))
+      )
+      const options = response?.pipeline_options || []
+      setRecommendationOptions(options)
+      if (options.length === 0) {
+        setError('No recommendation could be generated from that request and Storage files')
+      } else {
+        setError('')
+      }
+    } finally {
+      setLoadingRecommendations(false)
+    }
+  }
+
   const builderLevels: BuilderLevelDefinition[] = [
     {
       level: 1,
@@ -2887,92 +2919,168 @@ export default function CreateJob() {
 
           {selectionMode === 'tools' && (
             <div className="form-group">
-              <label>Intent-Based Suggestions</label>
+              <label>Pipeline Suggestions</label>
               <div className="builder-section-card">
-                <p style={{ marginBottom: '1rem', color: '#666', fontSize: '0.875rem' }}>
-                  Choose what you want to achieve. Suggestions will consider files already uploaded in Storage.
-                </p>
-
-                <div style={{ marginBottom: '1rem', display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
-                  {recommendationIntents.map(intent => {
-                    const selected = selectedIntentIds.includes(intent.id)
-                    return (
-                      <button
-                        key={intent.id}
-                        type="button"
-                        onClick={() => handleIntentToggle(intent.id)}
-                        className={selected ? 'btn-primary' : 'btn-secondary'}
-                        style={{ padding: '0.5rem 0.75rem' }}
-                        title={intent.description}
-                      >
-                        {intent.label}
-                      </button>
-                    )
-                  })}
+                <div className="recommendation-tabs" role="tablist" aria-label="Pipeline suggestion modes">
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={recommendationTab === 'intent'}
+                    className={`recommendation-tab ${recommendationTab === 'intent' ? 'active' : ''}`}
+                    onClick={() => {
+                      setRecommendationTab('intent')
+                      setRecommendationOptions([])
+                      setError('')
+                    }}
+                  >
+                    Choose Intentions
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={recommendationTab === 'request'}
+                    className={`recommendation-tab ${recommendationTab === 'request' ? 'active' : ''}`}
+                    onClick={() => {
+                      setRecommendationTab('request')
+                      setRecommendationOptions([])
+                      setError('')
+                    }}
+                  >
+                    Describe Request
+                  </button>
                 </div>
 
-                {loadingDataTree ? (
-                  <p style={{ color: '#666', fontStyle: 'italic' }}>Loading Storage files...</p>
-                ) : (
-                  <div style={{ marginBottom: '1rem' }}>
-                    <div style={sharedRequirementCardStyle}>
-                      {getCombinedSelectableFiles().length === 0 ? (
-                        <p style={{ margin: 0, color: '#666', fontStyle: 'italic' }}>
-                          No Storage files found yet. Upload inputs from Storage before using them in a job.
-                        </p>
-                      ) : getCombinedSelectableFiles().map(file => (
-                        <span
-                          key={`rec-file-${file.id}`}
-                          className="builder-file-chip"
-                          title={file.folderPath ? `${file.folderPath}/${file.filename}` : file.filename}
-                        >
-                          <strong>{file.filename}</strong>
-                          {file.folderPath && <span>{file.folderPath}</span>}
-                        </span>
-                      ))}
+                {recommendationTab === 'intent' ? (
+                  <>
+                    <p className="recommendation-helper">
+                      Choose what you want to achieve. Suggestions will consider files already uploaded in Storage.
+                    </p>
+
+                    <div className="recommendation-intent-list">
+                      {recommendationIntents.map(intent => {
+                        const selected = selectedIntentIds.includes(intent.id)
+                        return (
+                          <button
+                            key={intent.id}
+                            type="button"
+                            onClick={() => handleIntentToggle(intent.id)}
+                            className={selected ? 'btn-primary' : 'btn-secondary'}
+                            title={intent.description}
+                          >
+                            {intent.label}
+                          </button>
+                        )
+                      })}
                     </div>
+
+                    {loadingDataTree ? (
+                      <p className="recommendation-helper">Loading Storage files...</p>
+                    ) : (
+                      <div className="recommendation-file-list">
+                        <div style={sharedRequirementCardStyle}>
+                          {getCombinedSelectableFiles().length === 0 ? (
+                            <p className="recommendation-helper" style={{ margin: 0 }}>
+                              No Storage files found yet. Upload inputs from Storage before using them in a job.
+                            </p>
+                          ) : getCombinedSelectableFiles().map(file => (
+                            <span
+                              key={`rec-file-${file.id}`}
+                              className="builder-file-chip"
+                              title={file.folderPath ? `${file.folderPath}/${file.filename}` : file.filename}
+                            >
+                              <strong>{file.filename}</strong>
+                              {file.folderPath && <span>{file.folderPath}</span>}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    <button
+                      type="button"
+                      onClick={handleGenerateRecommendations}
+                      className="btn-primary"
+                      disabled={loadingRecommendations || selectedIntentIds.length === 0}
+                    >
+                      {loadingRecommendations ? 'Generating Suggestions...' : 'Suggest Pipelines'}
+                    </button>
+                  </>
+                ) : (
+                  <div className="request-recommendation-panel">
+                    <p className="recommendation-helper">
+                      Describe what you want to do. The local model will choose CASSIE tools and give a short reason.
+                    </p>
+                    <textarea
+                      value={pipelineRequestText}
+                      onChange={(event) => setPipelineRequestText(event.target.value)}
+                      className="request-recommendation-input"
+                      placeholder="Example: I have paired FASTQ reads and want to assemble them, then check quality and completeness."
+                      rows={5}
+                      disabled={loadingRecommendations}
+                    />
+                    {loadingDataTree ? (
+                      <p className="recommendation-helper">Loading Storage files...</p>
+                    ) : (
+                      <div className="recommendation-file-list">
+                        <div style={sharedRequirementCardStyle}>
+                          {getCombinedSelectableFiles().length === 0 ? (
+                            <p className="recommendation-helper" style={{ margin: 0 }}>
+                              No Storage files found yet. The model can still suggest tools from your request.
+                            </p>
+                          ) : getCombinedSelectableFiles().map(file => (
+                            <span
+                              key={`request-rec-file-${file.id}`}
+                              className="builder-file-chip"
+                              title={file.folderPath ? `${file.folderPath}/${file.filename}` : file.filename}
+                            >
+                              <strong>{file.filename}</strong>
+                              {file.folderPath && <span>{file.folderPath}</span>}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    <button
+                      type="button"
+                      onClick={handleGenerateRequestRecommendation}
+                      className="btn-primary"
+                      disabled={loadingRecommendations || pipelineRequestText.trim().length < 3}
+                    >
+                      {loadingRecommendations ? 'Asking Local Model...' : 'Ask Local Model'}
+                    </button>
                   </div>
                 )}
 
-                <button
-                  type="button"
-                  onClick={handleGenerateRecommendations}
-                  className="btn-primary"
-                  disabled={loadingRecommendations || selectedIntentIds.length === 0}
-                >
-                  {loadingRecommendations ? 'Generating Suggestions...' : 'Suggest Pipelines'}
-                </button>
-
                 {recommendationOptions.length > 0 && (
-                  <div style={{ marginTop: '1rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                  <div className="recommendation-options-list">
                     {recommendationOptions.map(option => (
                       <div
                         key={option.id}
-                        style={{ padding: '1rem', border: '1px solid #dbeafe', borderRadius: '8px', backgroundColor: 'var(--bg-primary)' }}
+                        className="recommendation-option-card"
                       >
-                        <div style={{ display: 'flex', justifyContent: 'space-between', gap: '1rem', flexWrap: 'wrap', marginBottom: '0.5rem' }}>
+                        <div className="recommendation-option-header">
                           <div>
                             <strong>{option.title}</strong>
-                            <p style={{ margin: '0.25rem 0 0 0', color: '#64748b', fontSize: '0.875rem' }}>{option.summary}</p>
+                            <p>{option.summary}</p>
                           </div>
                           <button type="button" className="btn-primary" onClick={() => handleApplyRecommendation(option)}>
                             Use This Plan
                           </button>
                         </div>
-                        <p style={{ margin: '0 0 0.5rem 0', fontSize: '0.875rem' }}>
+                        <p>
                           <strong>Tools:</strong> {option.tool_names.join(', ')}
                         </p>
                         {option.missing_inputs.length > 0 && (
-                          <p style={{ margin: '0 0 0.5rem 0', color: '#b45309', fontSize: '0.875rem' }}>
+                          <p className="recommendation-warning">
                             <strong>Missing inputs:</strong> {option.missing_inputs.join(', ')}
                           </p>
                         )}
                         {option.assumptions.length > 0 && (
-                          <p style={{ margin: '0 0 0.5rem 0', color: '#475569', fontSize: '0.875rem' }}>
+                          <p className="recommendation-muted">
                             <strong>Assumptions:</strong> {option.assumptions.join(' ')}
                           </p>
                         )}
-                        <p style={{ margin: 0, color: '#475569', fontSize: '0.875rem' }}>
+                        <p className="recommendation-muted">
                           <strong>Why this plan:</strong> {option.rationale.join(', ')}
                         </p>
                       </div>

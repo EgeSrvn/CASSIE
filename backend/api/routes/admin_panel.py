@@ -12,6 +12,7 @@ import os
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from html import escape
+from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import urlencode
 
@@ -38,7 +39,6 @@ from backend.api.services.kubernetes_manager import (
     get_kubernetes_pipeline_runner,
     kubernetes_is_available,
 )
-from backend.api.services.runtime_estimator_service import APP_CONFIG_PATH
 from backend.api.services.user_service import ensure_admin_user, get_user_by_username, update_user_password
 from backend.api.utils.config_loader import get_config
 from backend.api.services.workflow_service import get_workflow_by_id
@@ -46,6 +46,7 @@ from tool_registry import get_tool_registry
 
 config = get_config()
 router = APIRouter(include_in_schema=False)
+APP_CONFIG_PATH = Path(__file__).resolve().parents[3] / "config" / "config.json"
 
 
 def _render_page(*, title: str, body: str, script: str = "") -> HTMLResponse:
@@ -435,38 +436,6 @@ def _load_app_config_file() -> dict[str, Any]:
         return {}
     except Exception:
         return {}
-
-
-def _runtime_prediction_mode(app_config: dict[str, Any]) -> str:
-    runtime_config = app_config.get("runtime_prediction", {})
-    mode = str(runtime_config.get("mode") if isinstance(runtime_config, dict) else "").strip().lower()
-    if not mode:
-        gemini_config = app_config.get("gemini_prediction", {})
-        if isinstance(gemini_config, dict) and gemini_config.get("use_gemini_for_runtime_predictions"):
-            mode = "gemini"
-    return mode if mode in {"deterministic", "gemini", "openai"} else "deterministic"
-
-
-def _write_runtime_prediction_mode(mode: str) -> None:
-    normalized_mode = str(mode or "").strip().lower()
-    if normalized_mode not in {"deterministic", "gemini", "openai"}:
-        raise ValueError("Unknown prediction mode")
-
-    app_config = _load_app_config_file()
-    runtime_config = app_config.get("runtime_prediction")
-    if not isinstance(runtime_config, dict):
-        runtime_config = {}
-    runtime_config["mode"] = normalized_mode
-    app_config["runtime_prediction"] = runtime_config
-
-    gemini_config = app_config.get("gemini_prediction")
-    if isinstance(gemini_config, dict):
-        gemini_config["use_gemini_for_runtime_predictions"] = normalized_mode == "gemini"
-        app_config["gemini_prediction"] = gemini_config
-
-    temp_path = APP_CONFIG_PATH.with_suffix(f"{APP_CONFIG_PATH.suffix}.tmp")
-    temp_path.write_text(json.dumps(app_config, indent=2) + "\n", encoding="utf-8")
-    temp_path.replace(APP_CONFIG_PATH)
 
 
 def _format_datetime(value: Any) -> str:
@@ -1521,7 +1490,6 @@ def _collect_dashboard_data(selected_job_id: int | None = None) -> dict[str, Any
         "db_health": db_health,
         "config_dict": config_dict,
         "app_config": app_config,
-        "runtime_prediction_mode": _runtime_prediction_mode(app_config),
         "masked_env": masked_env,
         "tool_registry_count": len(get_tool_registry()),
         "totals": {
@@ -1853,19 +1821,8 @@ def _dashboard_page(
           <pre>{escape(_safe_json(data["config_dict"]))}</pre>
         </div>
         <div>
-          <h2>Prediction Mode</h2>
-          <p>Runtime prediction provider used by cost estimates.</p>
-          <form method="post" action="{escape(config.admin_panel.path)}/runtime-prediction-mode">
-            <label for="prediction_mode">Provider</label>
-            <select id="prediction_mode" name="prediction_mode">
-              <option value="deterministic"{" selected" if data["runtime_prediction_mode"] == "deterministic" else ""}>Deterministic</option>
-              <option value="gemini"{" selected" if data["runtime_prediction_mode"] == "gemini" else ""}>Gemini</option>
-              <option value="openai"{" selected" if data["runtime_prediction_mode"] == "openai" else ""}>OpenAI</option>
-            </select>
-            <div class="row">
-              <button type="submit">Save Mode</button>
-            </div>
-          </form>
+          <h2>Runtime Estimator</h2>
+          <p>Runtime and cost estimates use the built-in deterministic estimator only.</p>
           <pre>{escape(_safe_json(data["app_config"]))}</pre>
         </div>
       </div>
@@ -2051,26 +2008,6 @@ async def admin_panel_change_password(
     )
     response.set_cookie(**_admin_session_cookie(token))
     return response
-
-
-@router.post(f"{config.admin_panel.path}/runtime-prediction-mode")
-async def admin_panel_runtime_prediction_mode(
-    request: Request,
-    prediction_mode: str = Form(...),
-):
-    ensure_admin_user()
-    admin_user = _get_authenticated_admin(request)
-    if not admin_user:
-        return _admin_redirect(message="Please sign in again", error=True, tab="system")
-
-    try:
-        _write_runtime_prediction_mode(prediction_mode)
-    except ValueError as exc:
-        return _admin_redirect(message=str(exc), error=True, tab="system")
-    except Exception:
-        return _admin_redirect(message="Failed to update runtime prediction mode", error=True, tab="system")
-
-    return _admin_redirect(message=f"Runtime prediction mode set to {prediction_mode}", tab="system")
 
 
 @router.post(f"{config.admin_panel.path}/invitation-codes")
