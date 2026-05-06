@@ -63,21 +63,21 @@ const LockedPipelineNode = ({ data }: { data: any }) => (
         </div>
       </div>
       <div style={{ padding: '0.85rem' }}>
-        <div style={{ fontWeight: 700, color: '#183B4E', marginBottom: '0.4rem', lineHeight: 1.3 }}>
+        <div style={{ fontWeight: 700, color: 'var(--pipeline-node-title-color, #183B4E)', marginBottom: '0.4rem', lineHeight: 1.3 }}>
           {data.label}
         </div>
         {data.stageLabel && (
-          <div style={{ fontSize: '0.78rem', color: '#475569', marginBottom: '0.35rem' }}>
+          <div style={{ fontSize: '0.78rem', color: 'var(--pipeline-node-muted-color, #475569)', marginBottom: '0.35rem' }}>
             {data.stageLabel}
           </div>
         )}
         {data.metaLine && (
-          <div style={{ fontSize: '0.8rem', color: '#334155', marginBottom: data.description ? '0.45rem' : 0 }}>
+          <div style={{ fontSize: '0.8rem', color: 'var(--pipeline-node-meta-color, #334155)', marginBottom: data.description ? '0.45rem' : 0 }}>
             {data.metaLine}
           </div>
         )}
         {data.description && (
-          <div style={{ fontSize: '0.8rem', color: '#475569', lineHeight: 1.45, whiteSpace: 'pre-wrap' }}>
+          <div style={{ fontSize: '0.8rem', color: 'var(--pipeline-node-muted-color, #475569)', lineHeight: 1.45, whiteSpace: 'pre-wrap' }}>
             {data.description}
           </div>
         )}
@@ -100,23 +100,23 @@ const getPipelineBlockTone = (status: JobPipelineBlock['status']) => {
   switch (status) {
     case 'finished':
       return {
-        border: '#b9c9b4',
-        background: '#eef3e8',
+        border: 'var(--pipeline-node-finished-border, #b9c9b4)',
+        background: 'var(--pipeline-node-finished-bg, #eef3e8)',
       }
     case 'working':
       return {
-        border: '#6d89ac',
-        background: '#ecf1f6',
+        border: 'var(--pipeline-node-working-border, #6d89ac)',
+        background: 'var(--pipeline-node-working-bg, #ecf1f6)',
       }
     case 'failed':
       return {
-        border: '#fca5a5',
-        background: '#fef2f2',
+        border: 'var(--pipeline-node-failed-border, #fca5a5)',
+        background: 'var(--pipeline-node-failed-bg, #fef2f2)',
       }
     default:
       return {
-        border: '#d9c7a5',
-        background: '#F5EEDC',
+        border: 'var(--pipeline-node-waiting-border, #d9c7a5)',
+        background: 'var(--pipeline-node-waiting-bg, #F5EEDC)',
       }
   }
 }
@@ -544,12 +544,12 @@ const buildPipelineFlow = (jobPipeline: JobPipelineVisualization | null) => {
         animated: isAnimated,
         label: connection.label || undefined,
         labelStyle: {
-          fill: '#334155',
+          fill: 'var(--pipeline-edge-label-color, #334155)',
           fontSize: 11,
           fontWeight: 600,
         },
         labelBgStyle: {
-          fill: '#F5EEDC',
+          fill: 'var(--pipeline-edge-label-bg, #F5EEDC)',
           fillOpacity: 0.9,
         },
         labelBgPadding: [6, 3],
@@ -614,20 +614,17 @@ export default function PipelineVisualization({
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.9rem' }}>
+    <div className="pipeline-visualization-shell">
       {description && (
-        <div style={{ color: '#3e4e59', fontSize: '0.92rem' }}>
+        <div className="pipeline-visualization-description">
           {description}
         </div>
       )}
       <div
+        className="pipeline-visualization-canvas"
         style={{
           height,
           minHeight,
-          borderRadius: 18,
-          overflow: 'hidden',
-          border: '1px solid #d9c7a5',
-          background: 'linear-gradient(180deg, #f8f1e2 0%, #f5eedc 100%)',
         }}
       >
         <ReactFlow
@@ -648,7 +645,7 @@ export default function PipelineVisualization({
             type: 'smoothstep',
           }}
         >
-          <Background color="#d9c7a5" gap={20} size={1} />
+          <Background color="var(--pipeline-canvas-grid-color, #d9c7a5)" gap={20} size={1} />
           <Controls showInteractive={false} />
         </ReactFlow>
       </div>

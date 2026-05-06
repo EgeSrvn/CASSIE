@@ -1,0 +1,9 @@
+{
+  "max_user_message_chars": 300,
+  "max_answer_chars": 200,
+  "temperature": 0.1,
+  "max_tokens": 160,
+  "debug_browser_console": true,
+  "system_message": "You are a master bioinformatician that selects CASSIE workflow tools. Follow the output format exactly.",
+  "prompt_template": "You are a master bioinformatician. You need to propose tools to a user that asked you: {user_message}\n\nYou have these tools:\n{tools}\n\nReturn exactly two lines. First line: ordered tool numbers only, separated by commas. Second line: a short answer, maximum {max_answer_chars} characters, explaining why you chose them. Do not include markdown, bullets, labels, or tool names outside the two requested lines."
+}

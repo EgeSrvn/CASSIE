@@ -61,6 +61,7 @@ const formatVmMemory = (memoryMib: number): string => `${(memoryMib / 1024).toFi
 const formatVmStorage = (storageMib: number): string => storageMib > 0 ? `${(storageMib / 1024).toFixed(2)} GiB` : 'Auto'
 const formatVmSlots = (vm: VM): string => `${vm.available_job_slots}/${vm.max_jobs} jobs available`
 const formatUsd = (value: number): string => `$${value.toFixed(2)}`
+const minimumSuggestionLoadingMs = 1500
 const formatRuntimeEstimate = (minutes: number): string => {
   if (minutes < 60) {
     return `${minutes} min`
@@ -489,7 +490,7 @@ export default function CreateJob() {
     flexWrap: 'wrap' as const,
     gap: '0.5rem',
     padding: '1rem',
-    border: '1px solid var(--border-color)',
+    border: '1px solid var(--gray-200)',
     borderRadius: '4px',
     backgroundColor: 'var(--bg-primary)',
   }
@@ -2116,6 +2117,7 @@ export default function CreateJob() {
 
   const handleGenerateRecommendations = async () => {
     const selectedFiles = getCombinedSelectableFiles()
+    const loadingStartedAt = Date.now()
     setLoadingRecommendations(true)
     try {
       const response = await getPipelineRecommendations(
@@ -2136,6 +2138,10 @@ export default function CreateJob() {
         setError('')
       }
     } finally {
+      const remainingLoadingMs = Math.max(0, minimumSuggestionLoadingMs - (Date.now() - loadingStartedAt))
+      if (remainingLoadingMs > 0) {
+        await new Promise(resolve => window.setTimeout(resolve, remainingLoadingMs))
+      }
       setLoadingRecommendations(false)
     }
   }
@@ -2148,6 +2154,7 @@ export default function CreateJob() {
     }
 
     const selectedFiles = getCombinedSelectableFiles()
+    const loadingStartedAt = Date.now()
     setLoadingRecommendations(true)
     try {
       const response = await getRequestPipelineRecommendation(
@@ -2165,6 +2172,10 @@ export default function CreateJob() {
         setError('')
       }
     } finally {
+      const remainingLoadingMs = Math.max(0, minimumSuggestionLoadingMs - (Date.now() - loadingStartedAt))
+      if (remainingLoadingMs > 0) {
+        await new Promise(resolve => window.setTimeout(resolve, remainingLoadingMs))
+      }
       setLoadingRecommendations(false)
     }
   }
@@ -2859,7 +2870,7 @@ export default function CreateJob() {
 
         <form onSubmit={handleSubmit}>
           {submitStatus && (
-            <div style={{ marginBottom: '1rem', padding: '0.75rem 1rem', borderRadius: '6px', backgroundColor: '#eff6ff', color: '#1d4ed8' }}>
+            <div className="success-message">
               {submitStatus}
             </div>
           )}
@@ -3005,7 +3016,12 @@ export default function CreateJob() {
                       className="btn-primary"
                       disabled={loadingRecommendations || selectedIntentIds.length === 0}
                     >
-                      {loadingRecommendations ? 'Generating Suggestions...' : 'Suggest Pipelines'}
+                      {loadingRecommendations ? (
+                        <>
+                          <span className="inline-loading-icon" aria-hidden="true" />
+                          Generating Suggestions...
+                        </>
+                      ) : 'Suggest Pipelines'}
                     </button>
                   </>
                 ) : (
@@ -3049,7 +3065,12 @@ export default function CreateJob() {
                       className="btn-primary"
                       disabled={loadingRecommendations || pipelineRequestText.trim().length < 3}
                     >
-                      {loadingRecommendations ? 'Asking Local Model...' : 'Ask Local Model'}
+                      {loadingRecommendations ? (
+                        <>
+                          <span className="inline-loading-icon" aria-hidden="true" />
+                          Asking Local Model...
+                        </>
+                      ) : 'Ask Local Model'}
                     </button>
                   </div>
                 )}
@@ -3223,15 +3244,7 @@ export default function CreateJob() {
                       return (
                         <span
                           key={toolId}
-                          style={{
-                            display: 'inline-flex',
-                            padding: '0.4rem 0.75rem',
-                            borderRadius: '999px',
-                            backgroundColor: '#eff6ff',
-                            color: '#1d4ed8',
-                            fontSize: '0.875rem',
-                            fontWeight: 500,
-                          }}
+                          className="runtime-estimate-chip"
                         >
                           {label}
                         </span>
@@ -3271,15 +3284,15 @@ export default function CreateJob() {
                 ))}
               </select>
             )}
-            <small style={{ color: '#666', display: 'block', marginTop: '0.25rem' }}>
+            <small className="builder-muted-text" style={{ display: 'block', marginTop: '0.25rem' }}>
               Each VM gets an equal share of cluster resources. The selected VM decides how many concurrent pipeline jobs can use that slice.
             </small>
             {selectedVMDetails && (
-              <div className="builder-section-card" style={{ marginTop: '0.75rem' }}>
-                <div style={{ fontWeight: 600, color: '#0f172a', marginBottom: '0.35rem' }}>
+              <div className="builder-section-card resource-limit-card" style={{ marginTop: '0.75rem' }}>
+                <div className="resource-limit-title">
                   Per-job resource limits for {selectedVMDetails.display_name}
                 </div>
-                <div style={{ color: '#475569', fontSize: '0.95rem', lineHeight: 1.6 }}>
+                <div className="resource-limit-stats">
                   Available slots: {selectedVMDetails.available_job_slots}/{selectedVMDetails.max_jobs}
                   {' | '}
                   Active jobs: {selectedVMDetails.active_jobs ?? selectedVMDetails.running_jobs}/{selectedVMDetails.max_jobs}
@@ -3290,7 +3303,7 @@ export default function CreateJob() {
                   {' | '}
                   Storage: {formatVmStorage(selectedVMDetails.available_storage_mib)}
                 </div>
-                <div style={{ color: '#64748b', fontSize: '0.875rem', marginTop: '0.35rem' }}>
+                <div className="resource-limit-note">
                   Hard limit per job on this VM profile: total resources / number of VMs / max concurrent jobs on this VM.
                 </div>
               </div>
@@ -3568,14 +3581,7 @@ export default function CreateJob() {
                                         </div>
                                       ) : null}
                                       {requirementSource === 'upstream' ? (
-                                        <span style={{
-                                          padding: '0.25rem 0.5rem',
-                                          backgroundColor: '#dbeafe',
-                                          color: '#1e40af',
-                                          fontSize: '0.75rem',
-                                          borderRadius: '4px',
-                                          fontWeight: '500'
-                                        }}>
+                                        <span className="builder-source-badge">
                                           Intermediate from {req.source_tool}
                                         </span>
                                       ) : mappedFileIds.length > 0 ? (
@@ -3597,7 +3603,7 @@ export default function CreateJob() {
                                     ) : null}
 
                                     {requirementSource === 'upstream' ? (
-                                      <p style={{ color: '#6b7280', fontStyle: 'italic', fontSize: '0.875rem', padding: '0.5rem', backgroundColor: '#eff6ff', borderRadius: '4px', margin: 0 }}>
+                                      <p className="builder-inline-note">
                                         This requirement is currently provided by {req.source_tool}. The tool still keeps this tool block visible so you can review all inputs in one place.
                                       </p>
                                     ) : compatibleFiles.length === 0 && mappedFileIds.length === 0 ? (

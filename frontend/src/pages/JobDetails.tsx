@@ -1055,11 +1055,11 @@ export default function JobDetails() {
               )}
             </div>
             {selectedVMDetails && (
-              <div style={{ marginTop: '1rem', padding: '0.875rem 1rem', borderRadius: '8px', backgroundColor: '#f1e5cf', border: '1px solid #d9c7a5' }}>
-                <div style={{ fontWeight: 600, color: '#183B4E', marginBottom: '0.35rem' }}>
+              <div className="resource-limit-card" style={{ marginTop: '1rem' }}>
+                <div className="resource-limit-title">
                   Per-job resource limits for {selectedVMDetails.display_name}
                 </div>
-                <div style={{ color: '#3e4e59', fontSize: '0.95rem', lineHeight: 1.6 }}>
+                <div className="resource-limit-stats">
                   Available slots: {selectedVMDetails.available_job_slots}/{selectedVMDetails.max_jobs}
                   {' | '}
                   CPU: {formatVmCpu(selectedVMDetails.available_cpu_millis)}
@@ -1068,7 +1068,7 @@ export default function JobDetails() {
                   {' | '}
                   Storage: {formatVmStorage(selectedVMDetails.available_storage_mib)}
                 </div>
-                <div style={{ color: '#786f63', fontSize: '0.875rem', marginTop: '0.35rem' }}>
+                <div className="resource-limit-note">
                   Hard limit per job on this VM profile: total resources / number of VMs / max concurrent jobs on this VM.
                 </div>
               </div>
@@ -1243,7 +1243,7 @@ export default function JobDetails() {
                 ].map(resource => {
                   const percent = resourcePercent(resource.used, resource.limit)
                   return (
-                    <div key={resource.label} style={{ padding: '1rem', borderRadius: '10px', border: '1px solid #e2d1ad', background: '#fffaf0' }}>
+                    <div key={resource.label} className="resource-usage-card">
                       <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem', marginBottom: '0.6rem' }}>
                         <strong>{resource.label}</strong>
                         <span>{resource.display}</span>
@@ -1275,7 +1275,7 @@ export default function JobDetails() {
                 ].map(resource => {
                   const percent = hasLivePodMetrics ? resourcePercent(resource.used, resource.limit) : 0
                   return (
-                    <div key={`pod-${resource.label}`} style={{ padding: '1rem', borderRadius: '10px', border: '1px solid #e2d1ad', background: '#fffaf0' }}>
+                    <div key={`pod-${resource.label}`} className="resource-usage-card">
                       <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem', marginBottom: '0.6rem' }}>
                         <strong>{resource.label}</strong>
                         <span>{resource.display}</span>
@@ -1299,7 +1299,7 @@ export default function JobDetails() {
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
                 {activeStages.map(stage => (
-                  <div key={`${stage.stage_id || stage.stage_number}-${stage.tool_id}`} style={{ padding: '0.875rem 1rem', borderRadius: '8px', border: '1px solid #e2d1ad', backgroundColor: '#fffaf0' }}>
+                  <div key={`${stage.stage_id || stage.stage_number}-${stage.tool_id}`} className="resource-usage-card">
                     <strong>{stage.tool_name || stage.tool_id}</strong>
                     <div style={{ marginTop: '0.35rem', color: '#475569' }}>
                       Allocated CPU: {formatVmCpu(stage.cpu_limit_millis || (stage.threads || 0) * 1000)}
