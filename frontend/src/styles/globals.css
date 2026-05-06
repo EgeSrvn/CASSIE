@@ -4458,13 +4458,6 @@ body::before {
   color: var(--gray-500);
 }
 
-.runtime-estimate-header-loader {
-  color: var(--primary);
-  border-color: color-mix(in srgb, var(--primary) 22%, transparent);
-  border-top-color: currentColor;
-  vertical-align: middle;
-}
-
 .runtime-estimate-loading {
   min-height: 7.5rem;
   display: grid;

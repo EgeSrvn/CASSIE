@@ -3729,11 +3729,7 @@ export default function CreateJob() {
                 <div className="runtime-estimate-card runtime-estimate-submit">
                   <div className="runtime-estimate-header">
                     <strong>Predicted Job Estimate</strong>
-                    <span>
-                      {loadingRuntimeEstimate ? (
-                        <span className="inline-loading-icon runtime-estimate-header-loader" aria-label="Calculating runtime estimate" role="status" />
-                      ) : runtimeEstimate ? 'Ready for submission' : 'Pending'}
-                    </span>
+                    <span>{loadingRuntimeEstimate ? 'Calculating' : runtimeEstimate ? 'Ready for submission' : 'Pending'}</span>
                   </div>
                   {loadingRuntimeEstimate ? (
                     <div className="runtime-estimate-loading" aria-label="Calculating runtime estimate" role="status">
