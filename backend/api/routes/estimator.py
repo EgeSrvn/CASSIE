@@ -207,7 +207,7 @@ async def estimate_runtime(
                     "fixed_overhead_minutes": estimate.fixed_overhead_minutes,
                     "execution_shape": estimate.execution_shape,
                     "tool_breakdown": estimate.tool_breakdown,
-                    "assumptions": estimate.assumptions,
+                    "assumptions": "" #estimate.assumptions,
                 },
                 message="Runtime estimation completed",
                 status_code=status.HTTP_200_OK,
