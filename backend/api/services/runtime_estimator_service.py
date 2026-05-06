@@ -180,19 +180,21 @@ def _load_specs_config() -> Dict[str, Any]:
         return {}
 
 
-def _compact_specs_config() -> Dict[str, Any]:
+def _spec_metric_value(metric_name: str) -> str:
     specs = _load_specs_config()
     metrics = specs.get("metrics") if isinstance(specs, dict) else None
     if not isinstance(metrics, list):
-        return specs
-    keep = {"Instance Type", "CPU", "vCPUs", "Memory Installed", "Storage", "Network"}
-    return {
-        "metrics": [
-            metric
-            for metric in metrics
-            if isinstance(metric, dict) and str(metric.get("metric") or "") in keep
-        ]
-    }
+        return ""
+    for metric in metrics:
+        if isinstance(metric, dict) and str(metric.get("metric") or "") == metric_name:
+            return str(metric.get("value") or "")
+    return ""
+
+
+def _short_cpu_name(cpu_name: str) -> str:
+    cleaned = " ".join(str(cpu_name or "").split())
+    cleaned = cleaned.replace("Intel(R)", "Intel").replace("Xeon(R)", "Xeon")
+    return cleaned or "unknown"
 
 
 def _env_int(name: str) -> int:
@@ -586,6 +588,40 @@ def _pipeline_prompt_payload(nodes: Optional[List[Dict[str, Any]]], edges: Optio
     return {"nodes": compact_nodes, "edges": compact_edges}
 
 
+def _runtime_llm_prompt(tool_ids: List[str], llm_inputs: List[Dict[str, Any]], vm_name: Optional[str]) -> str:
+    resources = _partition_resource_context(vm_name)
+    partition = resources.get("per_job_partition", {}) if isinstance(resources, dict) else {}
+    cpu_name = _short_cpu_name(_spec_metric_value("CPU"))
+    base_speed = _spec_metric_value("Base / All-core Turbo") or "unknown"
+    cpu_cores = partition.get("cpu_cores", "unknown")
+    memory_gib = partition.get("memory_gib", "unknown")
+    inputs_by_tool: Dict[str, List[str]] = {}
+    for entry in llm_inputs:
+        tool_id = str(entry.get("tool_id") or "").upper()
+        inputs = inputs_by_tool.setdefault(tool_id, [])
+        for suffix in entry.get("file_formats_and_suffixes") or []:
+            value = str(suffix or "").strip()
+            if value and value not in inputs:
+                inputs.append(value)
+
+    tool_parts = []
+    for tool_id in tool_ids:
+        normalized_tool_id = str(tool_id or "").upper()
+        tool_name = (get_tool_by_id(normalized_tool_id) or {}).get("name", normalized_tool_id)
+        input_types = inputs_by_tool.get(normalized_tool_id) or ["unknown input"]
+        tool_parts.append(f"{tool_name} - {', '.join(input_types)}")
+    if not tool_parts:
+        tool_parts.append("unknown tool - unknown input")
+
+    return (
+        f"My spec is CPU:{cpu_name} VCPUS:{cpu_cores} RAM:{memory_gib}GiB "
+        f"BaseCPUSpeed:{base_speed}. "
+        f"I will run these tools: {' ; '.join(tool_parts)}. "
+        "Give me how many minutes would it take. "
+        "Just number, do not add any extra character."
+    )
+
+
 def _extract_llm_minutes(text: str) -> Optional[int]:
     cleaned = str(text or "").strip()
     if not cleaned:
@@ -618,7 +654,7 @@ def _extract_llm_minutes(text: str) -> Optional[int]:
     return None
 
 
-def _call_local_llm_for_runtime_minutes(payload: Dict[str, Any]) -> Dict[str, Any]:
+def _call_local_llm_for_runtime_minutes(prompt: str) -> Dict[str, Any]:
     chat_url = _local_llm_chat_url()
     if not chat_url:
         raise RuntimeError("CASSIE_LOCAL_LLM_BASE_URL is not configured")
@@ -632,17 +668,12 @@ def _call_local_llm_for_runtime_minutes(payload: Dict[str, Any]) -> Dict[str, An
         or os.getenv("CASSIE_LOCAL_LLM_TIMEOUT_SECONDS")
         or "8"
     )
-    system_prompt = (
-        "Estimate total wall-clock runtime minutes for one CASSIE bioinformatics job. "
-        "Return digits only, no text, units, JSON, punctuation, or whitespace. "
-        "No parallelism between tools, branches, stages, or jobs. "
-        "Use input sizes/extensions and per-job VM resources."
-    )
+    system_prompt = "Return only digits. No text, units, punctuation, JSON, or whitespace."
     prompt_debug_payload = {
         "chat_url": chat_url,
         "model": model,
         "system_prompt": system_prompt,
-        "user_prompt": payload,
+        "user_prompt": prompt,
         "temperature": 0.0,
         "max_tokens": 8,
     }
@@ -652,7 +683,7 @@ def _call_local_llm_for_runtime_minutes(payload: Dict[str, Any]) -> Dict[str, An
             "model": model,
             "messages": [
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": json.dumps(payload, separators=(",", ":"))},
+                {"role": "user", "content": prompt},
             ],
             "temperature": 0.0,
             "max_tokens": 8,
@@ -706,15 +737,9 @@ def _maybe_apply_local_llm_runtime_estimate(
             }
         )
 
-    payload = {
-        "tools": tool_ids,
-        "pipeline": _pipeline_prompt_payload(pipeline_nodes, pipeline_edges),
-        "inputs": llm_inputs,
-        "resources": _partition_resource_context(vm_name),
-        "machine": _compact_specs_config(),
-    }
+    prompt = _runtime_llm_prompt(tool_ids, llm_inputs, vm_name)
     try:
-        llm_result = _call_local_llm_for_runtime_minutes(payload)
+        llm_result = _call_local_llm_for_runtime_minutes(prompt)
         llm_minutes = llm_result.get("minutes")
         llm_raw_response = str(llm_result.get("raw_response") or "")
         if not llm_minutes:
@@ -761,8 +786,8 @@ def _maybe_apply_local_llm_runtime_estimate(
         llm_raw_response=llm_raw_response if _debug_local_llm_prompts_enabled() else None,
         assumptions=[
             "Uses the configured local Ollama/OpenAI-compatible LLM for total runtime minutes.",
-            "The LLM prompt includes mapped filenames, file suffixes including compressed extensions, pipeline graph, VM partition limits, and config/specs.json machine specs.",
-            "The LLM is instructed not to assume parallel execution between tools, branches, stages, or jobs.",
+            "The LLM prompt is a compact single sentence with CPU, partition vCPU/RAM, base CPU speed, tools, and mapped input types.",
+            "The LLM is instructed to return only the numeric minute estimate.",
         ],
     )
 
