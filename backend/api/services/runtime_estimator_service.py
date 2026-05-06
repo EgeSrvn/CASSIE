@@ -715,12 +715,24 @@ def _maybe_apply_local_llm_runtime_estimate(
         llm_minutes = llm_result.get("minutes")
         llm_raw_response = str(llm_result.get("raw_response") or "")
         if not llm_minutes:
-            raise RuntimeError("Local LLM did not return a parseable minute value")
+            debug_response = llm_raw_response or "Local LLM returned no text."
+            return RuntimeEstimate(
+                **{
+                    **deterministic_estimate.__dict__,
+                    "llm_raw_response": debug_response if _debug_local_llm_prompts_enabled() else None,
+                    "assumptions": [
+                        *deterministic_estimate.assumptions,
+                        "Local LLM runtime estimator was enabled but returned an unparseable value, so deterministic estimate was used.",
+                    ],
+                }
+            )
     except Exception as exc:
         logger.warning(f"Local LLM runtime estimator failed; using deterministic estimate: {exc}")
+        debug_response = f"Local LLM runtime estimator failed: {exc}"
         return RuntimeEstimate(
             **{
                 **deterministic_estimate.__dict__,
+                "llm_raw_response": debug_response if _debug_local_llm_prompts_enabled() else None,
                 "assumptions": [
                     *deterministic_estimate.assumptions,
                     f"Local LLM runtime estimator was enabled but unavailable or unparseable, so deterministic estimate was used: {exc}",
