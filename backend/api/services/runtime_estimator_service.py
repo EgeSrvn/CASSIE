@@ -448,7 +448,7 @@ def _size_factor(tool_id: str, input_size_mib: float) -> float:
     exponent = _tool_size_exponent(tool_id)
     normalized_size = max(1.0, float(input_size_mib or reference_input_mib))
     factor = (normalized_size / reference_input_mib) ** exponent
-    return max(0.35, min(12.0, factor))
+    return max(0.35, min(80.0, factor))
 
 
 def _build_tool_breakdown(
@@ -675,7 +675,7 @@ def _call_local_llm_for_runtime_minutes(prompt: str) -> Dict[str, Any]:
         "system_prompt": system_prompt,
         "user_prompt": prompt,
         "temperature": 0.0,
-        "max_tokens": 8,
+        "max_tokens": 32,
     }
     _debug_local_llm_exchange("runtime-estimate", prompt_debug_payload)
     body = json.dumps(
@@ -686,7 +686,7 @@ def _call_local_llm_for_runtime_minutes(prompt: str) -> Dict[str, Any]:
                 {"role": "user", "content": prompt},
             ],
             "temperature": 0.0,
-            "max_tokens": 8,
+            "max_tokens": 32,
         }
     ).encode("utf-8")
     request = urllib.request.Request(
