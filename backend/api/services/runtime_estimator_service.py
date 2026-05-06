@@ -180,6 +180,21 @@ def _load_specs_config() -> Dict[str, Any]:
         return {}
 
 
+def _compact_specs_config() -> Dict[str, Any]:
+    specs = _load_specs_config()
+    metrics = specs.get("metrics") if isinstance(specs, dict) else None
+    if not isinstance(metrics, list):
+        return specs
+    keep = {"Instance Type", "CPU", "vCPUs", "Memory Installed", "Storage", "Network"}
+    return {
+        "metrics": [
+            metric
+            for metric in metrics
+            if isinstance(metric, dict) and str(metric.get("metric") or "") in keep
+        ]
+    }
+
+
 def _env_int(name: str) -> int:
     try:
         return int(str(os.getenv(name) or "").strip())
@@ -211,20 +226,6 @@ def _partition_resource_context(vm_name: Optional[str]) -> Dict[str, Any]:
             "name": selected_partition.name if selected_partition else (vm_name or "vm1"),
             "display_name": selected_partition.display_name if selected_partition else (vm_name or "VM1"),
             "max_concurrent_jobs": partition_count,
-        },
-        "vm_partition_config": [
-            {
-                "name": partition.name,
-                "display_name": partition.display_name,
-                "max_concurrent_jobs": partition.max_jobs,
-            }
-            for partition in partitions
-        ],
-        "cluster_capacity": cluster,
-        "per_vm_slice": {
-            "cpu_cores": round(vm_cpu_millis / 1000.0, 3),
-            "memory_gib": round(vm_memory_mib / 1024.0, 3),
-            "storage_gib": round(vm_storage_mib / 1024.0, 3) if vm_storage_mib else 0,
         },
         "per_job_partition": {
             "cpu_cores": round((vm_cpu_millis // partition_count) / 1000.0, 3),
@@ -531,7 +532,7 @@ def _filename_suffixes(filename: str) -> List[str]:
     parts = normalized.split(".")
     if len(parts) > 1:
         suffixes.append(parts[-1])
-        for depth in range(2, min(4, len(parts)) + 1):
+        for depth in range(2, min(3, len(parts) - 1) + 1):
             suffixes.append(".".join(parts[-depth:]))
     return sorted(set(suffixes))
 
@@ -626,16 +627,16 @@ def _call_local_llm_for_runtime_minutes(payload: Dict[str, Any]) -> Dict[str, An
         or os.getenv("LOCAL_LLM_MODEL")
         or "qwen2.5:7b-instruct"
     )
-    timeout = float(os.getenv("CASSIE_LOCAL_LLM_TIMEOUT_SECONDS") or "25")
+    timeout = float(
+        os.getenv("CASSIE_LOCAL_LLM_RUNTIME_TIMEOUT_SECONDS")
+        or os.getenv("CASSIE_LOCAL_LLM_TIMEOUT_SECONDS")
+        or "8"
+    )
     system_prompt = (
-        "You estimate bioinformatics job wall-clock runtime for CASSIE. "
-        "Return only the estimated total minutes as digits. "
-        "Do not add any text, units, JSON, punctuation, whitespace, or a single extra character. "
-        "Example valid answer: 123 "
-        "Example invalid answer: {\"estimated_minutes\": 123} "
-        "Estimate total end-to-end elapsed minutes for one submitted job. "
-        "Do not assume any parallel execution between tools, branches, stages, or jobs; treat pipeline steps as sequential unless a single tool internally uses the listed per-job resources. "
-        "Use file suffixes including .gz/.zip, input sizes, VM partition resources, and machine specs."
+        "Estimate total wall-clock runtime minutes for one CASSIE bioinformatics job. "
+        "Return digits only, no text, units, JSON, punctuation, or whitespace. "
+        "No parallelism between tools, branches, stages, or jobs. "
+        "Use input sizes/extensions and per-job VM resources."
     )
     prompt_debug_payload = {
         "chat_url": chat_url,
@@ -643,7 +644,7 @@ def _call_local_llm_for_runtime_minutes(payload: Dict[str, Any]) -> Dict[str, An
         "system_prompt": system_prompt,
         "user_prompt": payload,
         "temperature": 0.0,
-        "max_tokens": 80,
+        "max_tokens": 8,
     }
     _debug_local_llm_exchange("runtime-estimate", prompt_debug_payload)
     body = json.dumps(
@@ -654,7 +655,7 @@ def _call_local_llm_for_runtime_minutes(payload: Dict[str, Any]) -> Dict[str, An
                 {"role": "user", "content": json.dumps(payload, separators=(",", ":"))},
             ],
             "temperature": 0.0,
-            "max_tokens": 80,
+            "max_tokens": 8,
         }
     ).encode("utf-8")
     request = urllib.request.Request(
@@ -688,27 +689,29 @@ def _maybe_apply_local_llm_runtime_estimate(
     if not _env_bool("CASSIE_USE_LOCAL_LLM_RUNTIME_ESTIMATOR", False):
         return deterministic_estimate
 
-    payload = {
-        "task": "estimate_runtime_minutes",
-        "tools": [
-            {
-                "tool_id": tool_id,
-                "tool_name": (get_tool_by_id(tool_id) or {}).get("name", tool_id),
-                "description": (get_tool_by_id(tool_id) or {}).get("description", ""),
+    llm_inputs = _assignment_llm_inputs(input_assignments)
+    if not llm_inputs:
+        return RuntimeEstimate(
+            **{
+                **deterministic_estimate.__dict__,
+                "llm_raw_response": (
+                    "Local LLM skipped: no mapped input files were included in this estimate yet."
+                    if _debug_local_llm_prompts_enabled()
+                    else None
+                ),
+                "assumptions": [
+                    *deterministic_estimate.assumptions,
+                    "Local LLM runtime estimator was skipped because no mapped input files were included in the estimate request.",
+                ],
             }
-            for tool_id in tool_ids
-        ],
+        )
+
+    payload = {
+        "tools": tool_ids,
         "pipeline": _pipeline_prompt_payload(pipeline_nodes, pipeline_edges),
-        "inputs": _assignment_llm_inputs(input_assignments),
-        "vm_resources": _partition_resource_context(vm_name),
-        "machine_specs": _load_specs_config(),
-        "rules": [
-            "Return only digits containing the estimated total minutes.",
-            "Do not add any text, units, JSON, punctuation, whitespace, or a single extra character.",
-            "Estimate total elapsed minutes for one job.",
-            "Do not assume parallel execution between tools, pipeline branches, or jobs.",
-            "Use the selected VM per-job partition resources, not whole-machine resources, as the job limit.",
-        ],
+        "inputs": llm_inputs,
+        "resources": _partition_resource_context(vm_name),
+        "machine": _compact_specs_config(),
     }
     try:
         llm_result = _call_local_llm_for_runtime_minutes(payload)
