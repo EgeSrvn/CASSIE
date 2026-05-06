@@ -13,6 +13,7 @@ import os
 import re
 import urllib.error
 import urllib.request
+import asyncio
 from dataclasses import dataclass
 from typing import Any, Dict, List, Set
 
@@ -669,9 +670,10 @@ def _build_llm_option(selected_tool_ids: List[str], explanation: str, source: st
     }
 
 
-def recommend_pipeline_from_request(user_request: str, file_entries: List[Dict[str, Any]]) -> Dict[str, Any]:
+async def recommend_pipeline_from_request(user_request: str, file_entries: List[Dict[str, Any]]) -> Dict[str, Any]:
     detected = detect_input_capabilities(file_entries)
-    llm_payload = _call_local_llm_for_tools(user_request, file_entries)
+    loop = asyncio.get_event_loop()
+    llm_payload = await loop.run_in_executor(None, _call_local_llm_for_tools, user_request, file_entries)
     selected_tool_ids = _normalize_llm_tool_ids(llm_payload.get("tool_ids"))
     explanation = str(llm_payload.get("explanation") or "").strip()
     option = _build_llm_option(selected_tool_ids, explanation, "local_llm")
