@@ -130,7 +130,7 @@ async def get_recommendations(request: RecommendationRequest):
 @router.post("/recommendations/request")
 async def get_request_recommendations(request: FreeTextRecommendationRequest):
     try:
-        recommendation_data = recommend_pipeline_from_request(
+        recommendation_data = await recommend_pipeline_from_request(
             user_request=request.request,
             file_entries=[file.model_dump() for file in request.files],
         )
