@@ -2125,6 +2125,9 @@ export default function CreateJob() {
           file_format: file.file_format || null,
         }))
       )
+      if (response?.llm_debug) {
+        console.info('CASSIE LLM suggestion debug', response.llm_debug)
+      }
       const options = response?.pipeline_options || []
       setRecommendationOptions(options)
       if (options.length === 0) {

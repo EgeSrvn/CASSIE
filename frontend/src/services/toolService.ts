@@ -233,6 +233,11 @@ export interface RecommendationResponseData {
   }
   pipeline_options: RecommendationOption[]
   source?: string
+  llm_debug?: {
+    request?: unknown
+    raw_response?: string
+    parsed_response?: unknown
+  }
 }
 
 /**
