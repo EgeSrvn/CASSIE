@@ -1866,6 +1866,16 @@ body {
   flex: 0 0 1rem;
 }
 
+.btn-primary > .inline-loading-icon:only-child {
+  width: 1.15rem;
+  height: 1.15rem;
+  flex-basis: 1.15rem;
+}
+
+.recommendation-action-button {
+  min-width: 9.5rem;
+}
+
 @keyframes cassie-spin {
   to {
     transform: rotate(360deg);
@@ -4446,6 +4456,25 @@ body::before {
 .runtime-estimate-header span {
   font-size: 0.84rem;
   color: var(--gray-500);
+}
+
+.runtime-estimate-header-loader {
+  color: var(--primary);
+  border-color: color-mix(in srgb, var(--primary) 22%, transparent);
+  border-top-color: currentColor;
+  vertical-align: middle;
+}
+
+.runtime-estimate-loading {
+  min-height: 7.5rem;
+  display: grid;
+  place-items: center;
+}
+
+.runtime-estimate-loading-icon {
+  width: 2.4rem;
+  height: 2.4rem;
+  box-shadow: none;
 }
 
 .runtime-estimate-main {

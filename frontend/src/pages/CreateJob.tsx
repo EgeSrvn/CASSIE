@@ -3052,14 +3052,12 @@ export default function CreateJob() {
                     <button
                       type="button"
                       onClick={handleGenerateRecommendations}
-                      className="btn-primary"
+                      className="btn-primary recommendation-action-button"
                       disabled={loadingRecommendations || selectedIntentIds.length === 0}
+                      aria-label={loadingRecommendations ? 'Generating suggestions' : undefined}
                     >
                       {loadingRecommendations ? (
-                        <>
-                          <span className="inline-loading-icon" aria-hidden="true" />
-                          Generating Suggestions...
-                        </>
+                        <span className="inline-loading-icon" aria-hidden="true" />
                       ) : 'Suggest Pipelines'}
                     </button>
                   </>
@@ -3101,14 +3099,12 @@ export default function CreateJob() {
                     <button
                       type="button"
                       onClick={handleGenerateRequestRecommendation}
-                      className="btn-primary"
+                      className="btn-primary recommendation-action-button"
                       disabled={loadingRecommendations || pipelineRequestText.trim().length < 3}
+                      aria-label={loadingRecommendations ? 'Asking for a pipeline suggestion' : undefined}
                     >
                       {loadingRecommendations ? (
-                        <>
-                          <span className="inline-loading-icon" aria-hidden="true" />
-                          Asking...
-                        </>
+                        <span className="inline-loading-icon" aria-hidden="true" />
                       ) : 'Ask'}
                     </button>
                   </div>
@@ -3733,10 +3729,16 @@ export default function CreateJob() {
                 <div className="runtime-estimate-card runtime-estimate-submit">
                   <div className="runtime-estimate-header">
                     <strong>Predicted Job Estimate</strong>
-                    <span>{runtimeEstimate ? 'Ready for submission' : 'Calculating'}</span>
+                    <span>
+                      {loadingRuntimeEstimate ? (
+                        <span className="inline-loading-icon runtime-estimate-header-loader" aria-label="Calculating runtime estimate" role="status" />
+                      ) : runtimeEstimate ? 'Ready for submission' : 'Pending'}
+                    </span>
                   </div>
                   {loadingRuntimeEstimate ? (
-                    <p className="runtime-estimate-copy">Calculating runtime for the current selection...</p>
+                    <div className="runtime-estimate-loading" aria-label="Calculating runtime estimate" role="status">
+                      <span className="loading-spinner runtime-estimate-loading-icon" aria-hidden="true" />
+                    </div>
                   ) : runtimeEstimate ? (
                     <>
                       <div className="runtime-estimate-summary-grid">
