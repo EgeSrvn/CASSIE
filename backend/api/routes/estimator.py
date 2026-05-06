@@ -189,10 +189,10 @@ async def estimate_runtime(
         return JSONResponse(
             content=success_response(
                 data={
-                    "model_type": estimate.model_type,
+                    "model_type": "",#estimate.model_type,
                     "vm_name": estimate.vm_name,
                     "vm_display_name": estimate.vm_display_name,
-                    "partition_factor": estimate.partition_factor,
+                    "partition_factor": "",#estimate.partition_factor,
                     "vm_price_per_minute": estimate.vm_price_per_minute,
                     "total_input_size_mib": estimate.total_input_size_mib,
                     "estimated_runtime_seconds": estimate.estimated_runtime_seconds,

@@ -543,7 +543,7 @@ def _call_local_llm_for_tools(user_request: str, file_entries: List[Dict[str, An
         "model": model,
         "system_prompt": system_prompt,
         "user_prompt": json.loads(user_prompt),
-        "temperature": 0.1,
+        "temperature": 0.3,
         "max_tokens": 350,
     }
     _debug_local_llm_exchange("tool-recommendation", prompt_debug_payload)
@@ -554,7 +554,7 @@ def _call_local_llm_for_tools(user_request: str, file_entries: List[Dict[str, An
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
-        "temperature": 0.1,
+        "temperature": 0.3,
         "max_tokens": 350,
     }).encode("utf-8")
 
