@@ -516,6 +516,7 @@ def _call_local_llm_for_tools(user_request: str, file_entries: List[Dict[str, An
         or "local-model"
     )
     timeout = float(os.getenv("CASSIE_LOCAL_LLM_TIMEOUT_SECONDS") or "25")
+    """ 
     files_summary = [
         {
             "filename": str(file_entry.get("filename") or ""),
@@ -523,6 +524,7 @@ def _call_local_llm_for_tools(user_request: str, file_entries: List[Dict[str, An
         }
         for file_entry in file_entries
     ]
+    """
     system_prompt = (
         "You select bioinformatics tools for CASSIE. "
         "Return only compact JSON with tool_ids and explanation. "
@@ -531,7 +533,7 @@ def _call_local_llm_for_tools(user_request: str, file_entries: List[Dict[str, An
     )
     user_prompt = json.dumps({
         "user_request": user_request,
-        "available_files": files_summary,
+        #"available_files": files_summary,
         "available_tools": _tool_prompt_payload(),
         "response_schema": {
             "tool_ids": ["FASTQC"],
@@ -681,15 +683,10 @@ def recommend_pipeline_from_request(user_request: str, file_entries: List[Dict[s
             "pipeline_options": [option],
             "source": "local_llm",
         }
+    return {
+        "intents": get_recommendation_intents(),
+        "detected_inputs": detected.to_dict(),
+        "pipeline_options": [],
+        "source": "local_llm",
+    }
 
-    fallback_intents = _intent_ids_from_text(user_request, detected)
-    fallback_data = recommend_pipelines(fallback_intents, file_entries)
-    fallback_options = fallback_data.get("pipeline_options", [])
-    fallback_explanation = "Matched your request to the closest built-in pipeline intentions."
-    for fallback_option in fallback_options:
-        fallback_option["summary"] = fallback_explanation
-        fallback_option["rationale"] = [fallback_explanation]
-        fallback_option["tags"] = list(dict.fromkeys([*fallback_option.get("tags", []), "heuristic", "experimental"]))
-
-    fallback_data["source"] = "heuristic"
-    return fallback_data
