@@ -63,6 +63,17 @@ const formatVmSlots = (vm: VM): string => `${vm.available_job_slots}/${vm.max_jo
 const formatUsd = (value: number): string => `$${value.toFixed(2)}`
 const minimumSuggestionLoadingMs = 1500
 const formatRuntimeEstimate = (minutes: number): string => {
+  if (minutes >= 1440) {
+    const days = Math.floor(minutes / 1440)
+    const remainingAfterDays = minutes % 1440
+    const hours = Math.floor(remainingAfterDays / 60)
+    const remainingMinutes = remainingAfterDays % 60
+    return [
+      `${days}d`,
+      hours > 0 ? `${hours}h` : '',
+      remainingMinutes > 0 ? `${remainingMinutes}m` : '',
+    ].filter(Boolean).join(' ')
+  }
   if (minutes < 60) {
     return `${minutes} min`
   }
@@ -1932,6 +1943,20 @@ export default function CreateJob() {
         const key = `${toolId}:${requirementType}`
         const sizeMib = (Number(input.size_bytes || 0) / (1024 * 1024)) || 0
         const normalizedFormat = String(input.file_format || '').trim().toLowerCase()
+        const filename = String(input.filename || '').trim()
+        const filenameFormats = filename
+          ? normalizeFileFormats({
+              id: input.id,
+              filename,
+              file_format: input.file_format || null,
+              file_type: 'input',
+              s3_key: input.s3_key || '',
+              size_bytes: input.size_bytes || 0,
+              checksum: null,
+              uploaded_at: null,
+              created_at: '',
+            } as FileItem & { folderPath?: string })
+          : []
         const isCompressed =
           normalizedFormat.includes('gz') ||
           normalizedFormat.includes('bz2') ||
@@ -1946,8 +1971,13 @@ export default function CreateJob() {
         if (existing) {
           existing.total_input_size_mib = Number((existing.total_input_size_mib + sizeMib).toFixed(2))
           existing.compressed_input_size_mib = Number((existing.compressed_input_size_mib + (isCompressed ? sizeMib : 0)).toFixed(2))
-          if (normalizedFormat && !existing.file_formats.includes(normalizedFormat)) {
-            existing.file_formats.push(normalizedFormat)
+          ;[normalizedFormat, ...filenameFormats].filter(Boolean).forEach((format) => {
+            if (!existing.file_formats.includes(format)) {
+              existing.file_formats.push(format)
+            }
+          })
+          if (filename && !existing.input_filenames?.includes(filename)) {
+            existing.input_filenames = [...(existing.input_filenames || []), filename]
           }
           return
         }
@@ -1957,7 +1987,8 @@ export default function CreateJob() {
           requirement_type: requirementType,
           total_input_size_mib: Number(sizeMib.toFixed(2)),
           compressed_input_size_mib: Number((isCompressed ? sizeMib : 0).toFixed(2)),
-          file_formats: normalizedFormat ? [normalizedFormat] : [],
+          file_formats: Array.from(new Set([normalizedFormat, ...filenameFormats].filter(Boolean))),
+          input_filenames: filename ? [filename] : [],
         })
       })
 
@@ -2000,8 +2031,14 @@ export default function CreateJob() {
           return sum + (isCompressed && sizeBytes > 0 ? sizeBytes / (1024 * 1024) : 0)
         }, 0)
         const uniqueFormats = Array.from(new Set(
+          mappedFileIds.flatMap((fileId) => {
+            const file = fileById.get(fileId)
+            return file ? normalizeFileFormats(file) : []
+          })
+        ))
+        const inputFilenames = Array.from(new Set(
           mappedFileIds
-            .map((fileId) => String(fileById.get(fileId)?.file_format || '').trim().toLowerCase())
+            .map((fileId) => String(fileById.get(fileId)?.filename || '').trim())
             .filter(Boolean)
         ))
 
@@ -2012,6 +2049,7 @@ export default function CreateJob() {
             total_input_size_mib: Number(totalInputSizeMib.toFixed(2)),
             compressed_input_size_mib: Number(compressedInputSizeMib.toFixed(2)),
             file_formats: uniqueFormats,
+            input_filenames: inputFilenames,
           })
         }
       })
@@ -2031,6 +2069,7 @@ export default function CreateJob() {
       }
       return {
         tool_indices: savedPipelineExecutionPlan.toolIndices,
+        pipeline_id: selectedPipelineId || undefined,
         vm_name: selectedVM,
         input_assignments: getRuntimeInputAssignments(),
       }
@@ -3703,7 +3742,7 @@ export default function CreateJob() {
                       <div className="runtime-estimate-summary-grid">
                         <div className="runtime-estimate-panel">
                           <span className="runtime-estimate-label">Estimated Runtime</span>
-                          <span className="runtime-estimate-value">{formatRuntimeEstimate(runtimeEstimate.estimated_runtime_minutes)}</span>
+                          <span className="runtime-estimate-value">{runtimeEstimate.estimated_runtime_display || formatRuntimeEstimate(runtimeEstimate.estimated_runtime_minutes)}</span>
                           <span className="runtime-estimate-subtle">
                             about {runtimeEstimate.estimated_runtime_hours.toFixed(2)} hours on {runtimeEstimate.vm_display_name}
                           </span>

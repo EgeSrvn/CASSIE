@@ -12,11 +12,15 @@ The estimator is intentionally transparent and configurable. It combines:
 from __future__ import annotations
 
 import json
+import os
+import re
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from backend.api.services.vm_partition_service import get_vm_partition
+from backend.api.services.vm_partition_service import get_vm_partitions
 from backend.api.utils.logger import get_logger
 from tool_registry import get_tool_by_id, get_tool_by_index, get_tool_id_from_label, tool_produces_requirement
 
@@ -24,6 +28,7 @@ logger = get_logger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 RUNTIME_ESTIMATOR_CONFIG_PATH = PROJECT_ROOT / "config" / "runtime_estimator_profiles.json"
+SPECS_CONFIG_PATH = PROJECT_ROOT / "config" / "specs.json"
 
 DEFAULT_TOOL_BASE_MINUTES: Dict[str, float] = {
     "FASTQC": 0.083,
@@ -127,6 +132,7 @@ class RuntimeInputAssignment:
     total_input_size_mib: float
     compressed_input_size_mib: float = 0.0
     file_formats: Optional[List[str]] = None
+    input_filenames: Optional[List[str]] = None
 
 
 def _load_runtime_config() -> Dict[str, Any]:
@@ -139,6 +145,95 @@ def _load_runtime_config() -> Dict[str, Any]:
     except Exception as exc:
         logger.warning(f"Failed to read runtime estimator config {RUNTIME_ESTIMATOR_CONFIG_PATH}: {exc}")
         return {}
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _load_specs_config() -> Dict[str, Any]:
+    if not SPECS_CONFIG_PATH.exists():
+        return {}
+    try:
+        payload = json.loads(SPECS_CONFIG_PATH.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else {}
+    except Exception as exc:
+        logger.warning(f"Failed to read machine specs config {SPECS_CONFIG_PATH}: {exc}")
+        return {}
+
+
+def _env_int(name: str) -> int:
+    try:
+        return int(str(os.getenv(name) or "").strip())
+    except (TypeError, ValueError):
+        return 0
+
+
+def _cluster_capacity_from_env() -> Dict[str, int]:
+    return {
+        "cpu_millis": _env_int("CASSIE_CLUSTER_CPU_MILLIS") or 7000,
+        "memory_mib": _env_int("CASSIE_CLUSTER_MEMORY_MIB") or 106496,
+        "storage_mib": _env_int("CASSIE_CLUSTER_STORAGE_MIB") or 245760,
+        "storage_reserve_mib": _env_int("CASSIE_CLUSTER_STORAGE_RESERVE_MIB") or 8192,
+    }
+
+
+def _partition_resource_context(vm_name: Optional[str]) -> Dict[str, Any]:
+    partitions = get_vm_partitions()
+    selected_partition = get_vm_partition(vm_name) or (partitions[0] if partitions else None)
+    vm_count = max(1, len(partitions))
+    partition_count = max(1, selected_partition.max_jobs if selected_partition else 1)
+    cluster = _cluster_capacity_from_env()
+    usable_storage_mib = max(0, cluster["storage_mib"] - min(cluster["storage_mib"], cluster["storage_reserve_mib"]))
+    vm_cpu_millis = max(1, cluster["cpu_millis"] // vm_count)
+    vm_memory_mib = max(1, cluster["memory_mib"] // vm_count)
+    vm_storage_mib = usable_storage_mib // vm_count if usable_storage_mib > 0 else 0
+    return {
+        "selected_vm": {
+            "name": selected_partition.name if selected_partition else (vm_name or "vm1"),
+            "display_name": selected_partition.display_name if selected_partition else (vm_name or "VM1"),
+            "max_concurrent_jobs": partition_count,
+        },
+        "vm_partition_config": [
+            {
+                "name": partition.name,
+                "display_name": partition.display_name,
+                "max_concurrent_jobs": partition.max_jobs,
+            }
+            for partition in partitions
+        ],
+        "cluster_capacity": cluster,
+        "per_vm_slice": {
+            "cpu_cores": round(vm_cpu_millis / 1000.0, 3),
+            "memory_gib": round(vm_memory_mib / 1024.0, 3),
+            "storage_gib": round(vm_storage_mib / 1024.0, 3) if vm_storage_mib else 0,
+        },
+        "per_job_partition": {
+            "cpu_cores": round((vm_cpu_millis // partition_count) / 1000.0, 3),
+            "memory_gib": round((vm_memory_mib // partition_count) / 1024.0, 3),
+            "storage_gib": round((vm_storage_mib // partition_count) / 1024.0, 3) if vm_storage_mib else 0,
+        },
+    }
+
+
+def _local_llm_chat_url() -> str:
+    base_url = (
+        os.getenv("CASSIE_LOCAL_LLM_BASE_URL")
+        or os.getenv("LOCAL_LLM_BASE_URL")
+        or os.getenv("LOCAL_LLM_URL")
+        or ""
+    ).strip()
+    if not base_url:
+        return ""
+    normalized = base_url.rstrip("/")
+    if normalized.endswith("/chat/completions"):
+        return normalized
+    if normalized.endswith("/v1"):
+        return f"{normalized}/chat/completions"
+    return f"{normalized}/v1/chat/completions"
 
 
 def _tool_base_minutes(tool_id: str) -> float:
@@ -314,6 +409,22 @@ def get_vm_price_per_minute(vm_name: Optional[str]) -> float:
     return _vm_price_per_minute(vm_name)
 
 
+def format_runtime_minutes(total_minutes: int) -> str:
+    minutes = max(0, int(total_minutes or 0))
+    days = minutes // 1440
+    remainder = minutes % 1440
+    hours = remainder // 60
+    remaining_minutes = remainder % 60
+    parts: List[str] = []
+    if days:
+        parts.append(f"{days}d")
+    if hours:
+        parts.append(f"{hours}h")
+    if remaining_minutes or not parts:
+        parts.append(f"{remaining_minutes}m")
+    return " ".join(parts)
+
+
 def _size_factor(tool_id: str, input_size_mib: float) -> float:
     reference_input_mib = _tool_reference_input_mib(tool_id)
     exponent = _tool_size_exponent(tool_id)
@@ -395,6 +506,216 @@ def _summarize_assignment_penalties(assignments: Optional[List[RuntimeInputAssig
         )
         current["file_formats"] = sorted(current["file_formats"])
     return summary
+
+
+def _filename_suffixes(filename: str) -> List[str]:
+    normalized = str(filename or "").strip().lower()
+    if not normalized:
+        return []
+    suffixes: List[str] = []
+    parts = normalized.split(".")
+    if len(parts) > 1:
+        suffixes.append(parts[-1])
+        for depth in range(2, min(4, len(parts)) + 1):
+            suffixes.append(".".join(parts[-depth:]))
+    return sorted(set(suffixes))
+
+
+def _assignment_llm_inputs(assignments: Optional[List[RuntimeInputAssignment]]) -> List[Dict[str, Any]]:
+    entries: List[Dict[str, Any]] = []
+    for assignment in assignments or []:
+        filenames = [str(name or "").strip() for name in (assignment.input_filenames or []) if str(name or "").strip()]
+        suffixes = set()
+        for filename in filenames:
+            suffixes.update(_filename_suffixes(filename))
+        for file_format in assignment.file_formats or []:
+            normalized = str(file_format or "").strip().lower().lstrip(".")
+            if normalized:
+                suffixes.add(normalized)
+        entries.append(
+            {
+                "tool_id": str(assignment.tool_id or "").upper(),
+                "requirement_type": str(assignment.requirement_type or ""),
+                "total_input_size_mib": round(max(0.0, float(assignment.total_input_size_mib or 0.0)), 2),
+                "compressed_input_size_mib": round(max(0.0, float(assignment.compressed_input_size_mib or 0.0)), 2),
+                "file_formats_and_suffixes": sorted(suffixes),
+                "filenames": filenames[:20],
+            }
+        )
+    return entries
+
+
+def _pipeline_prompt_payload(nodes: Optional[List[Dict[str, Any]]], edges: Optional[List[Dict[str, Any]]]) -> Dict[str, Any]:
+    if not nodes:
+        return {}
+    compact_nodes = []
+    for node in nodes:
+        node_data = node.get("data") if isinstance(node.get("data"), dict) else {}
+        label = node_data.get("label") or node.get("label") or node.get("id")
+        compact_nodes.append(
+            {
+                "id": str(node.get("id") or ""),
+                "type": str(node.get("type") or ""),
+                "label": str(label or ""),
+                "tool_id": str(node_data.get("toolId") or node_data.get("tool_id") or node.get("toolId") or node.get("tool_id") or ""),
+            }
+        )
+    compact_edges = [
+        {
+            "source": str(edge.get("source") or ""),
+            "target": str(edge.get("target") or ""),
+        }
+        for edge in (edges or [])
+    ]
+    return {"nodes": compact_nodes, "edges": compact_edges}
+
+
+def _extract_llm_minutes(text: str) -> Optional[int]:
+    cleaned = str(text or "").strip()
+    if not cleaned:
+        return None
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?", "", cleaned, flags=re.IGNORECASE).strip()
+        cleaned = re.sub(r"```$", "", cleaned).strip()
+    json_match = re.search(r"\{.*\}", cleaned, flags=re.DOTALL)
+    candidates = [cleaned]
+    if json_match:
+        candidates.insert(0, json_match.group(0))
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            for key in ("estimated_minutes", "minutes", "runtime_minutes", "estimated_runtime_minutes"):
+                if key in parsed:
+                    try:
+                        return max(1, int(round(float(parsed[key]))))
+                    except (TypeError, ValueError):
+                        continue
+    number_match = re.search(r"(\d+(?:\.\d+)?)", cleaned)
+    if number_match:
+        try:
+            return max(1, int(round(float(number_match.group(1)))))
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _call_local_llm_for_runtime_minutes(payload: Dict[str, Any]) -> Optional[int]:
+    chat_url = _local_llm_chat_url()
+    if not chat_url:
+        raise RuntimeError("CASSIE_LOCAL_LLM_BASE_URL is not configured")
+    model = (
+        os.getenv("CASSIE_LOCAL_LLM_MODEL")
+        or os.getenv("LOCAL_LLM_MODEL")
+        or "qwen2.5:7b-instruct"
+    )
+    timeout = float(os.getenv("CASSIE_LOCAL_LLM_TIMEOUT_SECONDS") or "25")
+    system_prompt = (
+        "You estimate bioinformatics job wall-clock runtime for CASSIE. "
+        "Return only JSON like {\"estimated_minutes\": 123}. "
+        "Do not include explanations. "
+        "Estimate total end-to-end elapsed minutes for one submitted job. "
+        "Do not assume any parallel execution between tools, branches, stages, or jobs; treat pipeline steps as sequential unless a single tool internally uses the listed per-job resources. "
+        "Use file suffixes including .gz/.zip, input sizes, VM partition resources, and machine specs."
+    )
+    body = json.dumps(
+        {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": json.dumps(payload, separators=(",", ":"))},
+            ],
+            "temperature": 0.0,
+            "max_tokens": 80,
+        }
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        chat_url,
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        response_payload = json.loads(response.read().decode("utf-8"))
+    choices = response_payload.get("choices") if isinstance(response_payload, dict) else None
+    if not choices:
+        return None
+    content = choices[0].get("message", {}).get("content", "") if isinstance(choices[0], dict) else ""
+    return _extract_llm_minutes(content)
+
+
+def _maybe_apply_local_llm_runtime_estimate(
+    deterministic_estimate: RuntimeEstimate,
+    *,
+    tool_ids: List[str],
+    vm_name: Optional[str],
+    input_assignments: Optional[List[RuntimeInputAssignment]],
+    pipeline_nodes: Optional[List[Dict[str, Any]]] = None,
+    pipeline_edges: Optional[List[Dict[str, Any]]] = None,
+) -> RuntimeEstimate:
+    if not _env_bool("CASSIE_USE_LOCAL_LLM_RUNTIME_ESTIMATOR", False):
+        return deterministic_estimate
+
+    payload = {
+        "task": "estimate_runtime_minutes",
+        "tools": [
+            {
+                "tool_id": tool_id,
+                "tool_name": (get_tool_by_id(tool_id) or {}).get("name", tool_id),
+                "description": (get_tool_by_id(tool_id) or {}).get("description", ""),
+            }
+            for tool_id in tool_ids
+        ],
+        "pipeline": _pipeline_prompt_payload(pipeline_nodes, pipeline_edges),
+        "inputs": _assignment_llm_inputs(input_assignments),
+        "vm_resources": _partition_resource_context(vm_name),
+        "machine_specs": _load_specs_config(),
+        "rules": [
+            "Return only JSON with estimated_minutes.",
+            "Estimate total elapsed minutes for one job.",
+            "Do not assume parallel execution between tools, pipeline branches, or jobs.",
+            "Use the selected VM per-job partition resources, not whole-machine resources, as the job limit.",
+        ],
+    }
+    try:
+        llm_minutes = _call_local_llm_for_runtime_minutes(payload)
+        if not llm_minutes:
+            raise RuntimeError("Local LLM did not return a parseable minute value")
+    except Exception as exc:
+        logger.warning(f"Local LLM runtime estimator failed; using deterministic estimate: {exc}")
+        return RuntimeEstimate(
+            **{
+                **deterministic_estimate.__dict__,
+                "assumptions": [
+                    *deterministic_estimate.assumptions,
+                    f"Local LLM runtime estimator was enabled but unavailable or unparseable, so deterministic estimate was used: {exc}",
+                ],
+            }
+        )
+
+    estimated_price_usd = round(llm_minutes * deterministic_estimate.vm_price_per_minute, 2)
+    return RuntimeEstimate(
+        model_type="local-llm-runtime",
+        vm_name=deterministic_estimate.vm_name,
+        vm_display_name=deterministic_estimate.vm_display_name,
+        partition_factor=deterministic_estimate.partition_factor,
+        vm_price_per_minute=deterministic_estimate.vm_price_per_minute,
+        total_input_size_mib=deterministic_estimate.total_input_size_mib,
+        estimated_runtime_seconds=llm_minutes * 60,
+        estimated_runtime_minutes=llm_minutes,
+        estimated_runtime_hours=round(llm_minutes / 60.0, 2),
+        estimated_price_usd=estimated_price_usd,
+        fixed_overhead_minutes=0.0,
+        execution_shape="local-llm-sequential-runtime",
+        tool_breakdown=deterministic_estimate.tool_breakdown,
+        assumptions=[
+            "Uses the configured local Ollama/OpenAI-compatible LLM for total runtime minutes.",
+            "The LLM prompt includes mapped filenames, file suffixes including compressed extensions, pipeline graph, VM partition limits, and config/specs.json machine specs.",
+            "The LLM is instructed not to assume parallel execution between tools, branches, stages, or jobs.",
+        ],
+    )
 
 
 def _estimate_tool_input_sizes_for_sequence(
@@ -529,7 +850,12 @@ def estimate_runtime_for_tool_indices(
             "Adds a per-tool pod input-copy overhead based on input size and the configured S3-to-pod bandwidth (pod_input_copy_bandwidth_mib_per_sec).",
         ],
     )
-    return estimate
+    return _maybe_apply_local_llm_runtime_estimate(
+        estimate,
+        tool_ids=tool_ids,
+        vm_name=resolved_vm_name,
+        input_assignments=input_assignments,
+    )
 
 
 def estimate_runtime_for_pipeline_graph(
@@ -622,4 +948,11 @@ def estimate_runtime_for_pipeline_graph(
             "Adds a per-tool pod input-copy overhead based on input size and the configured S3-to-pod bandwidth (pod_input_copy_bandwidth_mib_per_sec).",
         ],
     )
-    return estimate
+    return _maybe_apply_local_llm_runtime_estimate(
+        estimate,
+        tool_ids=tool_ids,
+        vm_name=resolved_vm_name,
+        input_assignments=input_assignments,
+        pipeline_nodes=nodes,
+        pipeline_edges=edges,
+    )

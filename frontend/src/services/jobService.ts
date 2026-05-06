@@ -457,6 +457,7 @@ export interface RuntimeEstimate {
   estimated_runtime_seconds: number
   estimated_runtime_minutes: number
   estimated_runtime_hours: number
+  estimated_runtime_display?: string
   estimated_price_usd: number
   fixed_overhead_minutes: number
   execution_shape: string
@@ -480,6 +481,7 @@ export interface RuntimeInputAssignment {
   total_input_size_mib: number
   compressed_input_size_mib: number
   file_formats: string[]
+  input_filenames?: string[]
 }
 
 export const getAvailableVMs = async (): Promise<VM[]> => {

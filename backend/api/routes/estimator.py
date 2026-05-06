@@ -15,6 +15,7 @@ from backend.api.services.runtime_estimator_service import (
     RuntimeInputAssignment,
     estimate_runtime_for_pipeline_graph,
     estimate_runtime_for_tool_indices,
+    format_runtime_minutes,
 )
 from backend.api.utils.response_builder import (
     success_response,
@@ -53,6 +54,7 @@ class RuntimeEstimateRequest(BaseModel):
         total_input_size_mib: float
         compressed_input_size_mib: Optional[float] = 0.0
         file_formats: Optional[List[str]] = None
+        input_filenames: Optional[List[str]] = None
 
     tool_indices: Optional[List[int]] = None
     pipeline_id: Optional[int] = None
@@ -143,6 +145,7 @@ async def estimate_runtime(
                 total_input_size_mib=item.total_input_size_mib,
                 compressed_input_size_mib=item.compressed_input_size_mib or 0.0,
                 file_formats=item.file_formats or [],
+                input_filenames=item.input_filenames or [],
             )
             for item in (request.input_assignments or [])
         ]
@@ -195,6 +198,7 @@ async def estimate_runtime(
                     "estimated_runtime_seconds": estimate.estimated_runtime_seconds,
                     "estimated_runtime_minutes": estimate.estimated_runtime_minutes,
                     "estimated_runtime_hours": estimate.estimated_runtime_hours,
+                    "estimated_runtime_display": format_runtime_minutes(estimate.estimated_runtime_minutes),
                     "estimated_price_usd": estimate.estimated_price_usd,
                     "fixed_overhead_minutes": estimate.fixed_overhead_minutes,
                     "execution_shape": estimate.execution_shape,
