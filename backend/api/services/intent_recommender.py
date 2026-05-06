@@ -491,6 +491,20 @@ def _extract_json_object(text: str) -> Dict[str, Any]:
             return {}
 
 
+def _debug_local_llm_prompts_enabled() -> bool:
+    return (os.getenv("CASSIE_DEBUG_LOCAL_LLM_PROMPTS") or "").strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _debug_local_llm_exchange(label: str, question: Dict[str, Any], answer: Any = None) -> None:
+    if not _debug_local_llm_prompts_enabled():
+        return
+    print(f"[CASSIE LOCAL LLM DEBUG] {label} question:")
+    print(json.dumps(question, indent=2, ensure_ascii=False))
+    if answer is not None:
+        print(f"[CASSIE LOCAL LLM DEBUG] {label} answer:")
+        print(answer if isinstance(answer, str) else json.dumps(answer, indent=2, ensure_ascii=False))
+
+
 def _call_local_llm_for_tools(user_request: str, file_entries: List[Dict[str, Any]]) -> Dict[str, Any]:
     chat_url = _local_llm_chat_url()
     if not chat_url:
@@ -524,6 +538,16 @@ def _call_local_llm_for_tools(user_request: str, file_entries: List[Dict[str, An
             "explanation": "Short reason for the selected tools.",
         },
     })
+    prompt_debug_payload = {
+        "chat_url": chat_url,
+        "model": model,
+        "system_prompt": system_prompt,
+        "user_prompt": json.loads(user_prompt),
+        "temperature": 0.1,
+        "max_tokens": 350,
+    }
+    _debug_local_llm_exchange("tool-recommendation", prompt_debug_payload)
+
     body = json.dumps({
         "model": model,
         "messages": [
@@ -553,6 +577,7 @@ def _call_local_llm_for_tools(user_request: str, file_entries: List[Dict[str, An
             else:
                 content = str(first_choice.get("text") or "")
 
+    _debug_local_llm_exchange("tool-recommendation", prompt_debug_payload, content)
     return _extract_json_object(content)
 
 

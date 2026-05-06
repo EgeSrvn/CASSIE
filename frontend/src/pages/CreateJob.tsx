@@ -3107,9 +3107,9 @@ export default function CreateJob() {
                       {loadingRecommendations ? (
                         <>
                           <span className="inline-loading-icon" aria-hidden="true" />
-                          Asking Local Model...
+                          Asking...
                         </>
-                      ) : 'Ask Local Model'}
+                      ) : 'Ask'}
                     </button>
                   </div>
                 )}

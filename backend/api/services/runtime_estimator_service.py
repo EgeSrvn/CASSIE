@@ -154,6 +154,20 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
+def _debug_local_llm_prompts_enabled() -> bool:
+    return _env_bool("CASSIE_DEBUG_LOCAL_LLM_PROMPTS", False)
+
+
+def _debug_local_llm_exchange(label: str, question: Dict[str, Any], answer: Any = None) -> None:
+    if not _debug_local_llm_prompts_enabled():
+        return
+    print(f"[CASSIE LOCAL LLM DEBUG] {label} question:")
+    print(json.dumps(question, indent=2, ensure_ascii=False))
+    if answer is not None:
+        print(f"[CASSIE LOCAL LLM DEBUG] {label} answer:")
+        print(answer if isinstance(answer, str) else json.dumps(answer, indent=2, ensure_ascii=False))
+
+
 def _load_specs_config() -> Dict[str, Any]:
     if not SPECS_CONFIG_PATH.exists():
         return {}
@@ -620,6 +634,15 @@ def _call_local_llm_for_runtime_minutes(payload: Dict[str, Any]) -> Optional[int
         "Do not assume any parallel execution between tools, branches, stages, or jobs; treat pipeline steps as sequential unless a single tool internally uses the listed per-job resources. "
         "Use file suffixes including .gz/.zip, input sizes, VM partition resources, and machine specs."
     )
+    prompt_debug_payload = {
+        "chat_url": chat_url,
+        "model": model,
+        "system_prompt": system_prompt,
+        "user_prompt": payload,
+        "temperature": 0.0,
+        "max_tokens": 80,
+    }
+    _debug_local_llm_exchange("runtime-estimate", prompt_debug_payload)
     body = json.dumps(
         {
             "model": model,
@@ -643,6 +666,7 @@ def _call_local_llm_for_runtime_minutes(payload: Dict[str, Any]) -> Optional[int
     if not choices:
         return None
     content = choices[0].get("message", {}).get("content", "") if isinstance(choices[0], dict) else ""
+    _debug_local_llm_exchange("runtime-estimate", prompt_debug_payload, content)
     return _extract_llm_minutes(content)
 
 
