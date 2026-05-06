@@ -3763,13 +3763,15 @@ export default function CreateJob() {
                       <p className="runtime-estimate-copy">
                         Model: {runtimeEstimate.execution_shape}. Partition factor: {runtimeEstimate.partition_factor.toFixed(2)}x. Input size: {runtimeEstimate.total_input_size_mib.toFixed(2)} MiB.
                       </p>
-                      <div className="runtime-estimate-breakdown">
-                        {runtimeEstimate.tool_breakdown.map((tool) => (
-                          <span key={`${tool.tool_id}-${tool.tool_name}`} className="runtime-estimate-chip">
-                            {tool.tool_name}: {Math.round(tool.adjusted_minutes)}m, {tool.input_size_mib.toFixed(1)} MiB
-                          </span>
-                        ))}
-                      </div>
+                      {runtimeEstimate.tool_breakdown.length > 0 && (
+                        <div className="runtime-estimate-breakdown">
+                          {runtimeEstimate.tool_breakdown.map((tool) => (
+                            <span key={`${tool.tool_id}-${tool.tool_name}`} className="runtime-estimate-chip">
+                              {tool.tool_name}: {Math.round(tool.adjusted_minutes)}m, {tool.input_size_mib.toFixed(1)} MiB
+                            </span>
+                          ))}
+                        </div>
+                      )}
                       {runtimeEstimate.assumptions.length > 0 && (
                         <p className="runtime-estimate-copy">{runtimeEstimate.assumptions[0]}</p>
                       )}

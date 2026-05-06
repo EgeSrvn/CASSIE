@@ -782,12 +782,12 @@ def _maybe_apply_local_llm_runtime_estimate(
         estimated_price_usd=estimated_price_usd,
         fixed_overhead_minutes=0.0,
         execution_shape="local-llm-sequential-runtime",
-        tool_breakdown=deterministic_estimate.tool_breakdown,
+        tool_breakdown=[],
         llm_raw_response=llm_raw_response if _debug_local_llm_prompts_enabled() else None,
         assumptions=[
             "Uses the configured local Ollama/OpenAI-compatible LLM for total runtime minutes.",
             "The LLM prompt is a compact single sentence with CPU, partition vCPU/RAM, base CPU speed, tools, and mapped input types.",
-            "The LLM is instructed to return only the numeric minute estimate.",
+            "Per-tool deterministic breakdown is omitted because the LLM returns only one total minute estimate.",
         ],
     )
 
