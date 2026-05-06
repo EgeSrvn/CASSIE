@@ -123,6 +123,7 @@ class RuntimeEstimate:
     execution_shape: str
     tool_breakdown: List[Dict[str, Any]]
     assumptions: List[str]
+    llm_raw_response: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -616,7 +617,7 @@ def _extract_llm_minutes(text: str) -> Optional[int]:
     return None
 
 
-def _call_local_llm_for_runtime_minutes(payload: Dict[str, Any]) -> Optional[int]:
+def _call_local_llm_for_runtime_minutes(payload: Dict[str, Any]) -> Dict[str, Any]:
     chat_url = _local_llm_chat_url()
     if not chat_url:
         raise RuntimeError("CASSIE_LOCAL_LLM_BASE_URL is not configured")
@@ -666,10 +667,13 @@ def _call_local_llm_for_runtime_minutes(payload: Dict[str, Any]) -> Optional[int
         response_payload = json.loads(response.read().decode("utf-8"))
     choices = response_payload.get("choices") if isinstance(response_payload, dict) else None
     if not choices:
-        return None
+        return {"minutes": None, "raw_response": ""}
     content = choices[0].get("message", {}).get("content", "") if isinstance(choices[0], dict) else ""
     _debug_local_llm_exchange("runtime-estimate", prompt_debug_payload, content)
-    return _extract_llm_minutes(content)
+    return {
+        "minutes": _extract_llm_minutes(content),
+        "raw_response": content,
+    }
 
 
 def _maybe_apply_local_llm_runtime_estimate(
@@ -707,7 +711,9 @@ def _maybe_apply_local_llm_runtime_estimate(
         ],
     }
     try:
-        llm_minutes = _call_local_llm_for_runtime_minutes(payload)
+        llm_result = _call_local_llm_for_runtime_minutes(payload)
+        llm_minutes = llm_result.get("minutes")
+        llm_raw_response = str(llm_result.get("raw_response") or "")
         if not llm_minutes:
             raise RuntimeError("Local LLM did not return a parseable minute value")
     except Exception as exc:
@@ -737,6 +743,7 @@ def _maybe_apply_local_llm_runtime_estimate(
         fixed_overhead_minutes=0.0,
         execution_shape="local-llm-sequential-runtime",
         tool_breakdown=deterministic_estimate.tool_breakdown,
+        llm_raw_response=llm_raw_response if _debug_local_llm_prompts_enabled() else None,
         assumptions=[
             "Uses the configured local Ollama/OpenAI-compatible LLM for total runtime minutes.",
             "The LLM prompt includes mapped filenames, file suffixes including compressed extensions, pipeline graph, VM partition limits, and config/specs.json machine specs.",

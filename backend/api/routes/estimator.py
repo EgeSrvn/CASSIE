@@ -198,7 +198,11 @@ async def estimate_runtime(
                     "estimated_runtime_seconds": estimate.estimated_runtime_seconds,
                     "estimated_runtime_minutes": estimate.estimated_runtime_minutes,
                     "estimated_runtime_hours": estimate.estimated_runtime_hours,
-                    "estimated_runtime_display": format_runtime_minutes(estimate.estimated_runtime_minutes),
+                    "estimated_runtime_display": (
+                        estimate.llm_raw_response
+                        if estimate.llm_raw_response
+                        else format_runtime_minutes(estimate.estimated_runtime_minutes)
+                    ),
                     "estimated_price_usd": estimate.estimated_price_usd,
                     "fixed_overhead_minutes": estimate.fixed_overhead_minutes,
                     "execution_shape": estimate.execution_shape,
