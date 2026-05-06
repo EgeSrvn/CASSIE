@@ -628,8 +628,10 @@ def _call_local_llm_for_runtime_minutes(payload: Dict[str, Any]) -> Optional[int
     timeout = float(os.getenv("CASSIE_LOCAL_LLM_TIMEOUT_SECONDS") or "25")
     system_prompt = (
         "You estimate bioinformatics job wall-clock runtime for CASSIE. "
-        "Return only JSON like {\"estimated_minutes\": 123}. "
-        "Do not include explanations. "
+        "Return only the estimated total minutes as digits. "
+        "Do not add any text, units, JSON, punctuation, whitespace, or a single extra character. "
+        "Example valid answer: 123 "
+        "Example invalid answer: {\"estimated_minutes\": 123} "
         "Estimate total end-to-end elapsed minutes for one submitted job. "
         "Do not assume any parallel execution between tools, branches, stages, or jobs; treat pipeline steps as sequential unless a single tool internally uses the listed per-job resources. "
         "Use file suffixes including .gz/.zip, input sizes, VM partition resources, and machine specs."
@@ -697,7 +699,8 @@ def _maybe_apply_local_llm_runtime_estimate(
         "vm_resources": _partition_resource_context(vm_name),
         "machine_specs": _load_specs_config(),
         "rules": [
-            "Return only JSON with estimated_minutes.",
+            "Return only digits containing the estimated total minutes.",
+            "Do not add any text, units, JSON, punctuation, whitespace, or a single extra character.",
             "Estimate total elapsed minutes for one job.",
             "Do not assume parallel execution between tools, pipeline branches, or jobs.",
             "Use the selected VM per-job partition resources, not whole-machine resources, as the job limit.",

@@ -628,9 +628,9 @@ def _intent_ids_from_text(user_request: str, detected: DetectedInputs) -> List[s
             matched.append(intent_id)
 
     if not matched:
-        if detected.has_fastq:
+        if detected.fastq_count > 0:
             matched.append("read_quality")
-        elif detected.has_fasta:
+        elif detected.fasta_count > 0:
             matched.append("assembly_completeness")
 
     return matched
