@@ -217,3 +217,4 @@ emulation/emulation_run/*
 /frontend/node_modules/*
 .cassie/kube/config
 eges_specs.txt
+*.swp
