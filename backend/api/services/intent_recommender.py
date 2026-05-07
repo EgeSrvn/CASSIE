@@ -651,8 +651,6 @@ def _build_llm_option(selected_tool_ids: List[str], explanation: str, source: st
         if get_tool_by_id(tool_id)
     ]
     short_explanation = (explanation or "Selected tools that best match your request.").strip()
-    if len(short_explanation) > 180:
-        short_explanation = f"{short_explanation[:177].rstrip()}..."
 
     return {
         "id": f"{source}_request",

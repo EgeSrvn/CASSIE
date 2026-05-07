@@ -477,6 +477,7 @@ export default function CreateJob() {
   const [recommendationOptions, setRecommendationOptions] = useState<RecommendationOption[]>([])
   const [pipelineRequestText, setPipelineRequestText] = useState('')
   const [loadingRecommendations, setLoadingRecommendations] = useState(false)
+  const [openToolGroups, setOpenToolGroups] = useState<Record<string, boolean>>({})
   const [priorityGroups, setPriorityGroups] = useState<PriorityGroup[]>(() => storedDraftRef.current?.priorityGroups || [])
   const [openPriorityGroups, setOpenPriorityGroups] = useState<number[]>(() => storedDraftRef.current?.openPriorityGroups?.length ? storedDraftRef.current.openPriorityGroups : [0])
   const [isPriorityModalOpen, setIsPriorityModalOpen] = useState(false)
@@ -518,6 +519,37 @@ export default function CreateJob() {
       }
     })
     return map
+  }, [availableTools])
+
+  const toolGroups = useMemo(() => {
+    const getGroupMeta = (toolType: string) => {
+      const normalized = String(toolType || '').trim().toLowerCase()
+      if (normalized === 'transform' || normalized === 'assembly') {
+        return { id: 'tool-type-assembly', title: 'Assembly Tools', description: 'Core assembly and graph-construction tools.' }
+      }
+      if (normalized === 'qc' || normalized === 'quality_control') {
+        return { id: 'tool-type-quality-control', title: 'Quality Control Tools', description: 'Evaluation, profiling, and validation tools.' }
+      }
+      if (normalized === 'annotation') {
+        return { id: 'tool-type-annotation', title: 'Annotation Tools', description: 'Lift-over and comparative annotation tools.' }
+      }
+      return {
+        id: `tool-type-${normalized || 'other'}`,
+        title: normalized ? `${normalized.charAt(0).toUpperCase()}${normalized.slice(1)} Tools` : 'Other Tools',
+        description: 'Additional specialized tools.',
+      }
+    }
+    const groups = new Map<string, { id: string; title: string; description: string; tools: Tool[] }>()
+    availableTools.forEach((tool) => {
+      const meta = getGroupMeta(tool.type)
+      const existing = groups.get(meta.id)
+      if (existing) {
+        existing.tools.push(tool)
+      } else {
+        groups.set(meta.id, { ...meta, tools: [tool] })
+      }
+    })
+    return Array.from(groups.values())
   }, [availableTools])
   const selectedPipeline = selectedPipelineDetails || selectedPipelineSummary
   const selectedPipelineNodes = useMemo(
@@ -1820,6 +1852,20 @@ export default function CreateJob() {
     setSelectedPipelineId(null)
     setSelectedTools(option.tool_indices)
     setToolFileMappings({})
+    const groupsToOpen: Record<string, boolean> = {}
+    option.tool_indices.forEach((toolIndex) => {
+      const tool = availableTools.find((t) => t.id === toolIndex)
+      if (tool) {
+        const normalized = String(tool.type || '').trim().toLowerCase()
+        let groupId: string
+        if (normalized === 'transform' || normalized === 'assembly') groupId = 'tool-type-assembly'
+        else if (normalized === 'qc' || normalized === 'quality_control') groupId = 'tool-type-quality-control'
+        else if (normalized === 'annotation') groupId = 'tool-type-annotation'
+        else groupId = `tool-type-${normalized || 'other'}`
+        groupsToOpen[groupId] = true
+      }
+    })
+    setOpenToolGroups((prev) => ({ ...prev, ...groupsToOpen }))
   }
 
   const normalizeFileFormats = (file: FileItem & { folderPath?: string }): string[] => {
@@ -3226,24 +3272,56 @@ export default function CreateJob() {
                 ) : availableTools.length === 0 ? (
                   <p style={{ color: '#f44336' }}>No tools available. Please check your connection.</p>
                 ) : (
-                  <div className="tool-selection-grid">
-                    {availableTools.map((tool) => (
-                    <label
-                      key={tool.id}
-                      className={`tool-option ${selectedTools.includes(tool.id) ? 'selected' : ''} ${!tool.enabled ? 'disabled' : ''}`}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={selectedTools.includes(tool.id)}
-                        onChange={() => handleToolToggle(tool.id)}
-                        disabled={!tool.enabled || creating}
-                      />
-                      <div className="tool-option-content">
-                        <strong>{tool.name}</strong>
-                        <p>{tool.description}</p>
-                      </div>
-                    </label>
-                    ))}
+                  <div className="pipeline-sidebar-sections" style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                    {toolGroups.map((group) => {
+                      const isOpen = !!openToolGroups[group.id]
+                      const selectedCount = group.tools.filter((t) => selectedTools.includes(t.id)).length
+                      return (
+                        <section key={group.id} className="pipeline-sidebar-section">
+                          <button
+                            type="button"
+                            className="pipeline-sidebar-section-header"
+                            onClick={() => setOpenToolGroups((prev) => ({ ...prev, [group.id]: !prev[group.id] }))}
+                          >
+                            <span>
+                              <strong>
+                                {group.title}
+                                {selectedCount > 0 && (
+                                  <span style={{ marginLeft: '0.5rem', fontSize: '0.75rem', fontWeight: 600, color: 'var(--primary)', background: 'rgba(39,84,138,0.1)', borderRadius: '999px', padding: '0 0.4rem' }}>
+                                    {selectedCount} selected
+                                  </span>
+                                )}
+                              </strong>
+                              <small>{group.description}</small>
+                            </span>
+                            <span className={`pipeline-sidebar-chevron ${isOpen ? 'open' : ''}`}>▾</span>
+                          </button>
+                          {isOpen && (
+                            <div className="pipeline-sidebar-section-body" style={{ padding: '0.75rem' }}>
+                              <div className="tool-selection-grid">
+                                {group.tools.map((tool) => (
+                                  <label
+                                    key={tool.id}
+                                    className={`tool-option ${selectedTools.includes(tool.id) ? 'selected' : ''} ${!tool.enabled ? 'disabled' : ''}`}
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      checked={selectedTools.includes(tool.id)}
+                                      onChange={() => handleToolToggle(tool.id)}
+                                      disabled={!tool.enabled || creating}
+                                    />
+                                    <div className="tool-option-content">
+                                      <strong>{tool.name}</strong>
+                                      <p>{tool.description}</p>
+                                    </div>
+                                  </label>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </section>
+                      )
+                    })}
                   </div>
                 )}
                 <small style={{ display: 'block', marginTop: '8px', color: '#666' }}>
