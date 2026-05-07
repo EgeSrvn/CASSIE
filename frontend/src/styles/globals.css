@@ -5283,6 +5283,76 @@ body::before {
   color: #cbd5e1 !important;
 }
 
+:root[data-ui="modern"] .form-textarea,
+:root[data-ui="modern"] .report-dialog-form input,
+:root[data-ui="modern"] .report-dialog-form textarea {
+  border-color: rgba(148, 163, 184, 0.2) !important;
+  background: rgba(15, 23, 42, 0.92) !important;
+  color: #f8fafc !important;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.26) !important;
+}
+
+:root[data-ui="modern"] .form-textarea:focus,
+:root[data-ui="modern"] .report-dialog-form input:focus,
+:root[data-ui="modern"] .report-dialog-form textarea:focus {
+  border-color: rgba(125, 211, 252, 0.62) !important;
+  box-shadow: 0 0 0 4px rgba(56, 189, 248, 0.16) !important;
+}
+
+:root[data-ui="modern"] .pipeline-card-meta {
+  background: transparent !important;
+  box-shadow: none !important;
+  border-top-color: rgba(148, 163, 184, 0.18) !important;
+}
+
+:root[data-ui="modern"] .pipeline-card-date {
+  color: #cbd5e1 !important;
+}
+
+:root[data-ui="modern"] .create-job-page .recommendation-file-section,
+:root[data-ui="modern"] .create-job-page .recommendation-file-body,
+:root[data-ui="modern"] .create-job-page .recommendation-file-panel,
+:root[data-ui="modern"] .create-job-page .create-job-storage-section,
+:root[data-ui="modern"] .create-job-page .builder-section-card,
+:root[data-ui="modern"] .create-job-page .builder-requirement-card {
+  border-color: rgba(148, 163, 184, 0.2) !important;
+  background:
+    linear-gradient(180deg, rgba(15, 23, 42, 0.94), rgba(17, 24, 39, 0.9)),
+    linear-gradient(135deg, rgba(56, 189, 248, 0.08), rgba(52, 211, 153, 0.06)) !important;
+  color: #e2e8f0 !important;
+}
+
+:root[data-ui="modern"] .create-job-page .recommendation-file-header {
+  border-color: rgba(148, 163, 184, 0.2) !important;
+  background: linear-gradient(135deg, rgba(39, 84, 138, 0.18), rgba(221, 168, 83, 0.18)) !important;
+  color: #e2e8f0 !important;
+}
+
+:root[data-ui="modern"] .create-job-page .recommendation-file-header strong,
+:root[data-ui="modern"] .create-job-page .recommendation-file-header .pipeline-sidebar-chevron {
+  color: #f8fafc !important;
+}
+
+:root[data-ui="modern"] .create-job-page .recommendation-file-header small {
+  color: #cbd5e1 !important;
+}
+
+:root[data-ui="modern"] .create-job-page .builder-file-chip,
+:root[data-ui="modern"] .create-job-page .builder-file-chip-button {
+  border-color: rgba(71, 85, 105, 0.88) !important;
+  background: rgba(2, 6, 23, 0.96) !important;
+  color: #f8fafc !important;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.28) !important;
+}
+
+:root[data-ui="modern"] .create-job-page .builder-file-chip.selected,
+:root[data-ui="modern"] .create-job-page .builder-file-chip-button.selected {
+  border-color: rgba(125, 211, 252, 0.52) !important;
+  background:
+    linear-gradient(180deg, rgba(5, 10, 24, 0.98), rgba(8, 47, 73, 0.92)) !important;
+  box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.26), 0 12px 28px rgba(0, 0, 0, 0.3) !important;
+}
+
 :root[data-ui="modern"] .runtime-estimate-card,
 :root[data-ui="modern"] .runtime-estimate-panel {
   border-color: rgba(125, 211, 252, 0.2) !important;
@@ -5431,6 +5501,15 @@ body::before {
 
 .recommendation-file-list {
   margin-bottom: 1rem;
+}
+
+.recommendation-file-section {
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.recommendation-file-panel {
+  border-radius: 10px !important;
 }
 
 .request-recommendation-panel {

@@ -923,8 +923,11 @@
 }
 
 :root[data-ui="modern"] .pipeline-builder-page .builder-block-menu-trigger,
+:root[data-ui="modern"] .create-job-page .builder-block-menu-trigger,
 :root[data-ui="modern"] .pipeline-builder-page .pipeline-node-menu,
+:root[data-ui="modern"] .create-job-page .pipeline-node-menu,
 :root[data-ui="modern"] .pipeline-builder-page .pipeline-node-menu button,
+:root[data-ui="modern"] .create-job-page .pipeline-node-menu button,
 :root[data-ui="modern"] .pipeline-builder-page .form-input,
 :root[data-ui="modern"] .pipeline-builder-page .form-textarea,
 :root[data-ui="modern"] .pipeline-builder-page select,
@@ -940,10 +943,17 @@
   color: #f8fafc !important;
 }
 
-:root[data-ui="modern"] .pipeline-builder-page .pipeline-node-menu button:hover {
+:root[data-ui="modern"] .create-job-page select option {
+  background: #0f172a !important;
+  color: #f8fafc !important;
+}
+
+:root[data-ui="modern"] .pipeline-builder-page .pipeline-node-menu button:hover,
+:root[data-ui="modern"] .create-job-page .pipeline-node-menu button:hover {
   background: rgba(125, 211, 252, 0.12) !important;
 }
 
-:root[data-ui="modern"] .pipeline-builder-page .pipeline-node-menu button.danger {
+:root[data-ui="modern"] .pipeline-builder-page .pipeline-node-menu button.danger,
+:root[data-ui="modern"] .create-job-page .pipeline-node-menu button.danger {
   color: #fecdd3 !important;
 }

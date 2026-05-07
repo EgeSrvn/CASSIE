@@ -479,6 +479,7 @@ export default function CreateJob() {
   const [loadingRecommendations, setLoadingRecommendations] = useState(false)
   const [openToolGroups, setOpenToolGroups] = useState<Record<string, boolean>>({})
   const [openStorageFiles, setOpenStorageFiles] = useState(true)
+  const [openRecommendationFiles, setOpenRecommendationFiles] = useState(true)
   const [priorityGroups, setPriorityGroups] = useState<PriorityGroup[]>(() => storedDraftRef.current?.priorityGroups || [])
   const [openPriorityGroups, setOpenPriorityGroups] = useState<number[]>(() => storedDraftRef.current?.openPriorityGroups?.length ? storedDraftRef.current.openPriorityGroups : [0])
   const [isPriorityModalOpen, setIsPriorityModalOpen] = useState(false)
@@ -3077,22 +3078,39 @@ export default function CreateJob() {
                       <p className="recommendation-helper">Loading Storage files...</p>
                     ) : (
                       <div className="recommendation-file-list">
-                        <div style={sharedRequirementCardStyle}>
-                          {getCombinedSelectableFiles().length === 0 ? (
-                            <p className="recommendation-helper" style={{ margin: 0 }}>
-                              No Storage files found yet. Upload inputs from Storage before using them in a job.
-                            </p>
-                          ) : getCombinedSelectableFiles().map(file => (
-                            <span
-                              key={`rec-file-${file.id}`}
-                              className="builder-file-chip"
-                              title={file.folderPath ? `${file.folderPath}/${file.filename}` : file.filename}
-                            >
-                              <strong>{file.filename}</strong>
-                              {file.folderPath && <span>{file.folderPath}</span>}
+                        <section className="pipeline-sidebar-section recommendation-file-section">
+                          <button
+                            type="button"
+                            className="pipeline-sidebar-section-header recommendation-file-header"
+                            onClick={() => setOpenRecommendationFiles((prev) => !prev)}
+                          >
+                            <span>
+                              <strong>Input Files</strong>
+                              <small>Files already uploaded in Storage that will guide tool recommendations.</small>
                             </span>
-                          ))}
-                        </div>
+                            <span className={`pipeline-sidebar-chevron ${openRecommendationFiles ? 'open' : ''}`}>▾</span>
+                          </button>
+                          {openRecommendationFiles && (
+                            <div className="pipeline-sidebar-section-body recommendation-file-body">
+                              <div style={sharedRequirementCardStyle} className="recommendation-file-panel">
+                                {getCombinedSelectableFiles().length === 0 ? (
+                                  <p className="recommendation-helper" style={{ margin: 0 }}>
+                                    No Storage files found yet. Upload inputs from Storage before using them in a job.
+                                  </p>
+                                ) : getCombinedSelectableFiles().map(file => (
+                                  <span
+                                    key={`rec-file-${file.id}`}
+                                    className="builder-file-chip"
+                                    title={file.folderPath ? `${file.folderPath}/${file.filename}` : file.filename}
+                                  >
+                                    <strong>{file.filename}</strong>
+                                    {file.folderPath && <span>{file.folderPath}</span>}
+                                  </span>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </section>
                       </div>
                     )}
 
@@ -3125,22 +3143,39 @@ export default function CreateJob() {
                       <p className="recommendation-helper">Loading Storage files...</p>
                     ) : (
                       <div className="recommendation-file-list">
-                        <div style={sharedRequirementCardStyle}>
-                          {getCombinedSelectableFiles().length === 0 ? (
-                            <p className="recommendation-helper" style={{ margin: 0 }}>
-                              No Storage files found yet. The model can still suggest tools from your request.
-                            </p>
-                          ) : getCombinedSelectableFiles().map(file => (
-                            <span
-                              key={`request-rec-file-${file.id}`}
-                              className="builder-file-chip"
-                              title={file.folderPath ? `${file.folderPath}/${file.filename}` : file.filename}
-                            >
-                              <strong>{file.filename}</strong>
-                              {file.folderPath && <span>{file.folderPath}</span>}
+                        <section className="pipeline-sidebar-section recommendation-file-section">
+                          <button
+                            type="button"
+                            className="pipeline-sidebar-section-header recommendation-file-header"
+                            onClick={() => setOpenRecommendationFiles((prev) => !prev)}
+                          >
+                            <span>
+                              <strong>Input Files</strong>
+                              <small>Files already uploaded in Storage that will guide tool recommendations.</small>
                             </span>
-                          ))}
-                        </div>
+                            <span className={`pipeline-sidebar-chevron ${openRecommendationFiles ? 'open' : ''}`}>▾</span>
+                          </button>
+                          {openRecommendationFiles && (
+                            <div className="pipeline-sidebar-section-body recommendation-file-body">
+                              <div style={sharedRequirementCardStyle} className="recommendation-file-panel">
+                                {getCombinedSelectableFiles().length === 0 ? (
+                                  <p className="recommendation-helper" style={{ margin: 0 }}>
+                                    No Storage files found yet. The model can still suggest tools from your request.
+                                  </p>
+                                ) : getCombinedSelectableFiles().map(file => (
+                                  <span
+                                    key={`request-rec-file-${file.id}`}
+                                    className="builder-file-chip"
+                                    title={file.folderPath ? `${file.folderPath}/${file.filename}` : file.filename}
+                                  >
+                                    <strong>{file.filename}</strong>
+                                    {file.folderPath && <span>{file.folderPath}</span>}
+                                  </span>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </section>
                       </div>
                     )}
                     <button
@@ -3867,9 +3902,6 @@ export default function CreateJob() {
                           </span>
                         </div>
                       </div>
-                      <p className="runtime-estimate-copy">
-                        Model: {runtimeEstimate.execution_shape}. Partition factor: {runtimeEstimate.partition_factor.toFixed(2)}x. Input size: {runtimeEstimate.total_input_size_mib.toFixed(2)} MiB.
-                      </p>
                       {runtimeEstimate.tool_breakdown.length > 0 && (
                         <div className="runtime-estimate-breakdown">
                           {runtimeEstimate.tool_breakdown.map((tool) => (
