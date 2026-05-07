@@ -852,6 +852,7 @@ export default function ForumThread() {
               <SortDropdown
                 id="thread-comment-sort"
                 label="Sort comments"
+                hideLabel
                 value={commentSortBy}
                 options={[
                   { value: 'recent', label: 'Most Recent' },

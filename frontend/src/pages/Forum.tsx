@@ -159,6 +159,7 @@ export default function Forum() {
             <SortDropdown
               id="forum-sort"
               label="Sort by"
+              hideLabel
               value={sortBy}
               options={[
                 { value: 'recent', label: 'Most Recent' },

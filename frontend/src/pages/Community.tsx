@@ -336,6 +336,7 @@ export default function Community() {
             <SortDropdown
               id="community-sort"
               label="Sort by"
+              hideLabel
               value={sortBy}
               options={[
                 { value: 'recent', label: 'Most Recent' },
@@ -347,9 +348,13 @@ export default function Community() {
               <button
                 type="button"
                 className="community-tool-dropdown-trigger"
+                aria-haspopup="listbox"
+                aria-expanded={toolFilterOpen}
+                aria-label="Filter tools"
                 onClick={() => setToolFilterOpen((current) => !current)}
               >
-                {selectedTools.length > 0 ? `Tools (${selectedTools.length})` : 'Filter Tools'}
+                <span>{selectedTools.length > 0 ? `Tools (${selectedTools.length})` : 'Filter Tools'}</span>
+                <span className="system-dropdown-caret" aria-hidden="true">▾</span>
               </button>
               {toolFilterOpen && availableTools.length > 0 && (
                 <div className="community-tool-dropdown-panel">
