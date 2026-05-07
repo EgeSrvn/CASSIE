@@ -1146,9 +1146,30 @@ export default function PipelineBuilder() {
       <Navigation />
       <div className="page-content">
         <div className="pipeline-builder pipeline-builder--with-cat">
+          <div className="pipeline-builder-topbar">
+            <div>
+              <h1 className="pipeline-builder-title">Visual Pipeline Builder</h1>
+            </div>
+            <div className="pipeline-builder-topbar-actions">
+              {validationErrors.length > 0 && (
+                <p className="pipeline-inline-validation">
+                  {validationErrors[0].length > 120 ? `${validationErrors[0].slice(0, 117)}...` : validationErrors[0]}
+                </p>
+              )}
+              {priorityGroups.length > 0 && (
+                <button
+                  type="button"
+                  className="btn-secondary pipeline-priority-launch"
+                  onClick={() => setIsPriorityModalOpen(true)}
+                >
+                  Priority Sets ({selectedPriorityToolCount})
+                </button>
+              )}
+            </div>
+          </div>
           <div className="pipeline-builder-grid">
             <div className="pipeline-sidebar">
-              <div className="card">
+              <div className="card pipeline-sidebar-card pipeline-components-card">
                 <h2 className="sidebar-title">Components</h2>
                 <p className="sidebar-description">
                   Add blocks by section, collapse groups you are not using, and rename any block later from its menu.
@@ -1297,7 +1318,7 @@ export default function PipelineBuilder() {
                 </div>
               </div>
 
-              <div className="card pipeline-form">
+              <div className="card pipeline-sidebar-card pipeline-form">
                 <h2 className="sidebar-title">Pipeline Details</h2>
                 <div className="form-group">
                   <label htmlFor="pipeline-name">Name *</label>
@@ -1352,49 +1373,32 @@ export default function PipelineBuilder() {
             </div>
 
             <div className="pipeline-canvas">
-              <div className="pipeline-canvas-header">
-                <h2>Visual Pipeline Builder</h2>
-                <div className="pipeline-canvas-header-actions">
-                  {validationErrors.length > 0 && (
-                    <p className="pipeline-inline-validation">
-                      {validationErrors[0].length > 120 ? `${validationErrors[0].slice(0, 117)}...` : validationErrors[0]}
-                    </p>
-                  )}
-                  {priorityGroups.length > 0 && (
-                    <button
-                      type="button"
-                      className="btn-secondary pipeline-priority-launch"
-                      onClick={() => setIsPriorityModalOpen(true)}
-                    >
-                      Priority Sets ({selectedPriorityToolCount})
-                    </button>
-                  )}
-                </div>
+              <div className="pipeline-canvas-flow-shell">
+                <ReactFlow
+                  className="pipeline-react-flow"
+                  nodes={decoratedNodes}
+                  edges={edges}
+                  onNodesChange={onNodesChange}
+                  onEdgesChange={onEdgesChange}
+                  onConnect={onConnect}
+                  nodeTypes={nodeTypes}
+                  fitView
+                  fitViewOptions={{ padding: 0.16 }}
+                  nodeExtent={PIPELINE_NODE_EXTENT}
+                  translateExtent={PIPELINE_TRANSLATE_EXTENT}
+                  snapToGrid
+                  snapGrid={[20, 20]}
+                  onPaneClick={() => setOpenNodeMenuId(null)}
+                  defaultEdgeOptions={{
+                    type: 'smoothstep',
+                    markerEnd: { type: MarkerType.ArrowClosed, color: '#2563eb' },
+                    style: { stroke: '#2563eb' },
+                  }}
+                >
+                  <Background color="#d5c29d" gap={24} size={1.15} />
+                  <Controls />
+                </ReactFlow>
               </div>
-              <ReactFlow
-                className="pipeline-react-flow"
-                nodes={decoratedNodes}
-                edges={edges}
-                onNodesChange={onNodesChange}
-                onEdgesChange={onEdgesChange}
-                onConnect={onConnect}
-                nodeTypes={nodeTypes}
-                fitView
-                fitViewOptions={{ padding: 0.16 }}
-                nodeExtent={PIPELINE_NODE_EXTENT}
-                translateExtent={PIPELINE_TRANSLATE_EXTENT}
-                snapToGrid
-                snapGrid={[20, 20]}
-                onPaneClick={() => setOpenNodeMenuId(null)}
-                defaultEdgeOptions={{
-                  type: 'smoothstep',
-                  markerEnd: { type: MarkerType.ArrowClosed, color: '#2563eb' },
-                  style: { stroke: '#2563eb' },
-                }}
-              >
-                <Background color="#d5c29d" gap={24} size={1.15} />
-                <Controls />
-              </ReactFlow>
             </div>
           </div>
         </div>

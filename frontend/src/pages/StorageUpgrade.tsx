@@ -143,6 +143,9 @@ export default function StorageUpgrade() {
                 <span>per {billingInterval}</span>
               </div>
               <div className="storage-upgrade-actions">
+                <button type="button" className="btn-secondary" onClick={() => navigate('/balance')}>
+                  Add Balance
+                </button>
                 <button
                   type="button"
                   className="btn-primary"
@@ -152,9 +155,6 @@ export default function StorageUpgrade() {
                   {submittingPlanId === plan.id
                     ? (activePlanId === plan.id ? 'Refreshing...' : 'Switching...')
                     : (activePlanId === plan.id ? 'Keep Current Plan' : 'Switch To This Plan')}
-                </button>
-                <button type="button" className="btn-secondary" onClick={() => navigate('/balance')}>
-                  Add Balance
                 </button>
               </div>
             </article>

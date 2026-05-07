@@ -334,7 +334,7 @@
 }
 
 .storage-upgrade-card {
-  min-height: 280px;
+  min-height: 246px;
   padding: 1.35rem;
   border: 1px solid rgba(39, 84, 138, 0.14);
   border-radius: 24px;
@@ -386,9 +386,19 @@
 }
 
 .storage-upgrade-actions {
-  display: flex;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
   gap: 0.75rem;
-  flex-wrap: wrap;
+  align-items: center;
+}
+
+.storage-upgrade-actions .btn-secondary {
+  white-space: nowrap;
+  padding-inline: 1rem;
+}
+
+.storage-upgrade-actions .btn-primary {
+  min-width: 0;
 }
 
 .storage-upgrade-summary-card {
@@ -464,6 +474,7 @@
   .storage-tab-strip,
   .storage-upgrade-actions {
     width: 100%;
+    grid-template-columns: 1fr;
   }
 
   .storage-upgrade-summary-card {

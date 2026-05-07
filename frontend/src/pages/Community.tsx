@@ -9,7 +9,7 @@ import {
   reportPipeline,
   votePipeline,
 } from '../services/pipelineService'
-import { getToken } from '../services/authService'
+import { getStoredUser, getToken } from '../services/authService'
 import { getAvailableTools } from '../services/toolService'
 import Navigation from '../components/Navigation'
 import ReportDialog from '../components/ReportDialog'
@@ -49,6 +49,7 @@ export default function Community() {
   const [reportingPipeline, setReportingPipeline] = useState<Pipeline | null>(null)
   const [submittingReport, setSubmittingReport] = useState(false)
   const isAuthenticated = !!getToken()
+  const currentUserId = getStoredUser()?.id ?? null
 
   useEffect(() => {
     void loadPipelines()
@@ -270,6 +271,9 @@ export default function Community() {
       navigate('/login')
       return
     }
+    if (pipeline.publisher?.id && pipeline.publisher.id === currentUserId) {
+      return
+    }
     setReportingPipeline(pipeline)
   }
 
@@ -403,15 +407,17 @@ export default function Community() {
                     className="card pipeline-card pipeline-card-immersive"
                     onClick={() => handleViewPipeline(pipeline.id)}
                   >
-                    <button
-                      type="button"
-                      className="engagement-symbol-button engagement-symbol-report pipeline-report-button"
-                      onClick={(e) => openReportPipeline(pipeline, e)}
-                      aria-label={`Report pipeline ${pipeline.name}`}
-                      title="Report"
-                    >
-                      !
-                    </button>
+                    {pipeline.publisher?.id !== currentUserId && (
+                      <button
+                        type="button"
+                        className="engagement-symbol-button engagement-symbol-report pipeline-report-button"
+                        onClick={(e) => openReportPipeline(pipeline, e)}
+                        aria-label={`Report pipeline ${pipeline.name}`}
+                        title="Report"
+                      >
+                        !
+                      </button>
+                    )}
                     <h3 className="pipeline-card-title">{pipeline.name}</h3>
                     {pipeline.description && (
                       <p className="pipeline-card-description">

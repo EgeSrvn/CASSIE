@@ -433,6 +433,20 @@ body {
   box-shadow: var(--shadow-md);
 }
 
+:root[data-ui="modern"] .jobs-classic-page .icon-button-danger,
+:root[data-ui="modern"] .pipelines-classic-page .icon-button-danger {
+  background: rgba(69, 10, 10, 0.88) !important;
+  color: #fecaca !important;
+  border-color: rgba(248, 113, 113, 0.24) !important;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.28) !important;
+}
+
+:root[data-ui="modern"] .jobs-classic-page .icon-button-danger:hover:not(:disabled),
+:root[data-ui="modern"] .pipelines-classic-page .icon-button-danger:hover:not(:disabled) {
+  background: rgba(127, 29, 29, 0.92) !important;
+  color: #fee2e2 !important;
+}
+
 .job-info-cancel-button {
   font-size: 1.35rem;
   font-weight: 800;
@@ -3745,6 +3759,24 @@ body::before {
   flex-direction: column;
   gap: 0.55rem;
   min-width: 0;
+}
+
+.forum-thread-page .forum-thread-main-card,
+.forum-thread-page .forum-comment-card {
+  position: relative;
+}
+
+.forum-thread-page .forum-thread-main-card .forum-post-author-block,
+.forum-thread-page .forum-comment-card .forum-post-author-block {
+  padding-right: 5.9rem;
+}
+
+.forum-thread-page .forum-thread-main-card .forum-post-header-actions,
+.forum-thread-page .forum-comment-card .forum-post-header-actions {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  z-index: 3;
 }
 
 .forum-post-body {

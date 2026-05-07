@@ -46,6 +46,15 @@ export default function CatCornerCard({ config, className = '' }: CatCornerCardP
       >
         <button
           type="button"
+          className="cat-corner-toggle"
+          aria-label={isExpanded ? 'Collapse cat card' : 'Expand cat card'}
+          aria-expanded={isExpanded}
+          onClick={() => setIsExpanded((current) => !current)}
+        >
+          <CatToggleIcon direction={isExpanded ? 'right' : 'left'} />
+        </button>
+        <button
+          type="button"
           className="cat-corner-card"
           aria-label={config.title}
           onClick={() => setIsOpen(true)}
@@ -61,15 +70,6 @@ export default function CatCornerCard({ config, className = '' }: CatCornerCardP
               <span className="cat-corner-card__description">{config.description}</span>
             </span>
           )}
-        </button>
-        <button
-          type="button"
-          className="cat-corner-toggle"
-          aria-label={isExpanded ? 'Collapse cat card' : 'Expand cat card'}
-          aria-expanded={isExpanded}
-          onClick={() => setIsExpanded((current) => !current)}
-        >
-          <CatToggleIcon direction={isExpanded ? 'left' : 'right'} />
         </button>
       </div>
 

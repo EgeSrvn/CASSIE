@@ -10,7 +10,7 @@ import {
   reportForumThread,
   voteForumThread,
 } from '../services/forumService'
-import { getToken } from '../services/authService'
+import { getStoredUser, getToken } from '../services/authService'
 import { extractApiErrorMessage } from '../services/apiClient'
 import '../styles/globals.css'
 
@@ -26,6 +26,7 @@ export default function Forum() {
   const [totalPages, setTotalPages] = useState(1)
   const [reportingThread, setReportingThread] = useState<ForumThreadSummary | null>(null)
   const [submittingReport, setSubmittingReport] = useState(false)
+  const currentUserId = getStoredUser()?.id ?? null
 
   useEffect(() => {
     void loadThreads()
@@ -89,6 +90,9 @@ export default function Forum() {
     event.stopPropagation()
     if (!isAuthenticated) {
       navigate('/login')
+      return
+    }
+    if (thread.author.id === currentUserId) {
       return
     }
     setReportingThread(thread)
@@ -195,15 +199,17 @@ export default function Forum() {
                   }
                 }}
               >
-                <button
-                  type="button"
-                  className="engagement-symbol-button engagement-symbol-report forum-report-corner-button"
-                  onClick={(event) => void openReportThread(thread, event)}
-                  aria-label={`Report thread ${thread.title}`}
-                  title="Report"
-                >
-                  !
-                </button>
+                {thread.author.id !== currentUserId && (
+                  <button
+                    type="button"
+                    className="engagement-symbol-button engagement-symbol-report forum-report-corner-button"
+                    onClick={(event) => void openReportThread(thread, event)}
+                    aria-label={`Report thread ${thread.title}`}
+                    title="Report"
+                  >
+                    !
+                  </button>
+                )}
                 <div className="forum-thread-topline">
                   <span>{new Date(thread.last_activity_at).toLocaleString()}</span>
                 </div>

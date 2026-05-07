@@ -1,10 +1,10 @@
 .cat-corner-shell {
   position: fixed;
-  left: 1rem;
+  right: 1rem;
   bottom: 1rem;
   z-index: 900;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 1.85rem;
+  grid-template-columns: 1.85rem minmax(0, 1fr);
   gap: 0.35rem;
   align-items: stretch;
   height: 5.15rem;
@@ -12,7 +12,7 @@
 }
 
 .cat-corner-shell--collapsed {
-  grid-template-columns: 5.35rem 1.85rem;
+  grid-template-columns: 1.85rem 5.35rem;
   width: 7.55rem;
 }
 
@@ -244,15 +244,15 @@
 
 @media (max-width: 768px) {
   .cat-corner-shell {
-    left: 0.75rem;
+    right: 0.75rem;
     bottom: 0.75rem;
     height: 4.45rem;
     width: min(15.5rem, calc(100vw - 1.5rem));
-    grid-template-columns: minmax(0, 1fr) 1.7rem;
+    grid-template-columns: 1.7rem minmax(0, 1fr);
   }
 
   .cat-corner-shell--collapsed {
-    grid-template-columns: 4.55rem 1.7rem;
+    grid-template-columns: 1.7rem 4.55rem;
     width: 6.6rem;
   }
 

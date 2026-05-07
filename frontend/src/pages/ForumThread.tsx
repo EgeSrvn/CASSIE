@@ -459,12 +459,18 @@ export default function ForumThread() {
     if (!thread) {
       return
     }
+    if (thread.user_id === currentUserId) {
+      return
+    }
     setReportTarget({ type: 'thread', id: thread.id })
   }
 
-  const openReportComment = (commentId: number) => {
+  const openReportComment = (commentId: number, authorId: number) => {
     if (!isAuthenticated) {
       navigate('/login')
+      return
+    }
+    if (authorId === currentUserId) {
       return
     }
     setReportTarget({ type: 'comment', id: commentId })
@@ -636,19 +642,21 @@ export default function ForumThread() {
                 )}
               </div>
             </div>
-            <div className="forum-post-header-actions">
-              <button
-                type="button"
-                className="engagement-symbol-button engagement-symbol-report"
-                onClick={() => openReportComment(comment.id)}
-                aria-label="Report comment"
-                title="Report"
-              >
-                !
-              </button>
-              {renderActionMenu(commentKey, [
-                {
-                  label: 'Reply',
+              <div className="forum-post-header-actions">
+                {comment.user_id !== currentUserId && (
+                  <button
+                    type="button"
+                    className="engagement-symbol-button engagement-symbol-report"
+                    onClick={() => openReportComment(comment.id, comment.user_id)}
+                    aria-label="Report comment"
+                    title="Report"
+                  >
+                    !
+                  </button>
+                )}
+                {renderActionMenu(commentKey, [
+                  {
+                    label: 'Reply',
                   onClick: () => beginReply({
                     key: commentKey,
                     parentCommentId: comment.id,
@@ -759,15 +767,17 @@ export default function ForumThread() {
                 </div>
               </div>
               <div className="forum-post-header-actions">
-                <button
-                  type="button"
-                  className="engagement-symbol-button engagement-symbol-report"
-                  onClick={openReportThread}
-                  aria-label="Report forum post"
-                  title="Report"
-                >
-                  !
-                </button>
+                {thread.user_id !== currentUserId && (
+                  <button
+                    type="button"
+                    className="engagement-symbol-button engagement-symbol-report"
+                    onClick={openReportThread}
+                    aria-label="Report forum post"
+                    title="Report"
+                  >
+                    !
+                  </button>
+                )}
                 {renderActionMenu('thread-main', [
                   ...(thread.user_id === currentUserId
                     ? [{ label: 'Delete', onClick: () => void handleDeleteThread(), danger: true }]
