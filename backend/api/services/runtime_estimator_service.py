@@ -596,9 +596,13 @@ def _runtime_llm_prompt(tool_ids: List[str], llm_inputs: List[Dict[str, Any]], v
     cpu_cores = partition.get("cpu_cores", "unknown")
     memory_gib = partition.get("memory_gib", "unknown")
     inputs_by_tool: Dict[str, List[str]] = {}
+    sizes_by_tool: Dict[str, float] = {}
     for entry in llm_inputs:
         tool_id = str(entry.get("tool_id") or "").upper()
         inputs = inputs_by_tool.setdefault(tool_id, [])
+        total_size = float(entry.get("total_input_size_mib") or 0.0)
+        if total_size > sizes_by_tool.get(tool_id, 0):
+            sizes_by_tool[tool_id] = total_size
         for suffix in entry.get("file_formats_and_suffixes") or []:
             value = str(suffix or "").strip()
             if value and value not in inputs:
@@ -609,7 +613,12 @@ def _runtime_llm_prompt(tool_ids: List[str], llm_inputs: List[Dict[str, Any]], v
         normalized_tool_id = str(tool_id or "").upper()
         tool_name = (get_tool_by_id(normalized_tool_id) or {}).get("name", normalized_tool_id)
         input_types = inputs_by_tool.get(normalized_tool_id) or ["unknown input"]
-        tool_parts.append(f"{tool_name} - {', '.join(input_types)}")
+        input_size_mib = sizes_by_tool.get(normalized_tool_id, 0)
+        if input_size_mib > 0:
+            input_size_gib = round(input_size_mib / 1024, 2)
+            tool_parts.append(f"{tool_name} - {', '.join(input_types)} - {input_size_gib}GiB")
+        else:
+            tool_parts.append(f"{tool_name} - {', '.join(input_types)}")
     if not tool_parts:
         tool_parts.append("unknown tool - unknown input")
 
@@ -674,8 +683,8 @@ def _call_local_llm_for_runtime_minutes(prompt: str) -> Dict[str, Any]:
         "model": model,
         "system_prompt": system_prompt,
         "user_prompt": prompt,
-        "temperature": 0.0,
-        "max_tokens": 32,
+        "temperature": 0.3,
+        "max_tokens": 64,
     }
     _debug_local_llm_exchange("runtime-estimate", prompt_debug_payload)
     body = json.dumps(
@@ -685,8 +694,8 @@ def _call_local_llm_for_runtime_minutes(prompt: str) -> Dict[str, Any]:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt},
             ],
-            "temperature": 0.0,
-            "max_tokens": 32,
+            "temperature": 0.3,
+            "max_tokens": 64,
         }
     ).encode("utf-8")
     request = urllib.request.Request(
@@ -1030,3 +1039,4 @@ def estimate_runtime_for_pipeline_graph(
         pipeline_nodes=nodes,
         pipeline_edges=edges,
     )
+
