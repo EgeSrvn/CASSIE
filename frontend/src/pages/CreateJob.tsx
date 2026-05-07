@@ -478,6 +478,7 @@ export default function CreateJob() {
   const [pipelineRequestText, setPipelineRequestText] = useState('')
   const [loadingRecommendations, setLoadingRecommendations] = useState(false)
   const [openToolGroups, setOpenToolGroups] = useState<Record<string, boolean>>({})
+  const [openStorageFiles, setOpenStorageFiles] = useState(true)
   const [priorityGroups, setPriorityGroups] = useState<PriorityGroup[]>(() => storedDraftRef.current?.priorityGroups || [])
   const [openPriorityGroups, setOpenPriorityGroups] = useState<number[]>(() => storedDraftRef.current?.openPriorityGroups?.length ? storedDraftRef.current.openPriorityGroups : [0])
   const [isPriorityModalOpen, setIsPriorityModalOpen] = useState(false)
@@ -2943,7 +2944,7 @@ export default function CreateJob() {
   }
 
   return (
-    <div className="page-container">
+    <div className="page-container create-job-page">
       <Navigation />
       <div className="page-content">
         <header className="page-header">
@@ -3465,16 +3466,30 @@ export default function CreateJob() {
                     ) : (
                       <>
                       {storageSelectableFiles.length > 0 && (
-                        <div className="builder-section-card builder-input-file-context">
-                          <p className="builder-card-kicker">Storage Files</p>
-                      <div className="builder-file-chip-grid">
-                            {storageSelectableFiles.map((file) => renderSelectableFileChip(
-                              file,
-                              'pipeline-context',
-                              selectedLibraryFiles.some((item) => item.id === file.id)
-                            ))}
-                          </div>
-                        </div>
+                        <section className="pipeline-sidebar-section create-job-storage-section" style={{ marginBottom: '1rem' }}>
+                          <button
+                            type="button"
+                            className="pipeline-sidebar-section-header"
+                            onClick={() => setOpenStorageFiles((prev) => !prev)}
+                          >
+                            <span>
+                              <strong>Storage Files</strong>
+                              <small>Files available from your Storage to assign to tool inputs.</small>
+                            </span>
+                            <span className={`pipeline-sidebar-chevron ${openStorageFiles ? 'open' : ''}`}>▾</span>
+                          </button>
+                          {openStorageFiles && (
+                            <div className="pipeline-sidebar-section-body">
+                              <div className="builder-file-chip-grid">
+                                {storageSelectableFiles.map((file) => renderSelectableFileChip(
+                                  file,
+                                  'pipeline-context',
+                                  selectedLibraryFiles.some((item) => item.id === file.id)
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </section>
                       )}
                       <div className="builder-requirements-grid">
                       {pipelineInputRequirements.map((inputReq: PipelineRequirement) => {
@@ -3559,16 +3574,30 @@ export default function CreateJob() {
                   ) : (
                     <>
                   {storageSelectableFiles.length > 0 && (
-                    <div className="builder-section-card builder-input-file-context">
-                      <p className="builder-card-kicker">Storage Files</p>
-                      <div className="builder-file-chip-grid">
-                        {storageSelectableFiles.map((file) => renderSelectableFileChip(
-                          file,
-                          'tool-context',
-                          selectedLibraryFiles.some((item) => item.id === file.id)
-                        ))}
-                      </div>
-                    </div>
+                    <section className="pipeline-sidebar-section create-job-storage-section" style={{ marginBottom: '1rem' }}>
+                      <button
+                        type="button"
+                        className="pipeline-sidebar-section-header"
+                        onClick={() => setOpenStorageFiles((prev) => !prev)}
+                      >
+                        <span>
+                          <strong>Storage Files</strong>
+                          <small>Files available from your Storage to assign to tool inputs.</small>
+                        </span>
+                        <span className={`pipeline-sidebar-chevron ${openStorageFiles ? 'open' : ''}`}>▾</span>
+                      </button>
+                      {openStorageFiles && (
+                        <div className="pipeline-sidebar-section-body">
+                          <div className="builder-file-chip-grid">
+                            {storageSelectableFiles.map((file) => renderSelectableFileChip(
+                              file,
+                              'tool-context',
+                              selectedLibraryFiles.some((item) => item.id === file.id)
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </section>
                   )}
 
                   {combinedSelectableFiles.length === 0 ? (
